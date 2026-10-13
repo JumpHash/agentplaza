@@ -155,7 +155,7 @@ mod tests {
     }
 
     fn mock() -> Gateway {
-        Gateway::new(vec![ProviderConfig::new("mock", ProviderKind::Mock)], |_: &str| None)
+        Gateway::new(vec![ProviderConfig::new("mock", ProviderKind::Mock)], |_: &str, _: &crate::SecretRead<'_>| None)
     }
 
     #[test]

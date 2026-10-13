@@ -49,18 +49,20 @@ jobs:
 
   guest:
     uses: ./.github/workflows/guest.yml
+  relay:
+    uses: ./.github/workflows/relay.yml
   linux:
-    needs: [version, guest]
+    needs: [version, guest, relay]
     uses: ./.github/workflows/linux.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   macos:
-    needs: [version, guest]
+    needs: [version, guest, relay]
     uses: ./.github/workflows/macos.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   windows:
-    needs: [version, guest]
+    needs: [version, guest, relay]
     uses: ./.github/workflows/windows.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit

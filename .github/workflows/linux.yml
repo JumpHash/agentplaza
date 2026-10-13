@@ -83,10 +83,14 @@ jobs:
         if: inputs.package && steps.guest.outputs.cache-hit != 'true'
         env: { APZ_CI_TARGET: workspace }
         run: .github/ci/in-image.sh 'APZ_BUSYBOX=$( [ ${{ matrix.arch }} = aarch64 ] && echo $APZ_BUSYBOX_AARCH64 ) scripts/mk-guest.sh ${{ matrix.arch }}'
+      - name: The relay binaries (both architectures, from the relay job)
+        if: inputs.package
+        uses: actions/download-artifact@v4
+        with: { name: mcp-relay, path: relay }
       - name: Stage and package
         if: inputs.package
         run: |
-          .github/ci/in-image.sh "packaging/scripts/stage.sh ${{ matrix.triple }} ${{ matrix.out }} stage \"\$VERSION\" &&
+          .github/ci/in-image.sh "APZ_RELAY_DIR=relay packaging/scripts/stage.sh ${{ matrix.triple }} ${{ matrix.out }} stage \"\$VERSION\" &&
             packaging/linux/build.sh stage \"\$VERSION\" ${{ matrix.arch }} out-linux-${{ matrix.arch }}"
           mkdir -p stage-out && tar -czf stage-out/stage-linux-${{ matrix.arch }}.tgz stage
       - name: Install and run on Ubuntu 24.04, Debian 12, Fedora 42, Arch; the AppImage on Ubuntu 22.04

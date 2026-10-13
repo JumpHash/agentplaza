@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "kind": "usb-a-stack",
+  "view": "part",
+  "size": [3.129, 2.94, 2.835],
+  "parts": [
+    {"id": "housing0", "geo": {"type": "box", "w": 2.94, "h": 1.47, "d": 2.835}, "at": [0.0025, 0.735, 0.0], "mat": "plastic-matte"},
+    {"id": "shell0", "geo": {"type": "box", "w": 0.126, "h": 1.344, "d": 2.604}, "at": [-1.533, 0.735, 0.0], "mat": "nickel"},
+    {"id": "port0", "geo": {"type": "box", "w": 0.084, "h": 0.882, "d": 2.184}, "at": [-1.632, 0.735, 0.0], "mat": "port-hole", "outline": false, "detail": 2},
+    {"id": "tongue0", "geo": {"type": "box", "w": 0.084, "h": 0.105, "d": 1.68}, "at": [-1.617, 0.735, 0.0], "mat": "nickel", "outline": false, "detail": 2},
+    {"id": "housing1", "geo": {"type": "box", "w": 2.94, "h": 1.47, "d": 2.835}, "at": [0.0025, 2.205, 0.0], "mat": "plastic-matte"},
+    {"id": "shell1", "geo": {"type": "box", "w": 0.126, "h": 1.344, "d": 2.604}, "at": [-1.533, 2.205, 0.0], "mat": "nickel"},
+    {"id": "port1", "geo": {"type": "box", "w": 0.084, "h": 0.882, "d": 2.184}, "at": [-1.632, 2.205, 0.0], "mat": "port-hole", "outline": false, "detail": 2},
+    {"id": "tongue1", "geo": {"type": "box", "w": 0.084, "h": 0.105, "d": 1.68}, "at": [-1.617, 2.205, 0.0], "mat": "nickel", "outline": false, "detail": 2}
+  ]
+}

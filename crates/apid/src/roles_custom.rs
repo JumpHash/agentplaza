@@ -11,6 +11,7 @@
 use std::sync::Mutex;
 
 use apz_http::{Params, Request, Response, Router};
+use apz_plaza::tasks::MIN_TASK_BUDGET;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -126,8 +127,9 @@ fn validate(def: &RoleDef) -> Result<(), String> {
     for item in &def.deliverables {
         check_text("deliverable", item, usize::MAX)?;
     }
-    if def.budget != 0 && !(200..=50_000).contains(&def.budget) {
-        return Err("budget: 0 (none) or 200..=50000 credits".into());
+    let min_budget = u64::try_from(MIN_TASK_BUDGET).unwrap_or(0);
+    if def.budget != 0 && !(min_budget..=50_000).contains(&def.budget) {
+        return Err(format!("budget: 0 (none) or {min_budget}..=50000 credits"));
     }
     Ok(())
 }

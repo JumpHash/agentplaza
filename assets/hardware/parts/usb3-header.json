@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "usb3-header",
+  "view": "part",
+  "size": [5.334, 2.205, 1.071],
+  "parts": [
+    {"id": "housing", "geo": {"type": "rbox", "w": 5.334, "h": 1.785, "d": 1.071, "r": 0.126}, "at": [0.0, 0.5925, 0.0], "mat": "plastic-matte", "label": {"text": "USB3", "size": 0.4, "color": "#e8eadf"}},
+    {"id": "pin", "geo": {"type": "box", "w": 0.1344, "h": 2.205, "d": 0.1344}, "at": [-2.4003, 1.1025, -0.2667], "mat": "gold", "outline": false, "repeat": {"count": 20, "step": [0.5334, 0.0, 0.0], "wrap": 10, "row": [0.0, 0.0, 0.5334]}, "detail": 2}
+  ]
+}

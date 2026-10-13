@@ -1,0 +1,4497 @@
+{
+  "schema": 1,
+  "specs": [
+    {
+      "id": "nvidia-rtx5090-fe",
+      "name": "GeForce RTX 5090 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 304,
+        "height": 137,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "flowthrough",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5090/",
+        "https://techpowerup.com/gpu-specs/geforce-rtx-5090.c4216"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud",
+        "slots"
+      ],
+      "notes": "Two fans assumed (dual flow-through). Fan count and diameter unverified: the official page gives neither. Slot count conflicts in the doc (2, 2.5, 3); 40 mm thickness matches 2-slot."
+    },
+    {
+      "id": "nvidia-rtx5080-fe",
+      "name": "GeForce RTX 5080 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 304,
+        "height": 137,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "flowthrough",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5080/"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud",
+        "size_mm"
+      ],
+      "notes": "Two fans assumed, inferred from the 5090 FE whose count is unverified. Thickness and shroud unverified; 40 mm assumed."
+    },
+    {
+      "id": "nvidia-rtx5070-fe",
+      "name": "GeForce RTX 5070 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 242,
+        "height": 112,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5070-family/",
+        "https://lanoc.org"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Infinity-loop shroud (LANOC) has no matching shape kind, so shapes is empty. Slot count ~2. Power, I/O, backplate and brand unverified."
+    },
+    {
+      "id": "nvidia-rtx5070ti-generic",
+      "name": "GeForce RTX 5070 Ti (generic partner design)",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": null,
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://tomshardware.com"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Partner-only generic, about 300 mm long. Height and thickness not in doc, so size_mm is null. Fan count, shroud and power are assumptions."
+    },
+    {
+      "id": "nvidia-rtx4090-fe",
+      "name": "GeForce RTX 4090 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 304,
+        "height": 137,
+        "thickness": 61
+      },
+      "slots": 3,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://techpowerup.com/gpu-specs/geforce-rtx-4090.c3889",
+        "https://servethehome.com"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud"
+      ],
+      "notes": "Triple-fan axial per the research doc. The X-shaped frame was checked and not confirmed, so it is left out. Fan count and power connector are unconfirmed."
+    },
+    {
+      "id": "nvidia-rtx4080-fe",
+      "name": "GeForce RTX 4080 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 304,
+        "height": 137,
+        "thickness": 61
+      },
+      "slots": 3,
+      "cooling": {
+        "type": "flowthrough",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/content/geforce-gtx/GeForce_RTX_4080_QSG_Rev1.pdf",
+        "https://nvidia.com/en-us/geforce/graphics-cards/40-series/rtx-4080-family/"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud"
+      ],
+      "notes": "Two fans assumed: user reports say 2, the doc flags a conflict with the 4090 reports. Fan diameter unverified. Also covers the 4080 SUPER FE (assumed same board)."
+    },
+    {
+      "id": "nvidia-rtx4070-fe",
+      "name": "GeForce RTX 4070 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 242,
+        "height": 112,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "flowthrough",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://techpowerup.com/gpu-specs/geforce-rtx-4070.c3924"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud",
+        "size_mm"
+      ],
+      "notes": "Two fans assumed (count unverified). Size uses the doc's ~242 x 112 mm; 40 mm thickness from TechPowerUp. Shroud and power unverified."
+    },
+    {
+      "id": "nvidia-rtx4070ti-generic",
+      "name": "GeForce RTX 4070 Ti (generic partner design)",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": null,
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://xda-developers.com"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Partner-only generic, covers the 4070 Ti SUPER. About 290 mm long. Height and thickness not in doc, so size_mm is null. Other values are assumptions."
+    },
+    {
+      "id": "nvidia-rtx3090-fe",
+      "name": "GeForce RTX 3090 Founders Edition",
+      "vendor": "nvidia",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 313,
+        "height": 138,
+        "thickness": 61
+      },
+      "slots": 3,
+      "cooling": {
+        "type": "flowthrough",
+        "fans": [
+          {
+            "d_mm": 110,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": 110,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/geforce/graphics-cards/30-series/rtx-3090-3090ti/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Fan count (~2) and diameter (~110 mm) from a teardown snippet. Thickness from the 3-slot value. Power is a 12-pin, mapped here to 2x 8-pin, unverified."
+    },
+    {
+      "id": "nvidia-rtxpro6000-ws",
+      "name": "RTX PRO 6000 Blackwell Workstation Edition",
+      "vendor": "nvidia",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 305,
+        "height": 137,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "flowthrough",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "back"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "back"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-mid"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/products/workstations/professional-desktop-gpus/rtx-pro-6000-family/",
+        "https://jonpeddie.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Doc says 4x auxiliary connectors but one top-middle connector; modelled as one 12V-2x6. Two fans per side is approximate. Dimensions ~137 x 305 mm."
+    },
+    {
+      "id": "nvidia-rtxpro6000-maxq",
+      "name": "RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+      "vendor": "nvidia",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/products/workstations/professional-desktop-gpus/rtx-pro-6000-max-q/",
+        "https://techpowerup.com/gpu-specs/rtx-pro-6000-blackwell-max-q-workstation.c4273"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Only single-fan blower in the set. Blower fan diameter not given. Connector type (300 W, one aux cable) and position unverified."
+    },
+    {
+      "id": "nvidia-rtx6000ada",
+      "name": "RTX 6000 Ada Generation",
+      "vendor": "nvidia",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/products/workstations/rtx-6000/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Datasheet says only 'active'; blower assumed. Connector shown as one 16-pin (~), mapped to 12V-2x6. Thickness derived from dual-slot."
+    },
+    {
+      "id": "nvidia-rtx4000ada",
+      "name": "RTX 4000 Ada Generation",
+      "vendor": "nvidia",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 241,
+        "height": 112,
+        "thickness": 20
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/products/workstations/rtx-4000/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Slot-powered assumed (130 W; aux connector unverified). Single-slot thickness ~20 mm and no backplate are assumptions."
+    },
+    {
+      "id": "nvidia-rtxa6000",
+      "name": "RTX A6000",
+      "vendor": "nvidia",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Datasheet says only 'active'; blower assumed. 8-pin position unverified. Source is the nvidia.com domain (no page URL in doc)."
+    },
+    {
+      "id": "nvidia-workstation-generic",
+      "name": "NVIDIA workstation generic dual-slot blower",
+      "vendor": "nvidia",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "partial"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Fallback for NVIDIA workstation cards. Length and height from the doc; thickness, power and port count are assumptions."
+    },
+    {
+      "id": "nvidia-rtx3500ada-laptop",
+      "name": "NVIDIA RTX 3500 Ada Generation Laptop GPU",
+      "vendor": "nvidia",
+      "segment": "laptop",
+      "form": "bga",
+      "reference": false,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#2A2A2A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "die": {
+        "die_mm": null,
+        "vram": {
+          "chips": 6,
+          "arrangement": "ring",
+          "gddr": "GDDR6"
+        }
+      },
+      "sources": [
+        "https://images.nvidia.com/aem-dam/en-zz/Solutions/design-visualization/documents/proviz-rtx-mobile-line-card.pdf",
+        "techpowerup.com/gpu-specs/rtx-3500-mobile-ada-generation.c4098"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "die",
+        "lighting",
+        "power",
+        "shroud",
+        "size_mm"
+      ],
+      "notes": "AD104 die, 12 GB GDDR6, 192-bit (verified). Six GDDR6 chips is inferred from the bus width, not confirmed. OEM laptop board, so the layout is generic."
+    },
+    {
+      "id": "nvidia-h100-pcie",
+      "name": "NVIDIA H100 PCIe",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/content/dam/en-zz/Solutions/gtcs22/data-center/h100/PB-11133-001_v01.pdf",
+        "https://techpowerup.com/gpu-specs/h100-pcie-80-gb.c3899"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power"
+      ],
+      "notes": "Bare heatsink, no shroud. NVLink bridge on top edge with 2.5 mm keep-out above it. 312 or 339 mm extender forms not modelled."
+    },
+    {
+      "id": "nvidia-h100-nvl",
+      "name": "NVIDIA H100 NVL (bridged pair)",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/content/dam/en-zz/Solutions/Data-Center/h100/PB-11773-001_v01.pdf"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power"
+      ],
+      "notes": "Shipped as a bridged pair, each board spans two slots when bridged. Three NVLink bridges on top edge, 188 GB pooled. Default 400 W."
+    },
+    {
+      "id": "nvidia-h200-nvl",
+      "name": "NVIDIA H200 NVL",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/data-center/h200/",
+        "NVIDIA H200 NVL product spec (PDF)"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power"
+      ],
+      "notes": "Top-edge NVLink bridge with removable cap on non-bridged systems. 600 W default, 350 W compliance limit in some modes."
+    },
+    {
+      "id": "nvidia-l40s",
+      "name": "NVIDIA L40S",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/data-center/l40s/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power"
+      ],
+      "notes": "No NVLink. 4x DisplayPort 1.4a. Thickness ~40 mm is from TechPowerUp. Connector on east edge and 350 W max are approximate."
+    },
+    {
+      "id": "nvidia-l40",
+      "name": "NVIDIA L40",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/data-center/l40/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power"
+      ],
+      "notes": "300 W, no NVLink. Jan 2023 datasheet figures are preliminary. Thickness and connector position are not in doc."
+    },
+    {
+      "id": "nvidia-l4",
+      "name": "NVIDIA L4",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 168.5,
+        "height": 56,
+        "thickness": 19
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com PB-11316-001 (L4)",
+        "https://techpowerup.com/gpu-specs/l4.c4091"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate"
+      ],
+      "notes": "Half-height bracket is ~69 mm tall, board height 56 mm (TechPowerUp). Thickness 18 to 20 mm. Slot-powered, 72 W max. OEM brackets vary."
+    },
+    {
+      "id": "nvidia-a100-pcie",
+      "name": "NVIDIA A100 PCIe",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "eps8",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com PB-10577-001 (A100) product brief"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate"
+      ],
+      "notes": "Three NVLink bridges on north edge for 80 GB; 40 GB variant has one bridge (2-card pair). Power 250 W (40 GB) or 300 W (80 GB)."
+    },
+    {
+      "id": "nvidia-a40",
+      "name": "NVIDIA A40",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "eps8",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/data-center/a40/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "2-way NVLink bridge on top edge (unverified). Passive per product brief. Display outputs unverified, so ports empty. Thickness and connector position not in doc."
+    },
+    {
+      "id": "nvidia-a10",
+      "name": "NVIDIA A10",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 20
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com PB-10415-001 (A10) product brief"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "bracket"
+      ],
+      "notes": "Single-slot FHFL, bidirectional passive airflow, no NVLink, 150 W. Display outputs unverified (none assumed). Thickness is slot thickness estimate."
+    },
+    {
+      "id": "nvidia-a2",
+      "name": "NVIDIA A2",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 168,
+        "height": 69,
+        "thickness": 20
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com A2 product brief",
+        "https://techpowerup.com/gpu-specs/a2.c3848"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Low-profile single-slot. Slot-powered, ~60 W. Dimensions and thickness are approximate. Bracket and I/O unverified."
+    },
+    {
+      "id": "nvidia-t4",
+      "name": "NVIDIA T4",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 168,
+        "height": 69,
+        "thickness": 20
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/data-center/tesla-t4/"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "PCIe Gen3 x16, low-profile single-slot. Slot-powered, ~70 W max, no aux connector. Dimensions and bracket/I/O are approximate."
+    },
+    {
+      "id": "nvidia-sxm5-module",
+      "name": "NVIDIA SXM5 module (H100 and H200 SXM)",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "sxm",
+      "reference": true,
+      "size_mm": {
+        "length": 165,
+        "height": 102,
+        "thickness": 40
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#1A1D1F",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "superb-tech.com (OAM vs SXM)",
+        "https://en.wikipedia.org/wiki/SXM_(socket)"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud"
+      ],
+      "notes": "Module in an SXM5 socket, not a card. Footprint ~102 x 165 is third-party. Thickness is an estimate. Fin count unverified."
+    },
+    {
+      "id": "nvidia-hgx-8gpu-baseboard",
+      "name": "NVIDIA HGX 8-GPU baseboard",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "sxm",
+      "reference": true,
+      "size_mm": {
+        "length": 553,
+        "height": 416,
+        "thickness": 153
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#14532D",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "layout": {
+        "rows": 2,
+        "cols": 4,
+        "pitch_mm": [
+          135,
+          200
+        ]
+      },
+      "sources": [
+        "opencompute.org (HGX baseboard spec r1 v0.1)",
+        "servethehome.com (HGX B200 NVLink switch)"
+      ],
+      "approx": [
+        "size_mm",
+        "layout",
+        "cooling",
+        "shroud"
+      ],
+      "notes": "Baseboard, not a card. Dims are without connectors (~565 mm with). Two rows of four and pitch are estimates. NVSwitch placement unverified."
+    },
+    {
+      "id": "nvidia-jetson-agx-orin-devkit",
+      "name": "NVIDIA Jetson AGX Orin developer kit",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 110,
+        "height": 110,
+        "thickness": 71.7
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": "#C3C8CC",
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com Jetson AGX Orin technical brief"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "Box is the dev kit including feet. Module 100 x 87 x 16 mm. Fan size and I/O layout unverified."
+    },
+    {
+      "id": "nvidia-jetson-orin-nano-super-devkit",
+      "name": "NVIDIA Jetson Orin Nano Super developer kit",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 100,
+        "height": 79,
+        "thickness": 21
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": "#C3C8CC",
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com Jetson Orin page",
+        "rs-online.com (945-13766-0000-000)"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "Box 100 x 79 x 21 mm incl. feet. Module 69.6 x 45 mm SO-DIMM. Fan size unverified. Older Orin Nano kit ~103 x 90.5 x 35. Doc lists no display ports."
+    },
+    {
+      "id": "nvidia-jetson-orin-nx-super",
+      "name": "NVIDIA Jetson Orin NX Super module",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 69.6,
+        "height": 45,
+        "thickness": 10
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com Jetson Orin page",
+        "category.yahboom.net (Jetson Orin NX)"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "Module only, 260-pin SO-DIMM. Carrier unverified: no NVIDIA carrier confirmed, partner carriers exist (Yahboom, Waveshare). Thickness not in doc."
+    },
+    {
+      "id": "nvidia-jetson-agx-thor-devkit",
+      "name": "NVIDIA Jetson AGX Thor developer kit",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 243.2,
+        "height": 112.4,
+        "thickness": 56.9
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": "#C3C8CC",
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "nvidia.com Jetson Thor page",
+        "waveshare.com (AGX Thor dev kit)"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "Dev kit box including feet. Module 100 x 87 mm, 699-pin, same footprint as AGX Orin. Optional fan or heatsink unverified."
+    },
+    {
+      "id": "nvidia-igx-orin",
+      "name": "NVIDIA IGX Orin",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://nvidia.com/en-us/edge-computing/products/igx/",
+        "asipartner.com (IGX Orin)"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "Dimensions not in doc, so size_mm is null. Dev kit is NVIDIA-built, production systems are partner-built. Fanless or fan cooling unverified."
+    },
+    {
+      "id": "nvidia-dgx-spark",
+      "name": "NVIDIA DGX Spark",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 150,
+        "height": 150,
+        "thickness": 50.5
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "usbc",
+            "count": 4
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "docs.nvidia.com DGX Spark hardware",
+        "servethehome.com (DGX Spark review)"
+      ],
+      "approx": [
+        "cooling",
+        "shroud"
+      ],
+      "notes": "Desktop-class box, placed in edge segment per brief (doc kind: workstation). Rear ports only; front ports not listed. Fan and vent layout unverified."
+    },
+    {
+      "id": "nvidia-jetson-nano",
+      "name": "NVIDIA Jetson Nano developer kit",
+      "vendor": "nvidia",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 100,
+        "height": 80,
+        "thickness": 29
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "NVIDIA Jetson Nano datasheet (DS-09366-001)"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "Dev kit box 100 x 80 x 29 mm per doc (brief dims appear swapped). Module 69.6 x 45 mm SO-DIMM. Dev kit fan and I/O not in doc."
+    },
+    {
+      "id": "nvidia-dc-passive-dual",
+      "name": "Generic passive dual-slot data-centre GPU (fallback)",
+      "vendor": "nvidia",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "vertical"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Generic fallback for NVIDIA data-centre PCIe, not a product. All dimensions approximate."
+    },
+    {
+      "id": "amd-rx7900xtx-mba",
+      "name": "Radeon RX 7900 XTX (AMD reference MBA)",
+      "vendor": "amd",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 287,
+        "height": 110,
+        "thickness": 51
+      },
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://techpowerup.com/gpu-specs/radeon-rx-7900-xtx.c3941",
+        "amd.com",
+        "gamingpcbuilder.com"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud",
+        "slots"
+      ],
+      "notes": "Reference MBA. The red stripes named in the brief were checked and not confirmed, so they are left out."
+    },
+    {
+      "id": "amd-rx7900xt-mba",
+      "name": "Radeon RX 7900 XT (AMD reference)",
+      "vendor": "amd",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 276,
+        "height": 110,
+        "thickness": 51
+      },
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "reference",
+        "shroud",
+        "size_mm",
+        "slots"
+      ],
+      "notes": "AMD reference (MBA) is believed but unverified, so it is marked not reference. Dimensions come from a TechPowerUp excerpt."
+    },
+    {
+      "id": "amd-rx6900xt-mba",
+      "name": "Radeon RX 6900 XT (AMD reference MBA)",
+      "vendor": "amd",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 120,
+        "thickness": 50
+      },
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://techpowerup.com/gpu-specs/radeon-rx-6900-xt.c3481"
+      ],
+      "approx": [
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "AMD product page returned 404; confirm before relying on the reference status. Slot count conflicts (triple vs ~2.5). Power and I/O are guesses."
+    },
+    {
+      "id": "amd-rx9070xt-generic",
+      "name": "Radeon RX 9070 XT (generic partner card)",
+      "vendor": "amd",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 330,
+        "height": 130,
+        "thickness": 65
+      },
+      "slots": 3,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://techpowerup.com/333051"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "No AMD reference board (partner-only). Dims from one partner card excerpt. Fans, shroud, power, I/O and backplate are generic guesses."
+    },
+    {
+      "id": "amd-w7900-dual",
+      "name": "Radeon PRO W7900 Dual Slot",
+      "vendor": "amd",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 280,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "amd.com",
+        "https://techpowerup.com/323141"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Height 111 and thickness 40 are not in the doc (approximated). Blower vs open-air unconfirmed. Ports: 3 DP + 1 Enhanced Mini DP, counted as dp 4."
+    },
+    {
+      "id": "amd-w7900",
+      "name": "Radeon PRO W7900",
+      "vendor": "amd",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 280,
+        "height": 110,
+        "thickness": 51
+      },
+      "slots": 3,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://amd.com/en/products/graphics/workstations/radeon-pro/w7900.html"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Triple-slot per doc, though the 51 mm thickness is closer to 2.5. Open-air axial and 2 fans assumed. Shroud, backplate and bracket colour unverified."
+    },
+    {
+      "id": "amd-w7800",
+      "name": "Radeon PRO W7800",
+      "vendor": "amd",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 280,
+        "height": 110,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "https://techpowerup.com/gpu-specs/radeon-pro-w7800.c4148",
+        "igorslab.de"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Blower from a pre-launch article (RX 7800 XT as W7800). Power (2x 8-pin) and I/O are generic assumptions. Shroud and backplate unverified."
+    },
+    {
+      "id": "amd-mi210",
+      "name": "Instinct MI210 (PCIe)",
+      "vendor": "amd",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "eps8",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "amd.com"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "power",
+        "bracket"
+      ],
+      "notes": "Fully passive, no display outputs. Thickness 40 mm assumed (dual-slot). Bracket presence unverified; ports [] for a blank bracket."
+    },
+    {
+      "id": "amd-mi250-oam",
+      "name": "Instinct MI250 / MI250X (OAM module)",
+      "vendor": "amd",
+      "segment": "datacenter",
+      "form": "oam",
+      "reference": true,
+      "size_mm": {
+        "length": 165,
+        "height": 102,
+        "thickness": 14
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#C3C8CC",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://amd.com/en/products/accelerators/instinct/mi200/mi250x.html"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling"
+      ],
+      "notes": "OAM envelope 102 x 165 assumed by the doc. Thickness 14 mm is the generic OAM value, not from the doc. Liquid-cooled variants exist."
+    },
+    {
+      "id": "amd-mi300x-oam",
+      "name": "Instinct MI300X (OAM module)",
+      "vendor": "amd",
+      "segment": "datacenter",
+      "form": "oam",
+      "reference": true,
+      "size_mm": {
+        "length": 165,
+        "height": 102,
+        "thickness": 14
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "across-length"
+      },
+      "shroud": {
+        "base_color": "#C3C8CC",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "amd.com",
+        "lenovopress.lenovo.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "power",
+        "bracket"
+      ],
+      "notes": "Dims ~102 x 165 unverified. Thickness not in doc (14 used; likely low for a finned module). No card power or outputs, per the doc (~)."
+    },
+    {
+      "id": "amd-ubb-8gpu",
+      "name": "Instinct MI300X 8-GPU Universal Baseboard (UBB 2.0)",
+      "vendor": "amd",
+      "segment": "datacenter",
+      "form": "oam",
+      "reference": true,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#14532D",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "layout": {
+        "rows": 2,
+        "cols": 4,
+        "pitch_mm": [
+          120,
+          180
+        ]
+      },
+      "sources": [
+        "lenovopress.lenovo.com",
+        "servethehome.com"
+      ],
+      "approx": [
+        "size_mm",
+        "layout",
+        "cooling",
+        "power"
+      ],
+      "notes": "Board size not in doc (null). Layout 2x4 and pitch [120,180] are guesses from the OAM envelope. Power input not modelled. The servethehome source is the MI325X board."
+    },
+    {
+      "id": "amd-versal-vek280",
+      "name": "Versal AI Edge VEK280 evaluation board",
+      "vendor": "amd",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 240.5,
+        "height": 186.4,
+        "thickness": 20
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "amd.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "power",
+        "bracket"
+      ],
+      "notes": "Full evaluation board, no SOM. Size is the board; thickness 20 mm is a placeholder. Cooling, colour, power and I/O unverified."
+    },
+    {
+      "id": "amd-kria-k26-som",
+      "name": "Kria K26 SOM",
+      "vendor": "amd",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 77,
+        "height": 60,
+        "thickness": 27
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#9AA3AB",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "docs.amd.com"
+      ],
+      "approx": [
+        "cooling"
+      ],
+      "notes": "Size is with heatsink (60 x 77 x 27, AMD DS986); bare SOM is 77 x 60 x 11. Cooling and fin direction are not in the doc."
+    },
+    {
+      "id": "amd-kv260",
+      "name": "Kria KV260 Vision AI starter kit",
+      "vendor": "amd",
+      "segment": "edge",
+      "form": "module",
+      "reference": true,
+      "size_mm": {
+        "length": 140,
+        "height": 123,
+        "thickness": 36
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "docs.amd.com",
+        "element14.com"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "power",
+        "bracket"
+      ],
+      "notes": "Size is the total starter kit box (DS986). Rev 1 has a red fan housing; this uses Rev 2 black. Fan, carrier colour, power and I/O unverified."
+    },
+    {
+      "id": "amd-radeon-igpu",
+      "name": "AMD Radeon integrated GPU (APU iGPU)",
+      "vendor": "amd",
+      "segment": "integrated",
+      "form": "integrated",
+      "reference": false,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#1A1D1F",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Radeon 890M (laptop APU iGPU); no model and no card. Use for AMD iGPU names."
+    },
+    {
+      "id": "amd-ryzen-ai-halo",
+      "name": "Ryzen AI Max (Strix Halo) developer mini PC",
+      "vendor": "amd",
+      "segment": "integrated",
+      "form": "integrated",
+      "reference": true,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#1A1D1F",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "amd.com",
+        "igorslab.de"
+      ],
+      "approx": [
+        "cooling",
+        "shroud",
+        "bracket"
+      ],
+      "notes": "AMD-built box (CES 2026). Package Strix Halo FP11 ~37.5 x 45 mm (leak-based). Box dimensions, cooling, ports and colour not confirmed."
+    },
+    {
+      "id": "amd-mba-generic",
+      "name": "Generic AMD reference-style open-air card (fallback)",
+      "vendor": "amd",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 287,
+        "height": 110,
+        "thickness": 51
+      },
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1A1A",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket",
+        "lighting"
+      ],
+      "notes": "Fallback for AMD consumer and workstation names without an entry. All dims and fields approximate, from the AMD MBA-style card."
+    },
+    {
+      "id": "amd-oam-generic",
+      "name": "Generic AMD OAM module (fallback)",
+      "vendor": "amd",
+      "segment": "datacenter",
+      "form": "oam",
+      "reference": false,
+      "size_mm": {
+        "length": 165,
+        "height": 102,
+        "thickness": 14
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "across-length"
+      },
+      "shroud": {
+        "base_color": "#C3C8CC",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "cooling"
+      ],
+      "notes": "Fallback for AMD data centre module names without an entry. Dims approximate (102 x 165 envelope, 14 mm thick); passive cold plate assumed."
+    },
+    {
+      "id": "intel-arc-a770-le",
+      "name": "Arc A770 Limited Edition",
+      "vendor": "intel",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 268.6,
+        "height": 111,
+        "thickness": 41
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": [
+          {
+            "kind": "chamfer"
+          }
+        ]
+      },
+      "backplate": {
+        "color": "#C8CCD1",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        },
+        {
+          "type": "6pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [
+        {
+          "kind": "fan-ring",
+          "color": "#0071C5",
+          "at": "fan"
+        },
+        {
+          "kind": "strip",
+          "color": "#0071C5",
+          "at": "top"
+        },
+        {
+          "kind": "strip",
+          "color": "#0071C5",
+          "at": "end"
+        },
+        {
+          "kind": "logo",
+          "color": "#0071C5",
+          "at": "logo"
+        }
+      ],
+      "sources": [
+        "intel.com support 000092554",
+        "intel.com support 000092523",
+        "https://techpowerup.com/298989"
+      ],
+      "approx": [
+        "backplate",
+        "bracket",
+        "cooling",
+        "lighting",
+        "power",
+        "shroud",
+        "size_mm",
+        "slots"
+      ],
+      "notes": "Four RGB zones confirmed (Fans, Ring, Back, Logo). Colours and exact positions are estimates."
+    },
+    {
+      "id": "intel-arc-a750-le",
+      "name": "Arc A750 Limited Edition",
+      "vendor": "intel",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 268.6,
+        "height": 111,
+        "thickness": 41
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#C8CCD1",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        },
+        {
+          "type": "6pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "intel.com support 000092554",
+        "intel.com support 000092523"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "bracket"
+      ],
+      "notes": "Doc assumes the same board as the A770 LE, so dimensions, cooling and shroud are copied from it. I/O unverified."
+    },
+    {
+      "id": "intel-arc-b580-le",
+      "name": "Arc B580 Limited Edition",
+      "vendor": "intel",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 272,
+        "height": 115,
+        "thickness": 44
+      },
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#141414",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [
+        {
+          "kind": "logo",
+          "color": "#FFFFFF",
+          "at": "side"
+        }
+      ],
+      "sources": [
+        "club386.com",
+        "https://techpowerup.com/gpu-specs/arc-b580.c4244"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Thickness conflicts across sources (38, 44, 45 mm); 44 used. Slots ~2.3 mapped to 2.5. Fan diameter unverified. Sloped heatsink cut-out not modelled."
+    },
+    {
+      "id": "intel-arc-b570-generic",
+      "name": "Arc B570 (partner-built, generic)",
+      "vendor": "intel",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 270,
+        "height": 115,
+        "thickness": 42
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#141414",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Partner-only, no Intel reference (Club386). Geometry is the generic consumer estimate. The doc has no Src line for this card."
+    },
+    {
+      "id": "intel-arc-pro-b60",
+      "name": "Arc Pro B60",
+      "vendor": "intel",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 270,
+        "height": 115,
+        "thickness": 42
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#141414",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "intel.com support 000099073",
+        "asrock.com",
+        "jonpeddie.com"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Partner-built, no Intel card. SKUs: 24GB blower, 24GB passive, 48GB dual-GPU fan (Sparkle). TechPowerUp 167x69x40 conflicts, unused."
+    },
+    {
+      "id": "intel-arc-pro-a60",
+      "name": "Arc Pro A60",
+      "vendor": "intel",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 241,
+        "height": 111,
+        "thickness": 20
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#141414",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "6pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [
+        "intel.com newsroom",
+        "tomshardware.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Maker unconfirmed (Intel or partner). Single-slot is from Intel's brochure; 241 x 111 x 20 is a retailer listing. Power ~130 W is an unconfirmed forum post."
+    },
+    {
+      "id": "intel-max1100",
+      "name": "Data Center GPU Max 1100",
+      "vendor": "intel",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "intel.com specifications 232876",
+        "techpowerup.com",
+        "https://tweaktown.com/news/89438"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "power"
+      ],
+      "notes": "Passive, needs server airflow. Power connector conflicts (12-pin per TechPowerUp, 16-pin 12VHPWR per TweakTown); modelled as 12v-2x6. Discontinued Jan 2026."
+    },
+    {
+      "id": "intel-gaudi3-oam",
+      "name": "Gaudi 3 OAM module (HL-325L)",
+      "vendor": "intel",
+      "segment": "datacenter",
+      "form": "oam",
+      "reference": true,
+      "size_mm": {
+        "length": 165,
+        "height": 102,
+        "thickness": 40
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#C3C8CC",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "cdrdv2-public.intel.com",
+        "gigacomputing.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud"
+      ],
+      "notes": "Module on the HLB-325 baseboard (8 per board). OAM 2.0 envelope not in sources; thickness is a placeholder. HL-335 liquid-cooled sibling not modelled."
+    },
+    {
+      "id": "intel-gaudi3-pcie",
+      "name": "Gaudi 3 PCIe card (HL-338)",
+      "vendor": "intel",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "intel.com content-details 817488",
+        "servethehome.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "power",
+        "bracket"
+      ],
+      "notes": "Passive, up to 600 W, needs chassis airflow. Power is an 8-pin pair or 12V-2x6 (unverified); 8-pin pair used. Blank bracket assumed."
+    },
+    {
+      "id": "intel-flex170",
+      "name": "Data Center GPU Flex 170",
+      "vendor": "intel",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": true,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 20
+      },
+      "slots": 1,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "lenovopress.lenovo.com",
+        "cisco.com",
+        "https://techpowerup.com/gpu-specs/data-center-gpu-flex-170.c4071"
+      ],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "power"
+      ],
+      "notes": "Slots: 1 per owner brief (single-wide); TechPowerUp says dual-slot. Length conflicts (Cisco 3/4, Lenovo full), 267 used. Not the low-profile Flex 140."
+    },
+    {
+      "id": "intel-arc-laptop-dgpu",
+      "name": "Arc A770M laptop dGPU",
+      "vendor": "intel",
+      "segment": "laptop",
+      "form": "bga",
+      "reference": false,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1D1F",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "die": {
+        "die_mm": null,
+        "vram": {
+          "chips": 8,
+          "arrangement": "ring",
+          "gddr": "GDDR6"
+        }
+      },
+      "sources": [
+        "https://techpowerup.com/gpu-specs/arc-a770m.c3909",
+        "wccftech.com"
+      ],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "backplate",
+        "die"
+      ],
+      "notes": "A770M class: 16 GB GDDR6, 256-bit. Die size unknown. Chip ring is a typical layout, not a teardown. Laptop heatsink and fans are generic."
+    },
+    {
+      "id": "intel-coreultra-igpu",
+      "name": "Intel Arc Graphics (Core Ultra integrated)",
+      "vendor": "intel",
+      "segment": "integrated",
+      "form": "integrated",
+      "reference": false,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "asus.com NUC 15 Pro specs",
+        "wikipedia"
+      ],
+      "approx": [
+        "cooling",
+        "shroud"
+      ],
+      "notes": "Integrated in Core Ultra SoCs; no card. Doc's NUC box sizes (117 x 112 x 37 mm, 144 x 112 x 42 mm) are examples of a box, not this entry's size."
+    },
+    {
+      "id": "apple-soc-gpu",
+      "name": "Apple Silicon integrated GPU",
+      "vendor": "apple",
+      "segment": "integrated",
+      "form": "integrated",
+      "reference": false,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "none"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [
+        "https://support.apple.com/en-us/121555",
+        "https://support.apple.com/en-us/122211",
+        "https://support.apple.com/en-us/121553"
+      ],
+      "approx": [
+        "cooling",
+        "shroud"
+      ],
+      "notes": "Modelled by exterior/apple-laptop.json, exterior/apple-desktop.json and board/apple-soc.json; no card. Matches any Apple GPU name."
+    },
+    {
+      "id": "intel-arc-le-generic",
+      "name": "Intel Arc Limited Edition-style generic",
+      "vendor": "intel",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 270,
+        "height": 115,
+        "thickness": 42
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#141414",
+        "accent_color": "#C8CCD1",
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#141414",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        },
+        {
+          "type": "6pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#141414",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Fallback for all Intel consumer and workstation names. Generic open-air layout; every dimension and cooling value is an estimate."
+    },
+    {
+      "id": "intel-dc-generic",
+      "name": "Intel data-centre generic passive card",
+      "vendor": "intel",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Fallback for Intel data-centre names. Passive, server airflow. About 267 x 111 x 40 mm, all estimates. Power connector assumed."
+    },
+    {
+      "id": "consumer-generic",
+      "name": "Generic consumer partner card",
+      "vendor": "generic",
+      "segment": "consumer",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 290,
+        "height": 125,
+        "thickness": 55
+      },
+      "slots": 2.5,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          },
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1E1E1E",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 2,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2A2A2A",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 3
+          },
+          {
+            "type": "hdmi",
+            "count": 1
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Fallback for consumer names with no card. Estimate, not a product: triple-fan open-air partner card."
+    },
+    {
+      "id": "workstation-generic",
+      "name": "Generic workstation blower card",
+      "vendor": "generic",
+      "segment": "workstation",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "blower",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "toward-bracket"
+      },
+      "shroud": {
+        "base_color": "#2B2F33",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": "#B0B5BA",
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "8pin",
+          "count": 1,
+          "position": "top-end"
+        }
+      ],
+      "bracket": {
+        "color": "#2B2F33",
+        "ports": [
+          {
+            "type": "dp",
+            "count": 4
+          }
+        ]
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "cooling",
+        "shroud",
+        "backplate",
+        "power",
+        "bracket"
+      ],
+      "notes": "Fallback for workstation names with no card: dual-slot blower, 111 x 267 mm per the research doc. Estimate."
+    },
+    {
+      "id": "datacentre-generic",
+      "name": "Generic passive data-centre card",
+      "vendor": "generic",
+      "segment": "datacenter",
+      "form": "pcie",
+      "reference": false,
+      "size_mm": {
+        "length": 267,
+        "height": 111,
+        "thickness": 40
+      },
+      "slots": 2,
+      "cooling": {
+        "type": "passive",
+        "fans": [],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#4A5056",
+        "accent_color": null,
+        "finish": "metal",
+        "shapes": [
+          {
+            "kind": "fin-stack"
+          }
+        ]
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [
+        {
+          "type": "12v-2x6",
+          "count": 1,
+          "position": "end"
+        }
+      ],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "slots",
+        "shroud",
+        "power",
+        "bracket"
+      ],
+      "notes": "Fallback for data-centre names with no card: flat finned passive card that relies on chassis airflow."
+    },
+    {
+      "id": "laptop-generic",
+      "name": "Generic laptop GPU package",
+      "vendor": "generic",
+      "segment": "laptop",
+      "form": "bga",
+      "reference": false,
+      "size_mm": null,
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "across-length"
+      },
+      "shroud": {
+        "base_color": "#1A1D1F",
+        "accent_color": null,
+        "finish": "matte",
+        "shapes": []
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [],
+      "die": {
+        "die_mm": null,
+        "vram": {
+          "chips": 8,
+          "arrangement": "ring",
+          "gddr": "GDDR6"
+        }
+      },
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "die"
+      ],
+      "notes": "Fallback for laptop GPU names: BGA die with a ring of GDDR chips, cooled by the OEM laptop heatsink. Estimate."
+    },
+    {
+      "id": "generic-edge-board",
+      "name": "Generic edge dev board",
+      "vendor": "generic",
+      "segment": "edge",
+      "form": "module",
+      "reference": false,
+      "size_mm": {
+        "length": 100,
+        "height": 80,
+        "thickness": 30
+      },
+      "slots": 0,
+      "cooling": {
+        "type": "axial",
+        "fans": [
+          {
+            "d_mm": null,
+            "x_mm": null,
+            "side": "front"
+          }
+        ],
+        "fin_direction": "along-length"
+      },
+      "shroud": {
+        "base_color": "#1A1D1B",
+        "accent_color": "#9AA3AB",
+        "finish": "metal",
+        "shapes": [
+          {
+            "kind": "fin-stack"
+          }
+        ]
+      },
+      "backplate": {
+        "color": null,
+        "vents": "none"
+      },
+      "power": [],
+      "bracket": {
+        "color": null,
+        "ports": []
+      },
+      "lighting": [
+        {
+          "kind": "status-led",
+          "color": "#76B900",
+          "at": "top"
+        }
+      ],
+      "sources": [],
+      "approx": [
+        "size_mm",
+        "cooling",
+        "shroud",
+        "lighting"
+      ],
+      "notes": "Fallback for edge names: near-square dark board with a finned block and a small fan. Estimate."
+    }
+  ]
+}

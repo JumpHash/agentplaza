@@ -128,5 +128,82 @@ that needs its own bone or its own material adds a draw: keep parts on the bone 
 
 - `cd apps/web && npm run check`: the types, the build, and the tests. The tests load every listed file, check the
   required bones, the clips' bones, the draw budget (as a count of meshes), the floor's API, and the blink.
+  The eye checks are strict: an eye error (`eye-fit`, `eye-occluded`, `eye-pair`, `eye-overlap`, `eye-silhouette`) in
+  any species fails the suite, in every pose. The rest of the audit is a report.
+- `cd apps/web && node scripts/robot-audit.mjs --issues`: every audit issue with its JSON path, including the eye
+  checks. `node scripts/robot-audit.mjs --species a,b` limits it to some species.
 - `cd apps/web && node test/run.mjs`: the tests alone.
 - Look at it: `#/robot-lab?species=<id>` in the console (`npm run build` first, or the dev server).
+
+## Style (the rules a species is judged against)
+
+The audit (`apps/web/src/views/floor3d/robots/audit.ts`, run with `node apps/web/scripts/robot-audit.mjs`) checks
+the geometry; these rules say what it should look like. The numbers come from the 31 species (medians in
+`scratchpad/robots/baseline.md`) and the best-looking species: rover, tv, kitty, ufo, cube, duck, bunny, lifty.
+Where the two disagree, the rule wins and the species is fixed. Units are robot units (a species is about 1 high).
+
+**Eyes (the face is the front of the head, symmetric about x = 0)**
+- **Position**: eyes sit on the front face, symmetric about x = 0 (a mirror pair at ±x). Never on the side of the
+  head toward +x. Spacing is 0.35–0.45 of head width (centre to centre; median 0.41). Height is 45–60% up the head
+  (median 0.49). Eyes face forward, or outward by at most 12°.
+- **Size**: socket radius `r` is 0.14–0.19 of head width (median 0.165). A pupil is 0.6–0.9 of `r`; its footprint
+  stays inside the socket (`eye-pupil`).
+- **Seating**: a socket is a flat disc, and the eye format has no rotation, so it faces +z. The rim lies flush with the
+  head: the head surface is behind the disc at every rim point (the centre and eight points at `r`), plus about 0.005
+  (`eye-fit`: a rim point with the surface in front of it is clipped). The centre may float off a curved head by up to
+  50% of `r` (a flat disc sags onto a curve at its rim). Never sink a socket into the head: the disc is never behind
+  the surface at any rim point.
+- **Visibility** (`eye-occluded`, an error in the rest, walk and wave poses): from the front and the three-quarter
+  camera at portrait distance (the lab's `one` line-up, `apps/web/src/views/robot-lab.ts`), the pupil must be the
+  first thing hit, with no part of any bone in front of it, and at least four of five probes (the pupil centre and four
+  rim points at 85% of `r`) must be clear. The rays run against the real triangles of every part, so a part that
+  covers an eye names itself. A clear (`clear`) part does not hide. The rim stays on the head silhouette
+  (`eye-silhouette`). Two eyes never overlap (`eye-pair`), and no face feature lies under a socket's footprint
+  (`eye-overlap`).
+- **Seat tool**: `node apps/web/scripts/robot-seat-eyes.mjs --species a,b` (or `--all`; `--dry-run` prints without
+  writing) seats the eyes of a species. It places each socket on the head front in the style's band (spacing 0.35–0.45
+  of head width, height 45–60%, kept where the eye already is inside it), tries the flattest spots in the band when
+  the current one sags, and lifts the socket the least that leaves the pupil and rim visible in every pose. A mirror
+  partner copies its twin's seat. It changes only the `at` of the eye entries (a span replace: the rest of the file is
+  byte-for-byte). A part that hides an eye, or a rim that sags past the float limit, is reported as blocked and the eye
+  is left as it was: shrink or move the named part by hand, then run the audit again.
+- **Style**: one shape per species, the same on both sides. A cyclops or a one-eyed sprout sets `"asym": true`.
+
+**Face features (noses, beaks, cheeks, mouths, antennae, plates)**
+- Each sits on the head surface: touching, not floating (`feature-float`), and at most 30% of its size buried
+  (`feature-buried`). Place it along the surface normal at the feature, and use `rot` so its front faces outward.
+- A feature that is not on the centre line needs an `"asym": true` flag, or a mirror partner (`symmetry`).
+- A face plate is a `paper` disc on the head. It is a plate, not a socket: keep it under the eyes and centred
+  (overlap with a plate is not counted, but the eyes must sit within its edge).
+
+**Proportions (per family; median head-to-body height ratio, from the audit)**
+- biped and waddle (penguin, duck, teapot, sprout): head/body 0.73.
+- hop (owl, frog, lamp, bunny, astro): 0.91. Hoppers have larger heads.
+- wheels and treads (can, lifty, rover, mole): 0.63–0.66. A wheeled or treaded body is tall and the head small.
+- walk4 (kitty, turtle, pup): 1.00.
+- floating (octo, jelly, ghost, oracle): no body. The head is the whole top, and the eyes are on it.
+- Overall: head/body 0.83 and head/height 0.41 (median). A species more than 25% from the median is flagged
+  (`proportion`). Explain it in the blurb or fix it.
+- Eye radius relative to head width: 0.14–0.19 (median 0.165). Hovers and cyclops-style robots run larger (0.28–0.36)
+  and need a reason.
+
+**Limbs**
+- Arms and legs: 0.08–0.12 thick (rbox width, owl and bunny arms are 0.1). A limb never sinks more than 0.03 into the
+  body (`limb-through-body`, a warning in every pose, walk and wave included).
+- Hands and claws touch the arm they belong to, within 0.02 (`attach`). A grip (`gripL`, `gripR`) sits at the end of
+  its arm part.
+- A held tool does not pierce the head or body by more than 0.01 (`tool`), in the one-hand and two-hand grips.
+
+**Outline (the ink line)**
+- Inked parts: any matte material except `ink` and `outline: false` parts. A part under 0.03 radius is not inked.
+- Use `outline: false` for flat decals (a belly disc, a cheek, a face plate) and for small parts that would cost a
+  draw call. Use the `ink` material for linework that is already ink.
+- Ink coverage (area share of the surface carrying the line) is 0.54–0.72 for most species (median 0.63). The
+  ladybug and cube have none or nearly all; decide per species and say why.
+
+**Curved surfaces**
+- Place a feature along the surface normal at its point of contact: the normal of a sphere is the direction from its
+  centre. Do not put it at a fixed `z`.
+- Use `rot` so a feature faces outward: a cone or cylinder pointing away from the head centre, a disc flat on the
+  surface.
+- Sink a socket or feature about 30% of its size into the surface, so it reads as seated, not stuck on.

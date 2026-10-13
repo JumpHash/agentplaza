@@ -12,6 +12,10 @@ pub enum GatewayError {
     /// never its value).
     #[error("credentials: {0}")]
     Auth(String),
+    /// The secret vault refused the credential: `status` is what the caller should answer with, and
+    /// `message` says why (sealed, tampered, or held only by other nodes). It names no value.
+    #[error("{message}")]
+    Vault { status: u16, message: String },
     /// The provider's configuration is incomplete (no region, no project, …).
     #[error("provider configuration: {0}")]
     Config(String),
@@ -27,6 +31,31 @@ pub enum GatewayError {
     /// The provider's answer could not be understood.
     #[error("decode: {0}")]
     Decode(String),
+}
+
+/// Why a secret source gave no credential: the vault is sealed, its file was changed outside the API, or
+/// the secret is held only by other nodes; `Missing` is the plain "no such secret". The gateway turns the
+/// first three into a [`GatewayError::Vault`], and `Missing` into the generic "not set" error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretReason {
+    Sealed,
+    Tampered(String),
+    OutOfScope,
+    Missing,
+}
+
+impl SecretReason {
+    /// The error a call fails with for this refusal: its HTTP status, and the message the owner sees.
+    /// `None` for [`SecretReason::Missing`], which the caller words itself.
+    pub fn error(&self) -> Option<GatewayError> {
+        let (status, message) = match self {
+            SecretReason::Sealed => (503, "vault sealed".to_string()),
+            SecretReason::Tampered(reason) => (503, format!("vault tampered: {reason}")),
+            SecretReason::OutOfScope => (403, "that secret is not scoped to this node".to_string()),
+            SecretReason::Missing => return None,
+        };
+        Some(GatewayError::Vault { status, message })
+    }
 }
 
 impl GatewayError {

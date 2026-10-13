@@ -233,6 +233,8 @@ fn machine_arch() -> &'static str {
 fn machine_backend() -> &'static str {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "hvf"
+    } else if cfg!(windows) {
+        "whp"
     } else {
         "kvm"
     }

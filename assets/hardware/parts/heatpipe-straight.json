@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "heatpipe-straight",
+  "view": "part",
+  "size": [21.0, 1.26, 1.26],
+  "parts": [
+    {"id": "pipe", "geo": {"type": "cyl", "rt": 0.63, "rb": 0.63, "h": 21.0}, "at": [0.0, 0.63, 0.0], "rot": [0.0, 0.0, 90.0], "mat": "copper"},
+    {"id": "end", "geo": {"type": "rbox", "w": 1.68, "h": 1.26, "d": 1.26, "r": 0.525}, "at": [-9.675, 0.63, 0.0], "mat": "copper", "repeat": {"count": 2, "step": [19.32, 0.0, 0.0]}, "detail": 1}
+  ]
+}

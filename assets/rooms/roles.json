@@ -1,0 +1,1327 @@
+{
+  "schema": 2,
+  "roles": {
+    "orchestrator": {
+      "family": "command",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "checker",
+          "marble"
+        ],
+        "wall": [
+          "stone",
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "podium-stage",
+          "station": "podium"
+        },
+        {
+          "group": "meeting"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "door-flank",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "coat-corner",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.45,
+        0.6
+      ]
+    },
+    "mayor": {
+      "family": "command",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "marble",
+          "carpet"
+        ],
+        "wall": [
+          "stone"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "podium-stage",
+          "station": "podium"
+        },
+        {
+          "group": "station",
+          "station": "counter"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "coat-corner",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "door-flank",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "mayor-office": {
+      "family": "command",
+      "desk_facing": "room",
+      "shell": {
+        "floor": [
+          "marble",
+          "carpet"
+        ],
+        "wall": [
+          "stone"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "podium-stage",
+          "station": "podium"
+        },
+        {
+          "group": "station",
+          "station": "counter"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "coat-corner",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.45,
+        0.6
+      ]
+    },
+    "architect": {
+      "family": "build",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "planks",
+          "blueprint"
+        ],
+        "wall": [
+          "panel",
+          "glass"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "station",
+          "station": "drafting-table"
+        },
+        {
+          "group": "easel-corner"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "storage-wall",
+          "w": 3,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "reading-nook",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "door-flank",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "builder": {
+      "family": "build",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "slate",
+          "hazard"
+        ],
+        "wall": [
+          "brick",
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "bench",
+          "station": "workbench"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "crate-pile",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "qa": {
+      "family": "build",
+      "desk_facing": "room",
+      "shell": {
+        "floor": [
+          "tiles",
+          "slate"
+        ],
+        "wall": [
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "bench",
+          "station": "workbench"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "crate-pile",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "reviewer": {
+      "family": "other",
+      "desk_facing": "room",
+      "shell": {
+        "floor": [
+          "carpet",
+          "tiles"
+        ],
+        "wall": [
+          "panel",
+          "glass"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "meeting"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "coat-corner",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "door-flank",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "release": {
+      "family": "operations",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "hazard",
+          "gravel"
+        ],
+        "wall": [
+          "fence",
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "bench",
+          "station": "crate-stack"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "crate-pile",
+          "w": 3,
+          "max": 2
+        },
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "storage-wall",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "edge-operator": {
+      "family": "operations",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "slate",
+          "tiles"
+        ],
+        "wall": [
+          "panel",
+          "glass"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "bench",
+          "station": "server-rack"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "dock-bay",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "incident": {
+      "family": "operations",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "hazard",
+          "checker"
+        ],
+        "wall": [
+          "brick"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "corner-station",
+          "station": "alarm-post"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "crate-pile",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.4,
+        0.55
+      ]
+    },
+    "security-reviewer": {
+      "family": "operations",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "slate"
+        ],
+        "wall": [
+          "brick",
+          "stone"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "bench",
+          "station": "guard-post"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "door-flank",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "crate-pile",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "librarian": {
+      "family": "knowledge",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "parquet",
+          "carpet"
+        ],
+        "wall": [
+          "brick",
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "storage-wall"
+        },
+        {
+          "group": "reading-nook"
+        },
+        {
+          "group": "cart-bay"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "storage-wall",
+          "w": 4,
+          "max": 3
+        },
+        {
+          "group": "reading-nook",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "researcher": {
+      "family": "knowledge",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "marble",
+          "tiles"
+        ],
+        "wall": [
+          "glass",
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "station",
+          "station": "lab-bench"
+        },
+        {
+          "group": "station",
+          "station": "microscope-desk"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "bin-corner",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "door-flank",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "planner": {
+      "family": "knowledge",
+      "desk_facing": "room",
+      "shell": {
+        "floor": [
+          "blueprint",
+          "tiles"
+        ],
+        "wall": [
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "board-wall"
+        },
+        {
+          "group": "meeting"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "bin-corner",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "breeder": {
+      "family": "knowledge",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "lawn",
+          "gravel"
+        ],
+        "wall": [
+          "hedge",
+          "fence"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "bench",
+          "station": "plant-bed"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [
+        {
+          "group": "station",
+          "station": "lab-bench"
+        }
+      ],
+      "pool": [
+        {
+          "group": "corner-plant",
+          "w": 4,
+          "max": 6
+        },
+        {
+          "group": "door-flank",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "garden-bench",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "crate-pile",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.3,
+        0.5
+      ]
+    },
+    "finance": {
+      "family": "money",
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "marble",
+          "parquet"
+        ],
+        "wall": [
+          "stone",
+          "brick"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "station",
+          "station": "counter"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "safe-corner",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "auditor": {
+      "family": "money",
+      "desk_facing": "room",
+      "shell": {
+        "floor": [
+          "marble"
+        ],
+        "wall": [
+          "stone"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "station",
+          "station": "counter"
+        },
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "safe-corner",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    }
+  },
+  "families": {
+    "command": {
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "checker",
+          "marble",
+          "carpet"
+        ],
+        "wall": [
+          "stone",
+          "panel"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "coat-corner",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.4,
+        0.55
+      ]
+    },
+    "build": {
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "planks",
+          "blueprint",
+          "slate",
+          "hazard",
+          "tiles"
+        ],
+        "wall": [
+          "panel",
+          "glass",
+          "brick"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "bin-corner",
+          "w": 1,
+          "max": 2
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "operations": {
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "slate",
+          "hazard",
+          "gravel"
+        ],
+        "wall": [
+          "panel",
+          "brick",
+          "fence"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "crate-pile",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "bin-corner",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "knowledge": {
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "parquet",
+          "tiles",
+          "marble"
+        ],
+        "wall": [
+          "panel",
+          "glass"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "money": {
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "marble",
+          "parquet"
+        ],
+        "wall": [
+          "stone",
+          "brick"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "safe-corner",
+          "w": 2,
+          "max": 1
+        },
+        {
+          "group": "storage-wall",
+          "w": 2,
+          "max": 2
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    },
+    "other": {
+      "desk_facing": "wall",
+      "shell": {
+        "floor": [
+          "carpet",
+          "tiles"
+        ],
+        "wall": [
+          "panel",
+          "glass"
+        ],
+        "open": 0
+      },
+      "required": [
+        {
+          "group": "desk-set",
+          "per": "agent"
+        }
+      ],
+      "preferred": [],
+      "pool": [
+        {
+          "group": "corner-plant",
+          "w": 2,
+          "max": 3
+        },
+        {
+          "group": "wall-clock",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "wall-art",
+          "w": 1,
+          "max": 1
+        },
+        {
+          "group": "lounge",
+          "w": 1,
+          "max": 1
+        }
+      ],
+      "density": [
+        0.35,
+        0.55
+      ]
+    }
+  }
+}

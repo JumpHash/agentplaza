@@ -4,7 +4,7 @@
   "name": "Cosmo",
   "blurb": "A little suited bot with a fishbowl helmet, a smiling face inside, and a jetpack that glows when it hops. Low gravity suits it.",
   "accent": "#ffd166",
-  "height": 1.0,
+  "height": 1,
   "label_top": 1.12,
   "locomotion": "hop",
   "gait": {
@@ -28,7 +28,7 @@
       "parent": "root",
       "at": [
         0,
-        0.15,
+        0.05,
         0
       ]
     },
@@ -61,7 +61,7 @@
       "at": [
         0,
         -0.26,
-        0.03
+        0.2
       ]
     },
     "gripR": {
@@ -69,7 +69,7 @@
       "at": [
         0,
         -0.26,
-        0.03
+        0.2
       ]
     },
     "carry": {
@@ -78,6 +78,14 @@
         0,
         0.2,
         0.3
+      ]
+    },
+    "face": {
+      "parent": "head",
+      "at": [
+        0,
+        0,
+        0
       ]
     },
     "flag": {
@@ -90,30 +98,433 @@
     }
   },
   "parts": [
-    {"bone": "body", "geo": {"type": "rbox", "w": 0.42, "h": 0.36, "d": 0.3, "r": 0.12, "seg": [3]}, "at": [0, 0.18, 0], "mat": "paper"},
-    {"bone": "body", "geo": {"type": "rbox", "w": 0.44, "h": 0.04, "d": 0.32, "r": 0.02, "seg": [2]}, "at": [0, 0.04, 0], "mat": "trim"},
-    {"bone": "body", "geo": {"type": "rbox", "w": 0.16, "h": 0.1, "d": 0.03, "r": 0.02, "seg": [2]}, "at": [0, 0.2, 0.16], "mat": "shell", "outline": false},
-    {"bone": "body", "geo": {"type": "rbox", "w": 0.3, "h": 0.3, "d": 0.08, "r": 0.05, "seg": [2]}, "at": [0, 0.2, -0.18], "mat": "shell2"},
-    {"bone": "body", "geo": {"type": "cyl", "rt": 0.07, "rb": 0.07, "h": 0.28, "seg": [14]}, "at": [-0.1, 0.2, -0.27], "mat": "trim"},
-    {"bone": "body", "geo": {"type": "cyl", "rt": 0.07, "rb": 0.07, "h": 0.28, "seg": [14]}, "at": [0.1, 0.2, -0.27], "mat": "trim"},
-    {"bone": "body", "geo": {"type": "cyl", "rt": 0.06, "rb": 0.05, "h": 0.03, "seg": [12]}, "at": [-0.1, 0.053, -0.27], "mat": "thruster", "outline": false},
-    {"bone": "body", "geo": {"type": "cyl", "rt": 0.06, "rb": 0.05, "h": 0.03, "seg": [12]}, "at": [0.1, 0.053, -0.27], "mat": "thruster", "outline": false},
-    {"bone": "head", "geo": {"type": "torus", "r": 0.15, "tube": 0.03, "seg": [8, 20]}, "at": [0, 0.01, 0], "rot": [90, 0, 0], "mat": "trim", "outline": false},
-    {"bone": "head", "geo": {"type": "sphere", "r": 0.2, "seg": [20, 14]}, "at": [0, 0.25, 0], "mat": "glass", "outline": false},
-    {"bone": "head", "geo": {"type": "sphere", "r": 0.26, "seg": [24, 16]}, "at": [0, 0.26, 0], "mat": "clear"},
-    {"bone": "armL", "geo": {"type": "cyl", "rt": 0.05, "rb": 0.045, "h": 0.24, "seg": [12]}, "at": [0, -0.12, 0], "mat": "paper"},
-    {"bone": "armL", "geo": {"type": "rbox", "w": 0.1, "h": 0.07, "d": 0.1, "r": 0.02, "seg": [2]}, "at": [0, -0.025, 0], "mat": "shell", "outline": false},
-    {"bone": "armL", "geo": {"type": "sphere", "r": 0.07, "seg": [12, 8]}, "at": [0, -0.26, 0], "mat": "paper"},
-    {"bone": "armR", "geo": {"type": "cyl", "rt": 0.05, "rb": 0.045, "h": 0.24, "seg": [12]}, "at": [0, -0.12, 0], "mat": "paper"},
-    {"bone": "armR", "geo": {"type": "rbox", "w": 0.1, "h": 0.07, "d": 0.1, "r": 0.02, "seg": [2]}, "at": [0, -0.025, 0], "mat": "shell", "outline": false},
-    {"bone": "armR", "geo": {"type": "sphere", "r": 0.07, "seg": [12, 8]}, "at": [0, -0.26, 0], "mat": "paper"},
-    {"bone": "flag", "geo": {"type": "cyl", "rt": 0.012, "rb": 0.012, "h": 0.34, "seg": [6]}, "at": [0, 0.17, 0], "mat": "trim", "outline": false},
-    {"bone": "flag", "geo": {"type": "rbox", "w": 0.16, "h": 0.1, "d": 0.01, "r": 0.01, "seg": [2]}, "at": [0.09, 0.3, 0], "mat": "accent", "outline": false}
+    {
+      "bone": "body",
+      "geo": {
+        "type": "rbox",
+        "w": 0.42,
+        "h": 0.36,
+        "d": 0.3,
+        "r": 0.12,
+        "seg": [
+          3
+        ]
+      },
+      "at": [
+        0,
+        0.18,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "rbox",
+        "w": 0.44,
+        "h": 0.04,
+        "d": 0.32,
+        "r": 0.02,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        0.04,
+        0
+      ],
+      "mat": "trim"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "rbox",
+        "w": 0.16,
+        "h": 0.1,
+        "d": 0.03,
+        "r": 0.02,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        0.2,
+        0.16
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "rbox",
+        "w": 0.3,
+        "h": 0.3,
+        "d": 0.08,
+        "r": 0.05,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        0.2,
+        -0.18
+      ],
+      "mat": "shell2"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.07,
+        "rb": 0.07,
+        "h": 0.28,
+        "seg": [
+          14
+        ]
+      },
+      "at": [
+        -0.1,
+        0.2,
+        -0.27
+      ],
+      "mat": "trim"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.07,
+        "rb": 0.07,
+        "h": 0.28,
+        "seg": [
+          14
+        ]
+      },
+      "at": [
+        0.1,
+        0.2,
+        -0.27
+      ],
+      "mat": "trim"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.06,
+        "rb": 0.05,
+        "h": 0.03,
+        "seg": [
+          12
+        ]
+      },
+      "at": [
+        -0.1,
+        0.053,
+        -0.27
+      ],
+      "mat": "thruster",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.06,
+        "rb": 0.05,
+        "h": 0.03,
+        "seg": [
+          12
+        ]
+      },
+      "at": [
+        0.1,
+        0.053,
+        -0.27
+      ],
+      "mat": "thruster",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "torus",
+        "r": 0.15,
+        "tube": 0.03,
+        "seg": [
+          8,
+          20
+        ]
+      },
+      "at": [
+        0,
+        0.01,
+        0
+      ],
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "mat": "trim",
+      "outline": false
+    },
+    {
+      "bone": "face",
+      "geo": {
+        "type": "sphere",
+        "r": 0.19,
+        "seg": [
+          20,
+          14
+        ]
+      },
+      "at": [
+        0,
+        0.25,
+        0
+      ],
+      "mat": {
+        "color": "#1c2530"
+      },
+      "scale": [1, 1, 0.6],
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.2,
+        "seg": [
+          20,
+          14
+        ]
+      },
+      "at": [
+        0,
+        0.25,
+        0
+      ],
+      "mat": "clear",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.26,
+        "seg": [
+          24,
+          16
+        ]
+      },
+      "at": [
+        0,
+        0.26,
+        0
+      ],
+      "mat": "clear"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.045,
+        "h": 0.24,
+        "seg": [
+          12
+        ]
+      },
+      "at": [
+        0,
+        -0.12,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "rbox",
+        "w": 0.1,
+        "h": 0.07,
+        "d": 0.1,
+        "r": 0.02,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        -0.025,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.07,
+        "seg": [
+          12,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.26,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.045,
+        "h": 0.24,
+        "seg": [
+          12
+        ]
+      },
+      "at": [
+        0,
+        -0.12,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "rbox",
+        "w": 0.1,
+        "h": 0.07,
+        "d": 0.1,
+        "r": 0.02,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        -0.025,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.07,
+        "seg": [
+          12,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.26,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "flag",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.012,
+        "rb": 0.012,
+        "h": 0.34,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        0,
+        0.17,
+        0
+      ],
+      "mat": "trim",
+      "outline": false,
+      "asym": true
+    },
+    {
+      "bone": "flag",
+      "geo": {
+        "type": "rbox",
+        "w": 0.16,
+        "h": 0.1,
+        "d": 0.01,
+        "r": 0.01,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0.09,
+        0.3,
+        0
+      ],
+      "mat": "accent",
+      "outline": false,
+      "asym": true
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.03,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        -0.1,
+        0.4,
+        0.1
+      ],
+      "mat": "paper",
+      "outline": false,
+      "asym": true
+    }
   ],
   "eyes": [
-    {"bone": "head", "at": [-0.085, 0.27, 0.19], "r": 0.05, "pupil": 0.05, "shape": "round", "glass": false},
-    {"bone": "head", "at": [0.085, 0.27, 0.19], "r": 0.05, "pupil": 0.05, "shape": "round", "glass": false},
-    {"bone": "head", "at": [0, 0.19, 0.2], "r": 0.05, "pupil": 0.06, "shape": "arc", "glass": false}
+    {
+      "bone": "face",
+      "at": [-0.12, 0.27, 0.1134],
+      "r": 0.075,
+      "pupil": 0.065,
+      "shape": "round",
+      "glass": false
+    },
+    {
+      "bone": "face",
+      "at": [0.12, 0.27, 0.1134],
+      "r": 0.075,
+      "pupil": 0.065,
+      "shape": "round",
+      "glass": false
+    },
+    {
+      "bone": "face",
+      "at": [0, 0.2, 0.119],
+      "r": 0.05,
+      "pupil": 0.06,
+      "shape": "arc",
+      "glass": false
+    }
   ],
   "spin": [],
   "feet": [],
@@ -273,7 +684,7 @@
     },
     "astro.upside": {
       "loop": false,
-      "dur": 3.0,
+      "dur": 3,
       "channels": [
         {
           "bone": "body",

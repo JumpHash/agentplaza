@@ -10,15 +10,15 @@
   "gait": { "speed": 1.2, "freq": 1.6, "bob": 0.14, "sway": 0.03, "lean": 0.06, "sideways": false },
   "bones": {
     "base": { "parent": "root", "at": [0, 0, 0] },
-    "body": { "parent": "root", "at": [0, 0.3, 0] },
-    "head": { "parent": "body", "at": [0, 0.34, 0] },
+    "body": { "parent": "root", "at": [0, 0.315, 0] },
+    "head": { "parent": "body", "at": [0, 0.36, 0] },
     "nose": { "parent": "head", "at": [0, 0.02, 0.3] },
     "earL": { "parent": "head", "at": [-0.15, 0.27, 0] },
     "earR": { "parent": "head", "at": [0.15, 0.27, 0] },
-    "armL": { "parent": "body", "at": [-0.3, 0, 0.1] },
-    "gripL": { "parent": "armL", "at": [0, -0.25, 0.03] },
-    "armR": { "parent": "body", "at": [0.3, 0, 0.1] },
-    "gripR": { "parent": "armR", "at": [0, -0.25, 0.03] },
+    "armL": { "parent": "body", "at": [-0.25, 0.2, 0.1] },
+    "gripL": { "parent": "armL", "at": [0, -0.24, 0.31] },
+    "armR": { "parent": "body", "at": [0.25, 0.2, 0.1] },
+    "gripR": { "parent": "armR", "at": [0, -0.24, 0.31] },
     "carry": { "parent": "body", "at": [0, -0.06, 0.36] }
   },
   "parts": [
@@ -36,17 +36,17 @@
     { "bone": "earR", "geo": { "type": "rbox", "w": 0.12, "h": 0.46, "d": 0.05, "r": 0.05, "seg": [3] }, "at": [0, 0.23, 0], "rot": [0, 0, 8], "mat": "shell", "outline": false },
     { "bone": "earR", "geo": { "type": "rbox", "w": 0.06, "h": 0.38, "d": 0.06, "r": 0.025, "seg": [2] }, "at": [0, 0.23, 0.03], "rot": [0, 0, 8], "mat": "paper", "outline": false },
 
-    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.22, "seg": [10] }, "at": [0, -0.11, 0], "mat": "shell", "outline": false },
-    { "bone": "armL", "geo": { "type": "sphere", "r": 0.065, "seg": [12, 10] }, "at": [0, -0.24, 0.02], "mat": "paper", "outline": false },
-    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.22, "seg": [10] }, "at": [0, -0.11, 0], "mat": "shell", "outline": false },
-    { "bone": "armR", "geo": { "type": "sphere", "r": 0.065, "seg": [12, 10] }, "at": [0, -0.24, 0.02], "mat": "paper", "outline": false },
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.392, "seg": [10] }, "at": [0, -0.12, 0.155], "rot": [-52, 0, 0], "mat": "shell", "outline": false },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.065, "seg": [12, 10] }, "at": [0, -0.24, 0.31], "mat": "paper", "outline": false },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.392, "seg": [10] }, "at": [0, -0.12, 0.155], "rot": [-52, 0, 0], "mat": "shell", "outline": false },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.065, "seg": [12, 10] }, "at": [0, -0.24, 0.31], "mat": "paper", "outline": false },
 
     { "bone": "base", "geo": { "type": "rbox", "w": 0.17, "h": 0.08, "d": 0.26, "r": 0.04, "seg": [2] }, "at": [-0.14, 0.04, 0.06], "mat": "shell2", "outline": false },
     { "bone": "base", "geo": { "type": "rbox", "w": 0.17, "h": 0.08, "d": 0.26, "r": 0.04, "seg": [2] }, "at": [0.14, 0.04, 0.06], "mat": "shell2", "outline": false }
   ],
   "eyes": [
-    { "bone": "head", "at": [-0.14, 0.14, 0.235], "r": 0.095, "pupil": 0.06, "shape": "round", "stretch": 1.1 },
-    { "bone": "head", "at": [0.14, 0.14, 0.235], "r": 0.095, "pupil": 0.06, "shape": "round", "stretch": 1.1 }
+    { "bone": "head", "at": [-0.11, 0.14, 0.2654], "r": 0.095, "pupil": 0.06, "shape": "round", "stretch": 1.1 },
+    { "bone": "head", "at": [0.11, 0.14, 0.2654], "r": 0.095, "pupil": 0.06, "shape": "round", "stretch": 1.1 }
   ],
   "spin": [],
   "feet": [],

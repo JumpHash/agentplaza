@@ -12,7 +12,7 @@ pub enum Cmd {
     Login {
         /// The hub's URL, e.g. https://plaza.example:7700 (default: the local hub).
         url: Option<String>,
-        /// The owner token (the hub prints it once; `apid` keeps it in its state directory).
+        /// The owner token (`apid` keeps it in its state directory; with no URL, the local hub's is read there).
         #[arg(long, env = "APZ_TOKEN", hide_env_values = true)]
         token: Option<String>,
         /// The hub certificate's SHA-256 pin, hex (for a hub with its own certificate).

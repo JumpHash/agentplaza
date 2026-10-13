@@ -25,6 +25,10 @@ pub struct Config {
     pub public_url: String,
     /// Serve HTTPS with the hub's certificate (implied off loopback).
     pub tls: bool,
+    /// The MCP egress proxy's port on 127.0.0.1 (and the bridge gateway where the engine has one).
+    pub mcp_proxy_port: u16,
+    /// The vault's key file (`--vault-key`; default: the config directory's `vault.key`).
+    pub vault_key: PathBuf,
 }
 
 impl Config {
@@ -44,6 +48,8 @@ impl Config {
             bind: std::net::Ipv4Addr::LOCALHOST.into(),
             public_url: String::new(),
             tls: false,
+            mcp_proxy_port: crate::mcp::egress::DEFAULT_PORT,
+            vault_key: apz_os::dirs::config().join("vault.key"),
         };
         // Installed beside the binary: the flags below still override these.
         if let Some(share) = apz_os::dirs::resources() {
@@ -74,6 +80,7 @@ impl Config {
                 "--port" => config.port = port(value()?)?,
                 "--noded-port" => config.noded_port = port(value()?)?,
                 "--hub-port" => config.hub_port = port(value()?)?,
+                "--mcp-proxy-port" => config.mcp_proxy_port = port(value()?)?,
                 "--state-dir" => config.state_dir = PathBuf::from(value()?),
                 "--roles" => config.roles = PathBuf::from(value()?),
                 "--prompts" => config.prompts = PathBuf::from(value()?),
@@ -82,6 +89,7 @@ impl Config {
                 "--public-url" => public_url = Some(value()?),
                 "--tls" => tls = true,
                 "--env-file" => config.env_file = Some(PathBuf::from(value()?)),
+                "--vault-key" => config.vault_key = PathBuf::from(value()?),
                 other => return Err(format!("unknown argument: {other}")),
             }
         }
@@ -138,8 +146,12 @@ pub struct App {
     pub looks: crate::looks::Looks,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
     pub foundry: crate::foundry::store::Foundry,
+    /// MCP servers the owner added: their config, their tool listings and their running instances.
+    pub mcp: crate::mcp::Mcp,
     /// The hub's identity and the owner's access (see hub_auth).
     pub hub_auth: crate::hub_auth::Hub,
+    /// The secret vault (docs/design/vault.md): sealed or unsealed, encrypted at rest.
+    pub vault: Arc<crate::vault::Store>,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
@@ -169,28 +181,34 @@ impl App {
         // Parse the species index now: a broken index stops the hub here, not at the first hello.
         crate::looks::catalog();
         let env = config.env_file.as_deref().map(read_env_file).unwrap_or_default();
+        // The vault's startup reads the env file's variables after the providers take their copy.
+        let vault_env = env.clone();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
         let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
         let hub_auth = crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         let foundry_dir = config.state_dir.join("foundry");
+        let db = Arc::new(crate::db::Db::connect(&env));
+        let vault_db = db.enabled().then(|| Arc::clone(&db));
+        let vault = Arc::new(crate::vault::Store::open(&config.state_dir, &config.vault_key, vault_db));
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
             laws: attached_laws(&config.state_dir),
-            connectors: crate::connectors::Store::load(&config.state_dir, env.clone())?,
+            connectors: crate::connectors::Store::load(&config.state_dir, Arc::clone(&vault))?,
             approvals: crate::approvals::Store::load(&config.state_dir),
             library: crate::library::Store::load(&config.state_dir),
-            deliverables: crate::deliverables::Store::load(&config.state_dir, &env)?,
+            deliverables: crate::deliverables::Store::load(&config.state_dir, &env, Arc::clone(&vault))?,
             society: crate::society::Society::default(),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
             harness: crate::harness_control::Store::load(&config.state_dir),
             forge: crate::git::Forge::load(&config.state_dir, &env),
-            db: Arc::new(crate::db::Db::connect(&env)),
+            db: Arc::clone(&db),
+            vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
             custom_roles: crate::roles_custom::Store::default(),
             agent_proposals: crate::agent_proposals::Store::default(),
@@ -199,9 +217,10 @@ impl App {
             usage: crate::usage::Ledger::default(),
             looks: crate::looks::Looks::open(config.state_dir.join("looks.json")),
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
+            mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
             hub_auth,
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
-            providers: providers::Store::load(&config.state_dir, env)?,
+            providers: providers::Store::load(&config.state_dir, Arc::clone(&vault))?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             names: agents::Names::load(config.state_dir.join("names.json")),
             spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
@@ -243,6 +262,10 @@ impl App {
         }
         // Postgres is the state of record: restore from it, then keep it current.
         crate::db::restore_all(&app);
+        // The vault starts after the database is read: it initialises, unseals with its key file, or stays sealed.
+        app.vault.boot(apz_plaza::now_ms()).map_err(|err| std::io::Error::other(err.message()))?;
+        app.vault.startup(&app, app.config.env_file.as_deref(), &vault_env, apz_plaza::now_ms());
+        crate::vault::spawn_saver(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
         app.models.revive(&app.agents, &app.looks);
         crate::db::spawn_writer(Arc::clone(&app));
@@ -306,6 +329,7 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
 fn spawn_component_savers(app: Arc<App>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(3));
+        crate::mcp::tick(&app);
         if !app.db.is_held("foundry") {
             if let Err(err) = app.foundry.save() {
                 eprintln!("apid: cannot save the foundry: {err}");
@@ -358,5 +382,23 @@ impl App {
     /// This app as a weak handle (for a socket's thread; it reads the live state through it).
     pub fn handle(&self) -> std::sync::Weak<App> {
         self.me.get().cloned().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_env_file_is_read_without_touching_the_process_environment() {
+        let dir = std::env::temp_dir().join(format!("apid-envfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("keys.env");
+        std::fs::write(&file, "ENVFILE_KEY_4417=SENTINEL-ENVFILE-4417\n").unwrap();
+        let map = read_env_file(&file);
+        assert_eq!(map.get("ENVFILE_KEY_4417").map(String::as_str), Some("SENTINEL-ENVFILE-4417"));
+        assert!(std::env::var("ENVFILE_KEY_4417").is_err(), "the loader must not set the process environment");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

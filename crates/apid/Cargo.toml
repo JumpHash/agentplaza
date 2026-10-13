@@ -20,6 +20,14 @@ blake2.workspace = true
 apz-trust = { path = "../apz-trust" }
 postgres = { version = "0.19.14", features = ["with-serde_json-1"] }
 apz-os = { path = "../apz-os" }
+# The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.
+chacha20poly1305.workspace = true
+argon2.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+zeroize.workspace = true
+secrecy.workspace = true
+base64.workspace = true
 # Model agents' ONNX inference: pure Rust, no native deps. The default `transformers` feature
 # (attention ops) is off: model cards describe plain feed-forward nets.
 tract-onnx = { version = "0.23.8", default-features = false }
@@ -28,6 +36,10 @@ tract-onnx = { version = "0.23.8", default-features = false }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 # Free disk space on every platform the hub runs on (already in the lock at this version).
 sysinfo = "0.33"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# prctl(PR_SET_DUMPABLE) so a crash leaves no core with the vault's keys in it (vault/process.rs).
+libc.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

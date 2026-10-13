@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_gateway::s3::S3;
@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::internal::authorized;
 use crate::providers::write_atomic;
 use crate::state::App;
+use crate::vault::OnBehalf;
 
 /// The longest name a deliverable may carry.
 const NAME_CAP: usize = 120;
@@ -74,8 +75,10 @@ pub struct Upload {
 pub struct Store {
     /// `<state-dir>/files`: the index, and the blobs when they are kept locally.
     dir: PathBuf,
-    /// Garage, when every `APZ_S3_*` setting is present.
-    s3: Option<S3>,
+    /// Garage's address (endpoint, bucket, region), when configured. Its key pair is the vault's (`tool:garage`).
+    garage: Option<Garage>,
+    /// The vault the Garage keys are read from, per use (it may be sealed at load).
+    vault: Arc<crate::vault::Store>,
     index: Mutex<Vec<Deliverable>>,
 }
 
@@ -131,7 +134,7 @@ impl Store {
 
     /// Loads `<state-dir>/files/index.json` (a missing file is an empty library) and picks
     /// the store: Garage when the environment configures it, else a local folder.
-    pub fn load(state_dir: &Path, env: &BTreeMap<String, String>) -> io::Result<Self> {
+    pub fn load(state_dir: &Path, env: &BTreeMap<String, String>, vault: Arc<crate::vault::Store>) -> io::Result<Self> {
         let dir = state_dir.join("files");
         std::fs::create_dir_all(&dir)?;
         let index: Vec<Deliverable> = match std::fs::read(dir.join(INDEX)) {
@@ -140,13 +143,16 @@ impl Store {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),
         };
-        Ok(Self { dir, s3: s3_from(env), index: Mutex::new(index) })
+        for name in GARAGE_KEYS {
+            vault.register_consumer(GARAGE_BINDING, "Garage object store", name);
+        }
+        Ok(Self { dir, garage: garage_from(env), vault, index: Mutex::new(index) })
     }
 
     /// Stores the bytes and indexes them. The bytes go first, so an index entry never names
     /// a missing object; a failed index save removes them again.
     pub fn add(&self, upload: Upload, body: &[u8]) -> Result<Deliverable, String> {
-        let store = if self.s3.is_some() { "garage" } else { "local" };
+        let store = if self.garage.is_some() && self.keys().is_some() { "garage" } else { "local" };
         let item = Deliverable {
             id: new_id(),
             name: upload.name,
@@ -204,10 +210,25 @@ impl Store {
         Ok(Some(item))
     }
 
-    fn garage(&self) -> Result<&S3, String> {
-        self.s3
-            .as_ref()
-            .ok_or_else(|| "the file is in Garage, which is not configured".to_string())
+    /// Garage's key pair from the vault (`tool:garage`), or the process environment when no entry of that name is
+    /// bound to it. Read per use.
+    fn keys(&self) -> Option<(String, String)> {
+        let access = self.vault.value_for(GARAGE_KEYS[0], GARAGE_BINDING, &OnBehalf::Hub)?;
+        let secret = self.vault.value_for(GARAGE_KEYS[1], GARAGE_BINDING, &OnBehalf::Hub)?;
+        Some((access, secret))
+    }
+
+    /// A client for Garage: the address from the settings, the keys from the vault.
+    fn garage(&self) -> Result<S3, String> {
+        let address = self.garage.as_ref().ok_or_else(|| "the file is in Garage, which is not configured".to_string())?;
+        let (access_key, secret_key) = self.keys().ok_or_else(|| "the Garage keys are not in the vault (or the vault is sealed)".to_string())?;
+        Ok(S3 {
+            endpoint: address.endpoint.clone(),
+            bucket: address.bucket.clone(),
+            region: address.region.clone(),
+            access_key,
+            secret_key,
+        })
     }
 
     fn save(&self, index: &[Deliverable]) -> io::Result<()> {
@@ -221,13 +242,11 @@ impl Store {
     }
 
     fn write_blob(&self, item: &Deliverable, body: &[u8]) -> Result<(), String> {
-        match &self.s3 {
-            Some(s3) => s3.put(&object_key(item), body, &item.content_type),
-            None => {
-                std::fs::create_dir_all(self.dir.join("blobs")).map_err(|e| e.to_string())?;
-                write_atomic(&self.blob_path(&item.id), body, 0o600).map_err(|e| e.to_string())
-            }
+        if item.store == "garage" {
+            return self.garage()?.put(&object_key(item), body, &item.content_type);
         }
+        std::fs::create_dir_all(self.dir.join("blobs")).map_err(|e| e.to_string())?;
+        write_atomic(&self.blob_path(&item.id), body, 0o600).map_err(|e| e.to_string())
     }
 
     fn delete_blob(&self, item: &Deliverable) -> Result<(), String> {
@@ -425,20 +444,29 @@ fn object_key(item: &Deliverable) -> String {
     format!("deliverables/{}/{}", item.id, item.name)
 }
 
-/// Garage, when every `APZ_S3_*` setting is present in the env file or the process.
-fn s3_from(env: &BTreeMap<String, String>) -> Option<S3> {
+/// Garage's keys are the vault's entries of these names, bound to `tool:garage`.
+const GARAGE_KEYS: [&str; 2] = ["APZ_S3_ACCESS_KEY", "APZ_S3_SECRET_KEY"];
+const GARAGE_BINDING: &str = "tool:garage";
+
+/// Garage's address: the settings that are not secrets.
+struct Garage {
+    endpoint: String,
+    bucket: String,
+    region: String,
+}
+
+/// Garage's address, when `APZ_S3_ENDPOINT` and `APZ_S3_BUCKET` are set (in the env file or the process).
+fn garage_from(env: &BTreeMap<String, String>) -> Option<Garage> {
     let get = |key: &str| {
         env.get(key)
             .cloned()
             .or_else(|| std::env::var(key).ok())
             .filter(|v| !v.is_empty())
     };
-    Some(S3 {
+    Some(Garage {
         endpoint: get("APZ_S3_ENDPOINT")?,
         bucket: get("APZ_S3_BUCKET")?,
         region: get("APZ_S3_REGION").unwrap_or_else(|| "garage".to_string()),
-        access_key: get("APZ_S3_ACCESS_KEY")?,
-        secret_key: get("APZ_S3_SECRET_KEY")?,
     })
 }
 
@@ -529,6 +557,13 @@ impl Store {
 mod tests {
     use super::*;
 
+    /// A booted vault in `dir`, as the hub has it at start.
+    fn vault_in(dir: &Path) -> Arc<crate::vault::Store> {
+        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        vault.boot(apz_plaza::now_ms()).expect("boot");
+        Arc::new(vault)
+    }
+
     #[test]
     fn query_values_are_percent_decoded() {
         assert_eq!(decode("Hello%20bottle+ad"), "Hello bottle ad");
@@ -540,9 +575,9 @@ mod tests {
     #[test]
     fn snapshot_restores_into_a_fresh_store() {
         let env = BTreeMap::new();
-        let a = Store::load(&scratch("snapshot"), &env).unwrap();
+        let a = Store::load(&scratch("snapshot"), &env, vault_in(&scratch("snapshot-vault"))).unwrap();
         a.add(upload("report.txt"), b"hello").unwrap();
-        let b = Store::load(&scratch("snapshot-restored"), &env).unwrap();
+        let b = Store::load(&scratch("snapshot-restored"), &env, vault_in(&scratch("snapshot-restored-vault"))).unwrap();
         b.restore(&a.snapshot()).unwrap();
         assert_eq!(b.snapshot(), a.snapshot());
         assert_eq!(b.list().len(), 1);
@@ -573,7 +608,7 @@ mod tests {
     fn put_list_get_delete_round_trip() {
         let dir = scratch("roundtrip");
         let env = BTreeMap::new();
-        let store = Store::load(&dir, &env).unwrap();
+        let store = Store::load(&dir, &env, vault_in(&dir)).unwrap();
         let body = b"hello deliverable".to_vec();
         let item = store.add(upload("report.txt"), &body).unwrap();
         assert!(item.id.starts_with('f') && item.id.len() == 13);
@@ -583,7 +618,7 @@ mod tests {
         assert_eq!(store.list().len(), 1);
         let found = store.find(&item.id).unwrap();
         assert_eq!(store.read_blob(&found).unwrap(), body);
-        let reloaded = Store::load(&dir, &env).unwrap();
+        let reloaded = Store::load(&dir, &env, vault_in(&dir)).unwrap();
         assert_eq!(reloaded.list()[0].id, item.id);
         assert!(reloaded.remove(&item.id).unwrap().is_some());
         assert!(reloaded.list().is_empty());
@@ -613,7 +648,7 @@ mod tests {
     #[test]
     fn private_files_are_readable_by_author_and_grantees_only() {
         let dir = scratch("access");
-        let store = Store::load(&dir, &BTreeMap::new()).unwrap();
+        let store = Store::load(&dir, &BTreeMap::new(), vault_in(&dir)).unwrap();
         let mut up = upload("secret.txt");
         up.author_cid = 1;
         up.audience = "private".to_string();

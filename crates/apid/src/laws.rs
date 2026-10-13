@@ -48,6 +48,10 @@ const INPUT_KEPT: usize = 16_000;
 const SAMPLES: usize = 50;
 /// The id a dry run compiles its source under; never stored.
 const DRY_RUN_ID: &str = "DRY";
+/// The tier of the constitution: its laws are switched off only with a typed confirmation.
+pub const CONSTITUTION: &str = "constitution";
+/// Changes to constitutional laws kept in the history; the oldest go first.
+const HISTORY_KEPT: usize = 500;
 /// The author of every owner rule and override: the owner is the only one who may write them.
 pub const OWNER: &str = "owner";
 
@@ -138,12 +142,30 @@ pub struct Override {
     pub at_ms: u64,
 }
 
+/// One change of state of a constitutional law, kept in the rules' history: who made it, when, and
+/// whether the owner confirmed it by typing the law's id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LawChange {
+    pub law: String,
+    pub title: String,
+    pub tier: String,
+    /// True when the change switched the law off; false when it switched it back on.
+    pub disabled: bool,
+    pub by: String,
+    pub reason: String,
+    pub at_ms: u64,
+    /// True when the switch-off carried the typed confirmation (`confirm` equal to the law's id).
+    pub confirmed: bool,
+}
+
 /// The owner's rules and overrides: the state that is persisted (the `rules` component).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuleSet {
     pub rules: Vec<OwnerRule>,
     pub overrides: Vec<Override>,
+    /// The changes made to constitutional laws, oldest first; the newest [`HISTORY_KEPT`] are kept.
+    pub history: Vec<LawChange>,
 }
 
 /// One compile error: the file it is in, where, and what.
@@ -166,6 +188,8 @@ pub enum Failure {
     NotFound(String),
     /// The change is not allowed, and why.
     Invalid(String),
+    /// A constitutional law was not switched off with its typed confirmation (409).
+    Unconfirmed(String),
 }
 
 impl Failure {
@@ -174,7 +198,7 @@ impl Failure {
         match self {
             Failure::Diagnostics(list) => list.iter().map(|d| format!("{}:{}: {}", d.line, d.column, d.message)).collect::<Vec<_>>().join("; "),
             Failure::NotFound(what) => format!("not found: {what}"),
-            Failure::Invalid(why) => why.clone(),
+            Failure::Invalid(why) | Failure::Unconfirmed(why) => why.clone(),
         }
     }
 }
@@ -543,14 +567,24 @@ impl Laws {
     }
 
     /// Disables a built-in statute (with the owner's reason, recorded) or enables it again.
-    pub fn set_override(&self, law: &str, disabled: bool, reason: &str, now_ms: u64) -> Result<Option<Override>, Failure> {
+    ///
+    /// A constitutional law is switched off only when `confirm` is its exact id; otherwise the
+    /// change is refused with [`Failure::Unconfirmed`]. Switching it on needs no confirmation. Every
+    /// change of state of a constitutional law is kept in the history, with who made it and when.
+    pub fn set_override(&self, law: &str, disabled: bool, reason: &str, confirm: &str, now_ms: u64) -> Result<Option<Override>, Failure> {
         let mut slot = lock(&self.rules);
-        match self.live().catalog.iter().find(|info| info.id == law) {
+        let info = match self.live().catalog.iter().find(|info| info.id == law) {
             None => return Err(Failure::NotFound(format!("law {law}"))),
             Some(info) if info.origin != "built-in" => {
                 return Err(Failure::Invalid(format!("{law} is an owner rule; disable its rule instead")));
             }
-            Some(_) => {}
+            Some(info) => info.clone(),
+        };
+        let constitutional = info.tier == CONSTITUTION;
+        if disabled && constitutional && confirm != law {
+            let asked = format!("{law} is a constitutional law; to switch it off, send confirm: \"{law}\"");
+            let why = if confirm.is_empty() { asked } else { format!("confirm \"{confirm}\" does not match. {asked}") };
+            return Err(Failure::Unconfirmed(why));
         }
         if disabled && reason.trim().is_empty() {
             return Err(Failure::Invalid("say why the statute is disabled".into()));
@@ -560,8 +594,28 @@ impl Laws {
         let made = disabled.then(|| Override { law: law.to_string(), disabled_by: OWNER.to_string(), reason: reason.trim().to_string(), at_ms: now_ms });
         next.overrides.extend(made.clone());
         let compiled = compile(&self.base, &next)?;
+        // A change of state: enabled and now disabled, or disabled and now enabled.
+        if constitutional && info.enabled == disabled {
+            next.history.push(LawChange {
+                law: law.to_string(),
+                title: info.title.clone(),
+                tier: info.tier.clone(),
+                disabled,
+                by: OWNER.to_string(),
+                reason: reason.trim().to_string(),
+                at_ms: now_ms,
+                confirmed: disabled,
+            });
+            let excess = next.history.len().saturating_sub(HISTORY_KEPT);
+            next.history.drain(..excess);
+        }
         self.commit(&mut slot, next, compiled);
         Ok(made)
+    }
+
+    /// The constitutional laws that are switched off now, by id, in catalog order.
+    pub fn constitutional_off(&self) -> Vec<String> {
+        constitutional_off(&self.live().catalog)
     }
 
     /// Compiles `source` as an enabled rule set on top of the owner's rules, without applying it, and
@@ -1014,6 +1068,20 @@ fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, role: &str, store
             let amount = input.get("amount").and_then(Json::as_i64).unwrap_or(0);
             vec![("payment.send", town, Context::from([("amount".to_string(), Value::int(amount.into()))]))]
         }
+        // An MCP call is `mcp.call` on its server, with the tool and the risk class the owner's rules may limit.
+        t if t.starts_with(crate::mcp::PREFIX) => match crate::mcp::law_operation(t) {
+            Some((server, tool, risk)) => {
+                let resource = Entity { ty: "McpServer".into(), id: server.clone() };
+                store.insert(&resource, BTreeMap::new());
+                let context = Context::from([
+                    ("server".to_string(), Value::str(&server)),
+                    ("tool".to_string(), Value::str(&tool)),
+                    ("risk".to_string(), Value::str(risk)),
+                ]);
+                vec![("mcp.call", resource, context)]
+            }
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }
@@ -1037,6 +1105,8 @@ fn memory_resource(agent_cid: &str, store: &mut EntityStore) -> Entity {
 fn tool_kind(tool: &str) -> &'static str {
     if crate::connectors::by_tool(tool).is_some() {
         "connector"
+    } else if tool.starts_with(crate::mcp::PREFIX) {
+        "mcp"
     } else if tool.starts_with(crate::library::PREFIX) {
         "library"
     } else if runs(tool) == Some(Runs::Host) {
@@ -1057,6 +1127,7 @@ pub(crate) fn risk_class(tool: &str) -> &'static str {
         | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => crate::connectors::risk_of(t).unwrap_or("write"),
+        t if crate::mcp::risk_of(t).is_some() => crate::mcp::risk_of(t).unwrap_or("write"),
         _ => "write",
     }
 }
@@ -1111,6 +1182,11 @@ fn law_info(law: &Law, file: &str, sources: &SourceMap) -> LawInfo {
         rule_id: String::new(),
         overridden: None,
     }
+}
+
+/// The ids of the constitutional laws that are switched off, in catalog order.
+pub fn constitutional_off(catalog: &[LawInfo]) -> Vec<String> {
+    catalog.iter().filter(|info| info.tier == CONSTITUTION && !info.enabled).map(|info| info.id.clone()).collect()
 }
 
 /// The tier a law gets from its file when it names none.
@@ -1579,20 +1655,20 @@ mod owner_rules_tests {
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
         let forbids = |laws: &Laws| laws.check("7", "builder", "plaza_send_message", &input).forbid;
         assert!(forbids(&laws).iter().any(|id| id == "C-002b"));
-        assert!(matches!(laws.set_override("C-002b", true, "  ", now()), Err(Failure::Invalid(_))), "a reason is required");
-        let made = laws.set_override("C-002b", true, "testing the override", now()).unwrap().expect("disabled");
+        assert!(matches!(laws.set_override("C-002b", true, "  ", "C-002b", now()), Err(Failure::Invalid(_))), "a reason is required");
+        let made = laws.set_override("C-002b", true, "testing the override", "C-002b", now()).unwrap().expect("disabled");
         assert_eq!(made.disabled_by, OWNER);
         assert_eq!(made.reason, "testing the override");
         assert!(!forbids(&laws).iter().any(|id| id == "C-002b"));
         let info = laws.catalog().into_iter().find(|info| info.id == "C-002b").unwrap();
         assert!(!info.enabled && info.overridden.is_some());
         assert_eq!(laws.rules().overrides.len(), 1);
-        laws.set_override("C-002b", false, "", now()).unwrap();
+        laws.set_override("C-002b", false, "", "", now()).unwrap();
         assert!(forbids(&laws).iter().any(|id| id == "C-002b"));
         // Only built-in statutes take an override; an owner rule is disabled as a rule.
         laws.add_rule("No reading files", NO_READS, true, now()).unwrap();
-        assert!(matches!(laws.set_override("O-001", true, "why", now()), Err(Failure::Invalid(_))));
-        assert!(matches!(laws.set_override("Z-999", true, "why", now()), Err(Failure::NotFound(_))));
+        assert!(matches!(laws.set_override("O-001", true, "why", "", now()), Err(Failure::Invalid(_))));
+        assert!(matches!(laws.set_override("Z-999", true, "why", "", now()), Err(Failure::NotFound(_))));
     }
 
     #[test]
@@ -1618,7 +1694,7 @@ mod owner_rules_tests {
         let dir = scratch("persist");
         let laws = Laws::load(&dir);
         laws.add_rule("No reading files", NO_READS, true, now()).unwrap();
-        laws.set_override("C-002b", true, "testing", now()).unwrap();
+        laws.set_override("C-002b", true, "testing", "C-002b", now()).unwrap();
         let before = laws.rules();
         let again = Laws::load(&dir);
         assert_eq!(again.rules(), before);
@@ -1645,5 +1721,61 @@ mod owner_rules_tests {
         assert_eq!(run.would_refuse[0]["tool"], "read_file");
         assert!(laws.rules().rules.is_empty());
         assert!(matches!(laws.dry_run("law \"O-902\" \"x\" {", None), Err(Failure::Diagnostics(_))));
+    }
+
+    #[test]
+    fn a_constitutional_law_switches_off_only_with_its_typed_id_and_its_changes_are_kept() {
+        let dir = scratch("constitution");
+        let laws = Laws::load(&dir);
+        let law = "C-002b";
+        let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
+        let forbids = |laws: &Laws| laws.check("7", "builder", "plaza_send_message", &input).forbid;
+        let asked = format!("{law} is a constitutional law; to switch it off, send confirm: \"{law}\"");
+        // Without the typed id, or with another one, the switch-off is refused and nothing is recorded.
+        match laws.set_override(law, true, "testing", "", now()) {
+            Err(Failure::Unconfirmed(why)) => assert_eq!(why, asked),
+            other => panic!("expected Unconfirmed, got {other:?}"),
+        }
+        match laws.set_override(law, true, "testing", "C-002", now()) {
+            Err(Failure::Unconfirmed(why)) => assert_eq!(why, format!("confirm \"C-002\" does not match. {asked}")),
+            other => panic!("expected Unconfirmed, got {other:?}"),
+        }
+        assert!(forbids(&laws).iter().any(|id| id == law));
+        assert!(laws.constitutional_off().is_empty());
+        assert!(laws.rules().history.is_empty());
+        // With the id, the law is off, listed as off, and the change is on record.
+        let made = laws.set_override(law, true, "testing", law, 1_000).unwrap().expect("disabled");
+        assert_eq!(made.disabled_by, OWNER);
+        assert!(!forbids(&laws).iter().any(|id| id == law));
+        assert_eq!(laws.constitutional_off(), vec![law.to_string()]);
+        let title = laws.catalog().into_iter().find(|info| info.id == law).unwrap().title;
+        let history = laws.rules().history;
+        assert_eq!(
+            history,
+            vec![LawChange {
+                law: law.into(),
+                title: title.clone(),
+                tier: CONSTITUTION.into(),
+                disabled: true,
+                by: OWNER.into(),
+                reason: "testing".into(),
+                at_ms: 1_000,
+                confirmed: true,
+            }]
+        );
+        // Switching it back on needs no confirmation, and is recorded as well.
+        laws.set_override(law, false, "", "", 2_000).unwrap();
+        assert!(forbids(&laws).iter().any(|id| id == law));
+        assert!(laws.constitutional_off().is_empty());
+        let history = laws.rules().history;
+        assert_eq!(history.len(), 2);
+        assert!(!history[1].disabled && !history[1].confirmed && history[1].at_ms == 2_000 && history[1].title == title);
+        // The history is part of the rules: it survives a restart.
+        assert_eq!(Laws::load(&dir).rules().history, history);
+        // A statute of another tier is switched off with no confirmation and no entry in the history.
+        laws.set_override("S-013d", true, "researchers may commit", "", 3_000).unwrap();
+        assert!(laws.rules().overrides.iter().any(|o| o.law == "S-013d"));
+        assert!(laws.constitutional_off().is_empty());
+        assert_eq!(laws.rules().history.len(), 2);
     }
 }

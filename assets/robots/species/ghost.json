@@ -4,7 +4,7 @@
   "name": "Boo",
   "blurb": "A sheet with a domed head, a wavy hem of little bobbles, sheet-nub arms and big eyes. It floats, and plays peek-a-boo.",
   "accent": "#ffb8d9",
-  "height": 1.0,
+  "height": 1,
   "label_top": 1.15,
   "locomotion": "float",
   "gait": {
@@ -18,35 +18,67 @@
   "bones": {
     "base": {
       "parent": "root",
-      "at": [0, 0, 0]
+      "at": [
+        0,
+        0,
+        0
+      ]
     },
     "body": {
       "parent": "root",
-      "at": [0, 0.39, 0]
+      "at": [
+        0,
+        0.42,
+        0
+      ]
     },
     "head": {
       "parent": "body",
-      "at": [0, 0.3, 0]
+      "at": [
+        0,
+        0.3,
+        0
+      ]
     },
     "armL": {
       "parent": "body",
-      "at": [-0.33, 0.1, 0]
+      "at": [
+        -0.3,
+        0.1,
+        0
+      ]
     },
     "armR": {
       "parent": "body",
-      "at": [0.33, 0.1, 0]
+      "at": [
+        0.3,
+        0.1,
+        0
+      ]
     },
     "gripL": {
       "parent": "armL",
-      "at": [-0.17, 0, 0.03]
+      "at": [
+        -0.17,
+        0,
+        0.5
+      ]
     },
     "gripR": {
       "parent": "armR",
-      "at": [0.17, 0, 0.03]
+      "at": [
+        0.17,
+        0,
+        0.5
+      ]
     },
     "carry": {
       "parent": "body",
-      "at": [0, -0.1, 0.5]
+      "at": [
+        0,
+        -0.1,
+        0.5
+      ]
     }
   },
   "parts": [
@@ -54,112 +86,287 @@
       "bone": "body",
       "geo": {
         "type": "cyl",
-        "rt": 0.3,
+        "rt": 0.26,
         "rb": 0.38,
         "h": 0.6,
-        "seg": [24]
+        "seg": [
+          24
+        ]
       },
-      "at": [0, 0, 0],
+      "at": [
+        0,
+        0,
+        0
+      ],
       "mat": "shell"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [0.38, -0.3, 0],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [0.2687, -0.26, 0.2687],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [0, -0.3, 0.38],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [-0.2687, -0.26, 0.2687],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [-0.38, -0.3, 0],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [-0.2687, -0.26, -0.2687],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [0, -0.3, -0.38],
-      "mat": "accent"
-    },
-    {
-      "bone": "body",
-      "geo": {
-        "type": "sphere",
-        "r": 0.085,
-        "seg": [10, 8]
-      },
-      "at": [0.2687, -0.26, -0.2687],
-      "mat": "accent"
     },
     {
       "bone": "head",
       "geo": {
         "type": "sphere",
         "r": 0.3,
-        "seg": [24, 14],
-        "half": "top"
+        "seg": [
+          24,
+          14
+        ]
       },
       "mat": "shell"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        0,
+        -0.3,
+        0.36
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        0.212,
+        -0.3,
+        0.291
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        0.342,
+        -0.3,
+        0.111
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        0.342,
+        -0.3,
+        -0.111
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        0.212,
+        -0.3,
+        -0.291
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        0,
+        -0.3,
+        -0.36
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        -0.212,
+        -0.3,
+        -0.291
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        -0.342,
+        -0.3,
+        -0.111
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        -0.342,
+        -0.3,
+        0.111
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ],
+        "half": "top"
+      },
+      "at": [
+        -0.212,
+        -0.3,
+        0.291
+      ],
+      "rot": [
+        180,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
     },
     {
       "bone": "armL",
       "geo": {
         "type": "sphere",
         "r": 0.095,
-        "seg": [12, 10]
+        "seg": [
+          12,
+          10
+        ]
       },
-      "at": [-0.09, 0, 0],
+      "at": [
+        -0.09,
+        0,
+        0
+      ],
       "mat": "shell"
     },
     {
@@ -167,25 +374,32 @@
       "geo": {
         "type": "sphere",
         "r": 0.095,
-        "seg": [12, 10]
+        "seg": [
+          12,
+          10
+        ]
       },
-      "at": [0.09, 0, 0],
+      "at": [
+        0.09,
+        0,
+        0
+      ],
       "mat": "shell"
     }
   ],
   "eyes": [
     {
       "bone": "head",
-      "at": [-0.12, 0.06, 0.28],
-      "r": 0.12,
-      "pupil": 0.1,
+      "at": [-0.11, 0.02, 0.3014],
+      "r": 0.1,
+      "pupil": 0.085,
       "shape": "round"
     },
     {
       "bone": "head",
-      "at": [0.12, 0.06, 0.28],
-      "r": 0.12,
-      "pupil": 0.1,
+      "at": [0.11, 0.02, 0.3014],
+      "r": 0.1,
+      "pupil": 0.085,
       "shape": "round"
     }
   ],

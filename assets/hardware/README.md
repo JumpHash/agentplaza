@@ -68,6 +68,9 @@ Each part has `geo` (or `use`, not both), and optionally:
 - `anim`: `spin` (`{axis, rps}`), `pulse` (`{period}`), `blink` (`{period, phase}`), `slide` (`{to, on: "enter"}`, `to` is the open position in the part's parent frame), `swing` (`{axis, to, on: "enter"}`, `to` in degrees). `slide` and `swing` follow the `open` state (0 to 1, eased).
 - `tag`: `status` (the LED takes the machine's status colour), `activity` (blinks while agents work), `fan` (spins while online, faster under load), `screen` (glows while online).
 - `label`: silkscreen text on the part's top: `{ "text": "CPU0", "size": 0.6, "color": "#e8eadf" }`.
+- `detail`: `1` (medium) or `2` (fine). The part is shown only while the camera is near: detail 1 within 1.6 model radii of the model's centre, detail 2 within 0.8. Use it for the small things (SMD parts, pins, screws, fins) so a far camera skips them. Set it on a group and every part under it inherits it.
+- `cutaway`: `true` on a tall part that hides what is behind it (a GPU card over the board). While it stands between the camera and the focus point (the board's atom, or the orbit target) it fades to a quarter opacity, and back.
+- `attached`: `true` for a solid that is fixed by something other than resting on what is under it: a fan on its shroud, a cable, a glow, a light. The grounding check (below) does not test its bottom. Use it only for those; a resting part that floats is moved.
 - `children`: parts transformed by this one.
 
 Geometry (`geo.type`): `box` (`w h d`), `rbox` (`w h d r`), `cyl` (`rt rb h`, optional `seg`), `cone` (`r h`), `sphere` (`r`), `torus` (`r tube`, optional `arc`; lies in the XY plane), `plane` (`w d`, flat, up), `ring` (`ri ro`, flat, up).
@@ -81,6 +84,18 @@ Geometry (`geo.type`): `box` (`w h d`), `rbox` (`w h d r`), `cyl` (`rt rb h`, op
 
 `palette.json` holds the named materials. Each entry is a material (`color` is required). The status
 LEDs (`led-ok`, `led-warn`, `led-off`, `led-crit`) must exist: the `status` tag uses them.
+
+## Grounding
+
+Every solid rests on what is directly under it. The rule, as the audit checks it (`groundAudit` in `apps/web/src/views/floor3d/ground.ts`):
+
+- The bottom of a solid is at the top of the highest solid under it, within 0.02, at its centre and four inset corners of its bottom face. A bottom more than 0.02 above that is **floating**.
+- A solid whose bottom lies inside a solid beneath it, overlapping by more than 0.02 on every axis, is **sinking**. So is a bottom below the ground (y = 0).
+- Exempt: parts with `"attached": true`, flat `plane` and `ring` decals (silkscreen, pads, labels), the copper traces, additive glows. None of these holds anything up.
+- Boards: a slot's `top` is the top of its `on` part plus the plate thickness, 0.2 (`PLATE` in `board-rooms.ts`). The plate's underside rests on the highest solid under it; where it stands over lower ground, a column (cells of 0.5 units) goes down to what is under. A slot top is never lower than its part's top.
+- Check it: `bash -c 'cd /mnt/fast/AgentPlaza/apps/web && npm test'` runs the grounding test for every board at 1, 4, 8 and 20 agents (and the workstation with two GPUs). The live board can be audited from the console with `window.__apzGroundAudit()` (the floor's board, its layout and its rooms).
+
+Every fix is at the source: move the part in its board file, or set `attached` where it really is attached. Do not lower a slot top to hide a plate.
 
 ## Validation
 
@@ -116,3 +131,15 @@ node <scratchpad>/preview/shot.mjs out.png "http://127.0.0.1:7700/#/hardware-lab
 ```
 
 The third argument is the wait in seconds before the capture.
+
+## Graphics cards
+
+`gpus/specs.json` holds one entry per reference card, module, baseboard, edge box or integrated GPU family (`{ "schema": 1, "specs": [...] }`). `gpus/match.json` maps what hardware detection reports to a card id (`{ "schema": 1, "rules": [...] }`). The types, the validator and the matcher are `apps/web/src/views/floor3d/gpus.ts`: `validateSpecs`, `validateMatch` and `matchCard(gpu, machineKind)`. The source research is `docs/design/gpu-cards.md`.
+
+Units are millimetres. A GPU model is built at 1 unit = 10 cm (the owner's brief), so 304 mm is 3.0 units. The rest of this folder uses one unit as about one robot's width, so GPU parts will not match that scale until the modeller resolves it (research doc, section 0).
+
+Each spec has `id`, `name`, `vendor` (`nvidia`, `amd`, `intel`, `apple`, or `generic` for the class fallbacks), `segment` (`consumer`, `workstation`, `datacenter`, `edge`, `laptop`, `integrated`), `form` (`pcie`, `sxm`, `oam`, `module`, `bga`, `integrated`), `reference` (true only for a manufacturer's own board), `size_mm` (`length`, `height`, `thickness`; `null` only for integrated parts), `slots`, `cooling` (`type`, `fans` with `d_mm`, `x_mm` from the bracket end and `side`, `fin_direction`), `shroud`, `backplate`, `power`, `bracket` (ports), `lighting`, plus `layout` (baseboards: `rows`, `cols`, `pitch_mm`), `die` (laptop BGA: die size and VRAM chips), `sources` and `approx`. `approx` lists the top-level fields that are estimates or unverified; a `null` size must be listed there. Fields the research could not confirm are left out or set generic, not invented.
+
+Match rules are tried in order and the first match wins: `vendor` (`*` for any), `name_regex` (case-insensitive), optional `machine_kind` (`server`, `workstation`, `laptop`, `edge`, `phone`), optional `memory_mib` (`min`, `max`), `card`, and `fallback: true` for the generic rules. Every specific rule must come before every fallback; `validateMatch` checks this and that each `card` is a spec.
+
+To add a card: add a spec, add its rule before the fallbacks, and add its name to the table in `apps/web/test/tests.ts` (the Graphics cards block). `npm test` in `apps/web` checks every spec, every rule, and that every GPU in the stand-in hub fixture matches a specific card.

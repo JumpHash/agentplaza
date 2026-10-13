@@ -7,7 +7,8 @@
 //!      [--dev-models] [--bind ADDR] [--public-url URL] [--tls]
 //! ```
 
-#![forbid(unsafe_code)]
+// The vault's prctl call is the one `unsafe` block, allowed in vault/process.rs only.
+#![deny(unsafe_code)]
 
 mod agents;
 mod approvals;
@@ -45,6 +46,7 @@ mod rules;
 mod control;
 mod lifecycle;
 mod looks;
+mod mcp;
 mod roles_custom;
 mod agent_proposals;
 mod nodes;
@@ -55,6 +57,7 @@ mod hub_auth;
 mod transcript;
 mod upstream;
 mod usage;
+mod vault;
 
 use std::process::ExitCode;
 
@@ -63,7 +66,7 @@ use state::{App, Config};
 const USAGE: &str = "\
 usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT]
             [--roles MANIFEST] [--prompts DIR] [--console DIR] [--env-file FILE]
-            [--dev-models]
+            [--dev-models] [--vault-key FILE]
 
   --port PORT        the API port on 127.0.0.1 (default 7700)
   --state-dir DIR    providers, settings, secrets, internal token
@@ -83,6 +86,9 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
   -V, --version      print the version and exit
   --env-file FILE    KEY=VALUE lines loaded into the environment at start
                      (default ~/.config/agentplaza/keys.env, if present)
+  --vault-key FILE   the vault's key file (default: the config directory's vault.key); created on
+                     first start, refused when group or world readable
+  --mcp-proxy-port PORT  the MCP egress proxy's port on 127.0.0.1 (default 19128)
   --dev-models       relax the model policy (mock and local models; tests only)";
 
 fn main() -> ExitCode {
@@ -102,6 +108,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    vault::process::harden();
     match App::start(config) {
         Ok(server) => {
             println!("apid: listening on http://127.0.0.1:{}", server.port());

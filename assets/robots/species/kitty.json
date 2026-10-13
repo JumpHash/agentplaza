@@ -12,10 +12,10 @@
     "base": { "parent": "root", "at": [0, 0, 0] },
     "body": { "parent": "root", "at": [0, 0, 0] },
     "head": { "parent": "body", "at": [0, 0.48, 0] },
-    "armL": { "parent": "body", "at": [-0.25, 0.4, 0] },
-    "armR": { "parent": "body", "at": [0.25, 0.4, 0] },
-    "gripL": { "parent": "armL", "at": [0, -0.16, 0] },
-    "gripR": { "parent": "armR", "at": [0, -0.16, 0] },
+    "armL": { "parent": "body", "at": [-0.25, 0.4, 0.14] },
+    "armR": { "parent": "body", "at": [0.25, 0.4, 0.14] },
+    "gripL": { "parent": "armL", "at": [0, -0.16, 0.22] },
+    "gripR": { "parent": "armR", "at": [0, -0.16, 0.22] },
     "carry": { "parent": "body", "at": [0, 0.36, 0.28] },
     "axleF": { "parent": "base", "at": [0, 0.085, -0.12] },
     "axleR": { "parent": "base", "at": [0, 0.085, 0.12] }
@@ -30,24 +30,24 @@
     { "bone": "body", "geo": { "type": "rbox", "w": 0.42, "h": 0.28, "d": 0.36, "r": 0.1, "seg": [4] }, "at": [0, 0.32, 0], "mat": "shell" },
     { "bone": "body", "geo": { "type": "cyl", "rt": 0.09, "rb": 0.09, "h": 0.001, "seg": [20] }, "rot": [90, 0, 0], "at": [0, 0.31, 0.185], "mat": "panel", "outline": false },
 
-    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.16, "seg": [12] }, "at": [0, -0.08, 0], "mat": "shell" },
-    { "bone": "armL", "geo": { "type": "sphere", "r": 0.065, "seg": [14, 10] }, "at": [0, -0.16, 0], "mat": "paper" },
-    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.16, "seg": [12] }, "at": [0, -0.08, 0], "mat": "shell" },
-    { "bone": "armR", "geo": { "type": "sphere", "r": 0.065, "seg": [14, 10] }, "at": [0, -0.16, 0], "mat": "paper" },
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.272, "seg": [12] }, "rot": [-54, 0, 0], "at": [0, -0.08, 0.11], "mat": "shell" },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.065, "seg": [14, 10] }, "at": [0, -0.16, 0.22], "mat": "paper" },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.272, "seg": [12] }, "rot": [-54, 0, 0], "at": [0, -0.08, 0.11], "mat": "shell" },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.065, "seg": [14, 10] }, "at": [0, -0.16, 0.22], "mat": "paper" },
 
     { "bone": "head", "geo": { "type": "rbox", "w": 0.68, "h": 0.46, "d": 0.5, "r": 0.17, "seg": [5] }, "at": [0, 0.23, 0], "mat": "paper" },
     { "bone": "head", "geo": { "type": "cone", "r": 0.1, "h": 0.17, "seg": [4] }, "rot": [0, 45, 17.1887], "at": [-0.2, 0.5, 0], "mat": "shell" },
-    { "bone": "head", "geo": { "type": "cone", "r": 0.1, "h": 0.17, "seg": [4] }, "rot": [0, 45, -17.1887], "at": [0.2, 0.5, 0], "mat": "shell" },
+    { "bone": "head", "geo": { "type": "cone", "r": 0.1, "h": 0.17, "seg": [4] }, "rot": [0, -45, -17.1887], "at": [0.2, 0.5, 0], "mat": "shell" },
     { "bone": "head", "geo": { "type": "cone", "r": 0.055, "h": 0.1, "seg": [4] }, "rot": [0, 45, 17.1887], "at": [-0.205, 0.49, 0.045], "mat": "panel" },
-    { "bone": "head", "geo": { "type": "cone", "r": 0.055, "h": 0.1, "seg": [4] }, "rot": [0, 45, -17.1887], "at": [0.205, 0.49, 0.045], "mat": "panel" },
+    { "bone": "head", "geo": { "type": "cone", "r": 0.055, "h": 0.1, "seg": [4] }, "rot": [0, -45, -17.1887], "at": [0.205, 0.49, 0.045], "mat": "panel" },
     { "bone": "head", "geo": { "type": "cyl", "rt": 0.04, "rb": 0.04, "h": 0.001, "seg": [16] }, "rot": [90, 0, 0], "at": [-0.25, 0.14, 0.255], "mat": "panel", "outline": false },
     { "bone": "head", "geo": { "type": "cyl", "rt": 0.04, "rb": 0.04, "h": 0.001, "seg": [16] }, "rot": [90, 0, 0], "at": [0.25, 0.14, 0.255], "mat": "panel", "outline": false },
     { "bone": "head", "geo": { "type": "torus", "r": 0.03, "tube": 0.01, "seg": [6, 12], "arc": 180 }, "rot": [0, 0, 180], "at": [-0.03, 0.15, 0.252], "mat": "ink" },
     { "bone": "head", "geo": { "type": "torus", "r": 0.03, "tube": 0.01, "seg": [6, 12], "arc": 180 }, "rot": [0, 0, 180], "at": [0.03, 0.15, 0.252], "mat": "ink" }
   ],
   "eyes": [
-    { "bone": "head", "at": [-0.14, 0.25, 0.252], "r": 0.1, "pupil": 0.065, "shape": "round" },
-    { "bone": "head", "at": [0.14, 0.25, 0.252], "r": 0.1, "pupil": 0.065, "shape": "round" }
+    { "bone": "head", "at": [-0.1394, 0.2848, 0.255], "r": 0.1, "pupil": 0.065, "shape": "round" },
+    { "bone": "head", "at": [0.1394, 0.2848, 0.255], "r": 0.1, "pupil": 0.065, "shape": "round" }
   ],
   "spin": [
     { "bone": "axleF", "axis": "x", "walk": 12, "idle": 0, "offline": 0 },

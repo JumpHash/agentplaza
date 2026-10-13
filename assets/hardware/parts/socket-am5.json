@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "kind": "socket-am5",
+  "view": "part",
+  "size": [12.6, 0.945, 12.6],
+  "parts": [
+    {"id": "frame-l", "geo": {"type": "rbox", "w": 1.89, "h": 0.525, "d": 12.6, "r": 0.168}, "at": [-5.355, 0.2625, 0.0], "mat": "nickel"},
+    {"id": "frame-r", "geo": {"type": "rbox", "w": 1.89, "h": 0.525, "d": 12.6, "r": 0.168}, "at": [5.355, 0.2625, 0.0], "mat": "nickel"},
+    {"id": "frame-f", "geo": {"type": "rbox", "w": 8.82, "h": 0.525, "d": 1.89, "r": 0.168}, "at": [0.0, 0.2625, 5.355], "mat": "nickel"},
+    {"id": "frame-b", "geo": {"type": "rbox", "w": 8.82, "h": 0.525, "d": 1.89, "r": 0.168}, "at": [0.0, 0.2625, -5.355], "mat": "nickel"},
+    {"id": "insert", "geo": {"type": "box", "w": 8.4, "h": 0.315, "d": 8.4}, "at": [0.0, 0.1575, 0.0], "mat": "plastic-matte"},
+    {"id": "contact", "geo": {"type": "box", "w": 0.126, "h": 0.105, "d": 0.126}, "at": [-1.89, 1.0075, -1.89], "mat": "gold", "outline": false, "repeat": {"count": 256, "step": [0.252, 0.0, 0.0], "wrap": 16, "row": [0.0, 0.0, 0.252]}, "detail": 2},
+    {"id": "latch-l", "geo": {"type": "box", "w": 0.315, "h": 0.252, "d": 10.5}, "at": [-6.1575, 0.546, 0.0], "mat": "nickel"},
+    {"id": "latch-r", "geo": {"type": "box", "w": 0.315, "h": 0.252, "d": 10.5}, "at": [6.1575, 0.546, 0.0], "mat": "nickel"},
+    {"id": "knob-l", "geo": {"type": "sphere", "r": 0.189}, "at": [-6.1425, 0.756, -4.62], "mat": "nickel"},
+    {"id": "knob-r", "geo": {"type": "sphere", "r": 0.189}, "at": [6.1425, 0.756, -4.62], "mat": "nickel"}
+  ]
+}

@@ -6,8 +6,8 @@
 //!   Secure, SameSite=Strict cookie, so the browser console's event stream and downloads carry it;
 //!   the hub keeps only each session's SHA-256, for [`SESSION_MS`]). The hub stores only the
 //!   owner token's SHA-256 (`apz_trust::owner`). The token is made on the hub's first
-//!   start (printed once, and written to `<state>/owner-token` mode 0600 for the desktop app to
-//!   read on this machine) and can be rotated.
+//!   start and written only to `<state>/owner-token` (mode 0600, read on this machine by the
+//!   desktop app and the CLI; never logged) and can be rotated.
 //! - Node routes are public but rate-limited (`/v1/nodes/join`) or signed by the node's key
 //!   (`/v1/nodes/{id}/…`, and `/internal/…` from a remote node) — `crate::nodes` checks those.
 //! - Off loopback the hub serves HTTPS with a self-signed certificate made on first start
@@ -50,7 +50,8 @@ pub struct Hub {
 
 impl Hub {
     /// Loads or creates `<state>/hub.json`, the owner token and the TLS certificate (made when
-    /// `tls` is true and none exists). Prints a new owner token once to stderr.
+    /// `tls` is true and none exists). A new owner token goes only to `<state>/owner-token` (mode 0600);
+    /// the log names that file and never the token.
     pub fn load(state_dir: &Path, public_url: &str, tls: bool) -> Result<Hub, String> {
         std::fs::create_dir_all(state_dir).map_err(|e| format!("{}: {e}", state_dir.display()))?;
         let path = state_dir.join(HUB_FILE);
@@ -63,8 +64,10 @@ impl Hub {
         if config.owner_token_sha256.is_empty() {
             let token = apz_trust::owner::new_token();
             config.owner_token_sha256 = hex_encode(&apz_trust::owner::hash(&token));
-            write_private(&owner_token_path(state_dir), token.as_bytes())?;
-            eprintln!("apid: the owner token (shown once; also in {}): {token}", owner_token_path(state_dir).display());
+            let path = owner_token_path(state_dir);
+            write_private(&path, token.as_bytes())?;
+            // The log names the file and a command that uses it. The token itself is never logged or printed.
+            eprintln!("apid: owner token created: {} (use it with `agentplaza hub login`)", path.display());
         }
         save(state_dir, &config)?;
         let cert_sha256 = if tls { certificate(state_dir, public_url) } else { [0; 32] };

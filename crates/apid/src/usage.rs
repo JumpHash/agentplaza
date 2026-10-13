@@ -416,6 +416,12 @@ fn shadow_on_cascade(app: &App, call: &Call) {
     });
 }
 
+/// The provider of a plaza model id: the part before the first `/` (`openrouter/x/y` is
+/// `openrouter`), or the whole id when it has no `/`.
+pub fn provider_of(model: &str) -> &str {
+    model.split_once('/').map_or(model, |(provider, _)| provider)
+}
+
 fn hit_rate(tokens: &Tokens) -> f64 {
     let seen = tokens.input + tokens.cache_read + tokens.cache_write;
     if seen == 0 {
@@ -463,7 +469,7 @@ pub fn meter(app: &App, cid: u64, model: &str, tokens: Tokens, cost_usd: Option<
         cid,
         role: app.agents.get(cid).map(|agent| agent.role).unwrap_or_default(),
         model: model.to_string(),
-        provider: model.split_once('/').map_or(model, |(provider, _)| provider).to_string(),
+        provider: provider_of(model).to_string(),
         tokens,
         cost_usd,
         est_usd: priced.map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens)),
@@ -557,6 +563,14 @@ fn param_u64(req: &Request, name: &str) -> Result<Option<u64>, Response> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn provider_of_is_the_part_before_the_first_slash() {
+        assert_eq!(provider_of("openrouter/anthropic/claude-x"), "openrouter");
+        assert_eq!(provider_of("opencode/claude-x"), "opencode");
+        assert_eq!(provider_of("anthropic/claude-x"), "anthropic");
+        assert_eq!(provider_of("bare-model"), "bare-model");
+    }
+
     /// The start of an hour, far enough from zero that windows can reach back.
     const H: u64 = 1_000 * HOUR_MS;
 
@@ -571,7 +585,7 @@ mod tests {
             cid,
             role: "worker".into(),
             model: model.into(),
-            provider: model.split_once('/').map_or(model, |(p, _)| p).into(),
+            provider: provider_of(model).into(),
             tokens,
             cost_usd,
             est_usd,

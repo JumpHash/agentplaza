@@ -92,8 +92,8 @@
 //! # What v0 narrows (stated, not hidden)
 //!
 //! * **The list is in this process.** Like the ledger, the treasury and the
-//!   agora, v0's social state is in memory and is lost with the daemon; the
-//!   schema's tables are a later slice. The posts, cursors, contacts and
+//!   agora, the social state is held in memory and apid snapshots it, so it
+//!   survives a restart; the schema's tables are a later slice. The posts, cursors, contacts and
 //!   conversations are all *derived* views over it — nothing here is a second
 //!   copy of a fact held elsewhere.
 //! * **A contact is readable while the daemon knows the agent.** `GET

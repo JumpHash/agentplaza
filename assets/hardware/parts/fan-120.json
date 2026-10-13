@@ -2,28 +2,21 @@
   "schema": 1,
   "kind": "fan-120",
   "view": "part",
-  "size": [12.0, 3.7, 12.0],
+  "size": [25.2, 5.25, 25.2],
   "parts": [
-    { "id": "frame", "geo": { "type": "rbox", "w": 12.0, "h": 2.6, "d": 12.0, "r": 0.9 }, "at": [0, 1.3, 0], "mat": "fan" },
-    { "id": "well", "geo": { "type": "cyl", "rt": 4.6, "rb": 4.6, "h": 0.05 }, "at": [0, 2.625, 0], "mat": "metal-dark" },
-    { "id": "ring", "geo": { "type": "ring", "ri": 4.6, "ro": 5.6 }, "at": [0, 2.62, 0], "mat": "fan-blade", "outline": false },
-    { "id": "screws-front", "repeat": { "count": 2, "step": [10.4, 0, 0] }, "geo": { "type": "cyl", "rt": 0.35, "rb": 0.35, "h": 0.3 }, "at": [-5.2, 2.75, 5.2], "mat": "solder" },
-    { "id": "screws-back", "repeat": { "count": 2, "step": [10.4, 0, 0] }, "geo": { "type": "cyl", "rt": 0.35, "rb": 0.35, "h": 0.3 }, "at": [-5.2, 2.75, -5.2], "mat": "solder" },
-    {
-      "id": "impeller",
-      "geo": { "type": "cyl", "rt": 1.1, "rb": 1.1, "h": 1.0 },
-      "at": [0, 3.2, 0],
-      "mat": "fan-blade",
-      "tag": "fan",
-      "children": [
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [2.7, 0, 0], "rot": [0, 0, 0], "mat": "fan-blade" },
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [1.68, 0, -2.11], "rot": [0, 51.43, 0], "mat": "fan-blade" },
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-0.6, 0, -2.63], "rot": [0, 102.86, 0], "mat": "fan-blade" },
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-2.43, 0, -1.17], "rot": [0, 154.29, 0], "mat": "fan-blade" },
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-2.43, 0, 1.17], "rot": [0, 205.71, 0], "mat": "fan-blade" },
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [-0.6, 0, 2.63], "rot": [0, 257.14, 0], "mat": "fan-blade" },
-        { "geo": { "type": "rbox", "w": 3.4, "h": 0.35, "d": 1.3, "r": 0.15 }, "at": [1.68, 0, 2.11], "rot": [0, 308.57, 0], "mat": "fan-blade" }
-      ]
-    }
+    {"id": "rail-n", "geo": {"type": "rbox", "w": 25.2, "h": 5.25, "d": 1.575, "r": 0.315}, "at": [0.0, 2.625, 11.8125], "mat": "fan"},
+    {"id": "rail-s", "geo": {"type": "rbox", "w": 25.2, "h": 5.25, "d": 1.575, "r": 0.315}, "at": [0.0, 2.625, -11.8125], "mat": "fan"},
+    {"id": "rail-e", "geo": {"type": "rbox", "w": 1.575, "h": 5.25, "d": 22.05, "r": 0.315}, "at": [11.8125, 2.625, 0.0], "mat": "fan"},
+    {"id": "rail-w", "geo": {"type": "rbox", "w": 1.575, "h": 5.25, "d": 22.05, "r": 0.315}, "at": [-11.8125, 2.625, 0.0], "mat": "fan"},
+    {"id": "mount-0", "geo": {"type": "rbox", "w": 2.52, "h": 0.63, "d": 2.52, "r": 0.21}, "at": [-11.13, 0.285, -11.13], "mat": "metal-dark"},
+    {"id": "mount-screw-0", "geo": {"type": "cyl", "rt": 0.294, "rb": 0.294, "h": 0.21, "seg": 12}, "at": [-11.13, 0.7375, -11.13], "mat": "nickel"},
+    {"id": "mount-1", "geo": {"type": "rbox", "w": 2.52, "h": 0.63, "d": 2.52, "r": 0.21}, "at": [11.13, 0.285, -11.13], "mat": "metal-dark"},
+    {"id": "mount-screw-1", "geo": {"type": "cyl", "rt": 0.294, "rb": 0.294, "h": 0.21, "seg": 12}, "at": [11.13, 0.7375, -11.13], "mat": "nickel"},
+    {"id": "mount-2", "geo": {"type": "rbox", "w": 2.52, "h": 0.63, "d": 2.52, "r": 0.21}, "at": [-11.13, 0.285, 11.13], "mat": "metal-dark"},
+    {"id": "mount-screw-2", "geo": {"type": "cyl", "rt": 0.294, "rb": 0.294, "h": 0.21, "seg": 12}, "at": [-11.13, 0.7375, 11.13], "mat": "nickel"},
+    {"id": "mount-3", "geo": {"type": "rbox", "w": 2.52, "h": 0.63, "d": 2.52, "r": 0.21}, "at": [11.13, 0.285, 11.13], "mat": "metal-dark"},
+    {"id": "mount-screw-3", "geo": {"type": "cyl", "rt": 0.294, "rb": 0.294, "h": 0.21, "seg": 12}, "at": [11.13, 0.7375, 11.13], "mat": "nickel"},
+    {"id": "grille", "geo": {"type": "box", "w": 21.84, "h": 0.252, "d": 0.252}, "at": [0.0, 5.124, -10.08], "mat": "fan", "repeat": {"count": 17, "step": [0.0, 0.0, 1.26]}, "detail": 1},
+    {"id": "rotor", "geo": {"type": "cyl", "rt": 1.995, "rb": 1.995, "h": 2.1, "seg": 24}, "at": [0.0, 2.52, 0.0], "mat": "fan", "tag": "fan", "children": [{"id": "hub-ring", "geo": {"type": "ring", "ri": 1.995, "ro": 2.52}, "at": [0.0, 1.0605, 0.0], "mat": "fan", "outline": false}, {"id": "blade-0", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [6.3, 0.0, -0.0], "rot": [0.0, 0.0, 0.0], "mat": "fan-blade", "detail": 1}, {"id": "blade-1", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [3.928, 0.0, -4.9255], "rot": [0.0, 51.42857142857143, 0.0], "mat": "fan-blade", "detail": 1}, {"id": "blade-2", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [-1.402, 0.0, -6.1421], "rot": [0.0, 102.85714285714286, 0.0], "mat": "fan-blade", "detail": 1}, {"id": "blade-3", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [-5.6761, 0.0, -2.7336], "rot": [0.0, 154.28571428571428, 0.0], "mat": "fan-blade", "detail": 1}, {"id": "blade-4", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [-5.6761, 0.0, 2.7336], "rot": [0.0, 205.71428571428572, 0.0], "mat": "fan-blade", "detail": 1}, {"id": "blade-5", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [-1.402, 0.0, 6.1421], "rot": [0.0, 257.14285714285717, 0.0], "mat": "fan-blade", "detail": 1}, {"id": "blade-6", "geo": {"type": "rbox", "w": 8.4, "h": 0.252, "d": 2.73, "r": 0.105}, "at": [3.928, 0.0, 4.9255], "rot": [0.0, 308.57142857142856, 0.0], "mat": "fan-blade", "detail": 1}]}
   ]
 }

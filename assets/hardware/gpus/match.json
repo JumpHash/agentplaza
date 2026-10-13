@@ -1,0 +1,495 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 5090",
+      "card": "nvidia-rtx5090-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 5080",
+      "card": "nvidia-rtx5080-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 5070 Ti",
+      "card": "nvidia-rtx5070ti-generic"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 5070",
+      "card": "nvidia-rtx5070-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 4090",
+      "card": "nvidia-rtx4090-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 4080",
+      "card": "nvidia-rtx4080-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 4070 Ti",
+      "card": "nvidia-rtx4070ti-generic"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 4070",
+      "card": "nvidia-rtx4070-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 3090",
+      "card": "nvidia-rtx3090-fe"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX PRO 6000.*Max-?Q",
+      "card": "nvidia-rtxpro6000-maxq"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX PRO 6000",
+      "card": "nvidia-rtxpro6000-ws"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 6000 Ada",
+      "card": "nvidia-rtx6000ada"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 4000 Ada",
+      "card": "nvidia-rtx4000ada"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX A6000",
+      "card": "nvidia-rtxa6000"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "RTX 3500 Ada",
+      "card": "nvidia-rtx3500ada-laptop"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "H100.*PCIe",
+      "card": "nvidia-h100-pcie"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "H100.*NVL",
+      "card": "nvidia-h100-nvl"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "H200.*NVL",
+      "card": "nvidia-h200-nvl"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "H100.*(SXM|HBM3)|H200.*(SXM|HBM3)",
+      "card": "nvidia-sxm5-module"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "H100|H200",
+      "machine_kind": "server",
+      "card": "nvidia-sxm5-module"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "H100",
+      "card": "nvidia-h100-pcie"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "HGX",
+      "card": "nvidia-hgx-8gpu-baseboard"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "L40S",
+      "card": "nvidia-l40s"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "L40(?!S)",
+      "card": "nvidia-l40"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bL4\\b",
+      "card": "nvidia-l4"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "A100.*PCIe",
+      "card": "nvidia-a100-pcie"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bA40\\b",
+      "card": "nvidia-a40"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bA10\\b",
+      "card": "nvidia-a10"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bA2\\b",
+      "card": "nvidia-a2"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bT4\\b",
+      "card": "nvidia-t4"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "AGX Orin",
+      "card": "nvidia-jetson-agx-orin-devkit"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "Orin Nano",
+      "card": "nvidia-jetson-orin-nano-super-devkit"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "Orin NX",
+      "card": "nvidia-jetson-orin-nx-super"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "AGX Thor|\\bThor\\b|T5000",
+      "card": "nvidia-jetson-agx-thor-devkit"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bIGX\\b",
+      "card": "nvidia-igx-orin"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "\\bGB10\\b",
+      "card": "nvidia-dgx-spark"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "Jetson Nano|Tegra X1",
+      "card": "nvidia-jetson-nano"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon RX 7900 XTX",
+      "card": "amd-rx7900xtx-mba"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon RX 7900 XT(?!X)",
+      "card": "amd-rx7900xt-mba"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon RX 6900 XT",
+      "card": "amd-rx6900xt-mba"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon RX 9070 XT",
+      "card": "amd-rx9070xt-generic"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon Pro W7900 Dual",
+      "card": "amd-w7900-dual"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon Pro W7900",
+      "card": "amd-w7900"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon Pro W7800",
+      "card": "amd-w7800"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Instinct MI210",
+      "card": "amd-mi210"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Instinct MI250",
+      "card": "amd-mi250-oam"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Instinct MI300X.*(UBB|8-GPU|Universal Baseboard)|UBB 2\\.0",
+      "card": "amd-ubb-8gpu"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Instinct MI300X",
+      "card": "amd-mi300x-oam"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Versal AI Edge|VEK280|VE2802",
+      "card": "amd-versal-vek280"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Kria K26",
+      "card": "amd-kria-k26-som"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "KV260",
+      "card": "amd-kv260"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon 8060S|Ryzen AI Max|Strix Halo|Ryzen AI Halo",
+      "card": "amd-ryzen-ai-halo"
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Radeon (?:\\d{3}[MS]|Graphics)",
+      "card": "amd-radeon-igpu"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc Pro B60",
+      "card": "intel-arc-pro-b60"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc Pro A60",
+      "card": "intel-arc-pro-a60"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "A770M",
+      "card": "intel-arc-laptop-dgpu"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc A770",
+      "card": "intel-arc-a770-le"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc A750",
+      "card": "intel-arc-a750-le"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc B580",
+      "card": "intel-arc-b580-le"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc B570",
+      "card": "intel-arc-b570-generic"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Max 1100",
+      "card": "intel-max1100"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Gaudi 3.*(OAM|HL-325|HLB-325)",
+      "card": "intel-gaudi3-oam"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Gaudi 3|HL-338",
+      "card": "intel-gaudi3-pcie"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Flex 170",
+      "card": "intel-flex170"
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "Arc Graphics|Arc 1[34]\\d",
+      "card": "intel-coreultra-igpu"
+    },
+    {
+      "vendor": "apple",
+      "name_regex": "Apple M",
+      "card": "apple-soc-gpu"
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "GeForce RTX 50",
+      "card": "nvidia-rtx5070-fe",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "GeForce RTX 40",
+      "card": "nvidia-rtx4070-fe",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "GeForce RTX 30",
+      "card": "nvidia-rtx3090-fe",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": "SXM|HBM|B200|B300|GB200",
+      "machine_kind": "server",
+      "card": "nvidia-sxm5-module",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": ".",
+      "machine_kind": "server",
+      "card": "nvidia-dc-passive-dual",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": ".",
+      "machine_kind": "workstation",
+      "card": "nvidia-workstation-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": ".",
+      "machine_kind": "laptop",
+      "card": "laptop-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "nvidia",
+      "name_regex": ".",
+      "machine_kind": "edge",
+      "card": "generic-edge-board",
+      "fallback": true
+    },
+    {
+      "vendor": "amd",
+      "name_regex": "Instinct",
+      "card": "amd-oam-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "amd",
+      "name_regex": ".",
+      "machine_kind": "server",
+      "card": "amd-oam-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "amd",
+      "name_regex": ".",
+      "machine_kind": "edge",
+      "card": "generic-edge-board",
+      "fallback": true
+    },
+    {
+      "vendor": "amd",
+      "name_regex": ".",
+      "machine_kind": "laptop",
+      "card": "laptop-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "amd",
+      "name_regex": ".",
+      "card": "amd-mba-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "apple",
+      "name_regex": ".",
+      "card": "apple-soc-gpu",
+      "fallback": true
+    },
+    {
+      "vendor": "intel",
+      "name_regex": "UHD|Iris|HD Graphics|Xe Graphics",
+      "card": "intel-coreultra-igpu",
+      "fallback": true
+    },
+    {
+      "vendor": "intel",
+      "name_regex": ".",
+      "machine_kind": "server",
+      "card": "intel-dc-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "intel",
+      "name_regex": ".",
+      "machine_kind": "edge",
+      "card": "generic-edge-board",
+      "fallback": true
+    },
+    {
+      "vendor": "intel",
+      "name_regex": ".",
+      "machine_kind": "laptop",
+      "card": "laptop-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "intel",
+      "name_regex": ".",
+      "card": "intel-arc-le-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "*",
+      "name_regex": ".",
+      "machine_kind": "server",
+      "card": "datacentre-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "*",
+      "name_regex": ".",
+      "machine_kind": "laptop",
+      "card": "laptop-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "*",
+      "name_regex": ".",
+      "machine_kind": "edge",
+      "card": "generic-edge-board",
+      "fallback": true
+    },
+    {
+      "vendor": "*",
+      "name_regex": ".",
+      "machine_kind": "workstation",
+      "card": "workstation-generic",
+      "fallback": true
+    },
+    {
+      "vendor": "*",
+      "name_regex": ".",
+      "card": "consumer-generic",
+      "fallback": true
+    }
+  ]
+}

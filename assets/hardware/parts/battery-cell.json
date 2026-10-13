@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "kind": "battery-cell",
+  "view": "part",
+  "size": [18.9, 1.302, 9.45],
+  "parts": [
+    {"id": "cell", "geo": {"type": "rbox", "w": 18.9, "h": 1.26, "d": 9.45, "r": 0.21}, "at": [0.0, 0.63, 0.0], "mat": "battery", "label": {"text": "LI-ION", "size": 0.6, "color": "#e8eadf"}},
+    {"id": "tab", "geo": {"type": "box", "w": 0.84, "h": 0.042, "d": 0.42}, "at": [8.4, 1.286, -1.68], "mat": "nickel", "outline": false, "repeat": {"count": 2, "step": [0.0, 0.0, 3.36]}, "detail": 2},
+    {"id": "seam", "geo": {"type": "plane", "w": 18.9, "d": 0.21}, "at": [0.0, 1.2642, 4.095], "mat": "case-light", "outline": false}
+  ]
+}

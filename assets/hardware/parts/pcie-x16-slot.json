@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "pcie-x16-slot",
+  "view": "part",
+  "size": [18.69, 2.835, 1.47],
+  "parts": [
+    {"id": "body", "geo": {"type": "rbox", "w": 17.64, "h": 2.31, "d": 1.47, "r": 0.168}, "at": [0.0025, 1.155, 0.0], "mat": "plastic-matte"},
+    {"id": "bracket-l", "geo": {"type": "box", "w": 0.525, "h": 2.31, "d": 1.47}, "at": [-9.0825, 1.155, 0.0], "mat": "nickel"},
+    {"id": "bracket-r", "geo": {"type": "box", "w": 0.525, "h": 2.31, "d": 1.47}, "at": [9.0875, 1.155, 0.0], "mat": "nickel"},
+    {"id": "latch", "geo": {"type": "rbox", "w": 0.84, "h": 0.525, "d": 1.05, "r": 0.168}, "at": [-7.56, 2.5725, 0.0], "mat": "plastic-matte"},
+    {"id": "contacts", "geo": {"type": "box", "w": 0.105, "h": 0.084, "d": 0.504}, "at": [-8.505, 2.497, 0.0], "mat": "gold", "outline": false, "repeat": {"count": 82, "step": [0.21, 0.0, 0.0]}, "detail": 2},
+    {"id": "label-plate", "geo": {"type": "box", "w": 8.4, "h": 0.042, "d": 0.42}, "at": [0.0, 2.331, 0.525], "mat": "plastic-matte", "label": {"text": "PCIe x16", "size": 0.45, "color": "#e8eadf"}}
+  ]
+}

@@ -95,10 +95,15 @@ jobs:
           path: target/guest/aarch64
           key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
           enableCrossOsArchive: true
+      - name: The relay binaries (both architectures, from the relay job)
+        if: inputs.package
+        uses: actions/download-artifact@v4
+        with: { name: mcp-relay, path: relay }
       - name: Stage and package
         if: inputs.package
         env:
           # A hand run (guest.yml did not fill the cache) may go without the guest.
+          APZ_RELAY_DIR: relay
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}

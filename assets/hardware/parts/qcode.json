@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "qcode",
+  "view": "part",
+  "size": [4.62, 2.94, 0.756],
+  "parts": [
+    {"id": "digit", "geo": {"type": "rbox", "w": 2.1, "h": 2.94, "d": 0.504, "r": 0.126}, "at": [-1.26, 1.47, -0.0945], "mat": "plastic-matte", "repeat": {"count": 2, "step": [2.52, 0.0, 0.0]}, "children": [{"id": "bezel", "geo": {"type": "rbox", "w": 1.89, "h": 2.73, "d": 0.126, "r": 0.063}, "at": [0.0, 0.0, 0.252], "mat": "plastic-matte"}, {"id": "sa", "geo": {"type": "box", "w": 1.05, "h": 0.168, "d": 0.042}, "at": [0.0, 1.05, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}, {"id": "sb", "geo": {"type": "box", "w": 0.168, "h": 0.882, "d": 0.042}, "at": [0.63, 0.525, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}, {"id": "sc", "geo": {"type": "box", "w": 0.168, "h": 0.882, "d": 0.042}, "at": [0.63, -0.525, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}, {"id": "sd", "geo": {"type": "box", "w": 1.05, "h": 0.168, "d": 0.042}, "at": [0.0, -1.05, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}, {"id": "se", "geo": {"type": "box", "w": 0.168, "h": 0.882, "d": 0.042}, "at": [-0.63, -0.525, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}, {"id": "sf", "geo": {"type": "box", "w": 0.168, "h": 0.882, "d": 0.042}, "at": [-0.63, 0.525, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}, {"id": "sg", "geo": {"type": "box", "w": 1.05, "h": 0.168, "d": 0.042}, "at": [0.0, 0.0, 0.341], "mat": "led-off", "outline": false, "tag": "status", "detail": 1}]},
+    {"id": "plate", "geo": {"type": "rbox", "w": 4.62, "h": 0.21, "d": 0.21, "r": 0.063}, "at": [0.0, 0.105, 0.3045], "mat": "plastic-matte", "label": {"text": "POST", "size": 0.6, "color": "#e8eadf"}}
+  ]
+}

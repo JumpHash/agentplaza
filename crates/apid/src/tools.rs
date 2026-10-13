@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use apz_plaza::council::{ProposeRequest, VoteRequest};
 use apz_plaza::social::PostRequest;
-use apz_plaza::tasks::{CreateTask, Task};
+use apz_plaza::tasks::{resolve_budget, CreateTask, Task, MIN_TASK_BUDGET};
 use apz_plaza::ConnectedAgent;
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::WorkKind;
@@ -17,10 +17,8 @@ use serde_json::{json, Value};
 
 use crate::agents::{self, Agent};
 use crate::scheduler::Origin;
+use crate::settings::tier_of;
 use crate::state::App;
-
-/// The escrow a task gets when its poster names no budget.
-pub const DEFAULT_TASK_BUDGET: u64 = 2000;
 
 /// Where a tool runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +127,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
+        name if name.starts_with(crate::mcp::PREFIX) => Some(Runs::Host),
         name if name.starts_with(crate::library::PREFIX) => Some(Runs::Guest),
         _ => None,
     }
@@ -148,6 +147,7 @@ pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
 pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     let mut specs = specs_for(app, &agent.role);
     specs.extend(crate::library::specs_for(app, agent.cid));
+    specs.extend(crate::mcp::specs_for_agent(app, agent));
     specs
 }
 
@@ -161,6 +161,32 @@ pub fn run_host(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) 
         Ok(out) => (false, out),
         Err(why) => (true, why),
     }
+}
+
+/// The `model` a `code_engine` call asks for, checked against the calling agent's tier through
+/// `Settings::allowed`, the rule the model gateway enforces on every call: `None` keeps the engine's
+/// default (no `model`, or an empty one). Called by the guest arm of `internal::dispatch`, before the
+/// call is forwarded to the VM.
+pub(crate) fn code_engine_model(app: &App, role: &str, input: &Value) -> Result<Option<String>, String> {
+    let Some(model) = model_input(input)? else { return Ok(None) };
+    app.settings.allowed(tier_of(role), model)?;
+    Ok(Some(model.to_string()))
+}
+
+/// The shape of the `model` input: `None` when absent or empty, else the trimmed `<provider>/<model>`
+/// (the `@effort` suffix allowed).
+fn model_input(input: &Value) -> Result<Option<&str>, String> {
+    let model = match input.get("model") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(model)) if model.trim().is_empty() => return Ok(None),
+        Some(Value::String(model)) => model.trim(),
+        Some(_) => return Err("invalid input: \"model\" must be a string".to_string()),
+    };
+    let id = model.split_once('@').map_or(model, |(id, _)| id);
+    if !id.contains('/') {
+        return Err(format!("invalid input: \"model\" must be <provider>/<model>, not {model:?}"));
+    }
+    Ok(Some(model))
 }
 
 /// Whether `role` may be offered or run tool `name` (host or guest): the JHRL laws decide (`tools.jhrl`).
@@ -290,7 +316,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
         "code_engine" => (
             "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode). It works in your workspace with its own tools and returns its final report. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`). Omit it to use the default."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -367,14 +393,14 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"task": {"type": "string"}}), &[]),
         ),
         "plaza_post_task" => (
-            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved.",
+            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000, minimum 200; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved.",
             obj(
                 json!({
                     "title": {"type": "string"},
                     "body": {"type": "string"},
                     "role": {"type": "string"},
                     "assignee": {"type": "integer"},
-                    "budget": {"type": "integer", "minimum": 0},
+                    "budget": {"type": "integer", "minimum": MIN_TASK_BUDGET},
                     "acceptance": {"type": "string"},
                     "project": {"type": "string"}
                 }),
@@ -631,7 +657,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 "vote": str_arg(input, "vote")?,
                 "reason": str_arg(input, "reason")?
             }))?;
-            let view = app.plaza.council.vote(motion, &me, request.checked()?).map_err(|e| format!("{e:?}"))?;
+            let view = crate::plaza::council_now(app).vote(motion, &me, request.checked()?).map_err(|e| format!("{e:?}"))?;
             to_text(&view)
         }
         "plaza_propose" => {
@@ -641,7 +667,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
                 "text": str_arg(input, "text")?
             }))?;
             let checked = request.checked(app.plaza.treasury.minted_total())?;
-            let view = app.plaza.council.propose(&me, checked).map_err(|e| format!("{e:?}"))?;
+            let view = crate::plaza::council_now(app).propose(&me, checked).map_err(|e| format!("{e:?}"))?;
             to_text(&view)
         }
         "plaza_agents" => {
@@ -754,6 +780,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let name = if agent.name.is_empty() { &agent.role } else { &agent.name };
             crate::connectors::call(app, Some((agent.cid, name.as_str())), &agent.role, connector.id, action.name, input)
         }
+        other if other.starts_with(crate::mcp::PREFIX) => crate::mcp::call_for_agent(app, agent, work, other, input),
         other => Err(format!("{other} is not implemented")),
     }
 }
@@ -824,20 +851,17 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("missing integer `{key}`"))
 }
 
-/// The smallest task budget: a budget is the escrow that pays the worker's model calls and
-/// tool steps, and a few credits stop the work at its first call.
-pub const MIN_TASK_BUDGET: u64 = 200;
-
-/// A task's `budget` argument: absent or 0 → the default; under MIN_TASK_BUDGET → refused with
-/// what a budget is.
+/// A task's `budget` argument, through the one default and minimum in
+/// [`resolve_budget`]: absent (or null) → the default; a number under the minimum,
+/// 0 included, or a value that is not a whole number → refused.
 pub fn budget_arg(input: &Value) -> Result<u64, String> {
-    match input.get("budget").and_then(Value::as_u64).filter(|b| *b > 0) {
-        None => Ok(DEFAULT_TASK_BUDGET),
-        Some(b) if b < MIN_TASK_BUDGET => Err(format!(
-            "a budget of {b} credits would stop the work at its first model call: a task's budget is the escrow that pays the worker's model calls and tool steps (not a fee). Use at least {MIN_TASK_BUDGET}; typical work needs 1000–5000. It is minted from the plaza's budget — your wallet is not debited."
-        )),
-        Some(b) => Ok(b),
-    }
+    let requested = match input.get("budget") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or("budget must be a whole number of credits")?),
+    };
+    resolve_budget(requested).map_err(|refusal| {
+        format!("{refusal}. It is minted from the plaza's budget; your wallet is not debited.")
+    })
 }
 
 /// The optional `attachments` argument: at most 8 shared files the caller may read.
@@ -900,6 +924,29 @@ mod tests {
     use crate::settings::ORCHESTRATOR_ROLE;
 
     #[test]
+    fn code_engine_model_input_takes_a_provider_model() {
+        let ask = |model: &str| json!({"engine": "claude", "prompt": "p", "model": model});
+        // An openrouter id keeps its nested slashes; an effort suffix is part of the shape.
+        assert_eq!(model_input(&ask(" openrouter/anthropic/claude-x ")), Ok(Some("openrouter/anthropic/claude-x")));
+        assert_eq!(model_input(&ask("opencode/claude-sonnet-5-5@high")), Ok(Some("opencode/claude-sonnet-5-5@high")));
+    }
+
+    #[test]
+    fn code_engine_model_must_name_a_provider() {
+        let bare = json!({"engine": "codex", "prompt": "p", "model": "claude-sonnet-5-5"});
+        let err = model_input(&bare).unwrap_err();
+        assert!(err.contains("<provider>/<model>"), "{err}");
+        assert!(model_input(&json!({"model": 3})).is_err());
+    }
+
+    #[test]
+    fn code_engine_model_absent_or_empty_is_the_default() {
+        assert_eq!(model_input(&json!({"prompt": "p"})), Ok(None));
+        assert_eq!(model_input(&json!({"model": "  "})), Ok(None));
+        assert_eq!(model_input(&json!({"model": null})), Ok(None));
+    }
+
+    #[test]
     fn tier_and_seat_change_the_offer() {
         let worker = offered("worker", &[]);
         let orchestrator = offered(ORCHESTRATOR_ROLE, &[]);
@@ -947,6 +994,23 @@ mod tests {
         assert!(!offered("builder", &[]).iter().any(|n| n == "plaza_project_approve"));
         assert!(offered("mayor", &[]).iter().any(|n| n == "plaza_project_approve"));
         assert!(refusal("builder", "plaza_post_task").is_some());
+    }
+
+    #[test]
+    fn a_tool_task_takes_the_default_budget_and_refuses_below_the_minimum() {
+        use apz_plaza::tasks::DEFAULT_TASK_BUDGET;
+        let default = DEFAULT_TASK_BUDGET as u64;
+        assert_eq!(budget_arg(&json!({})), Ok(default));
+        assert_eq!(budget_arg(&json!({"budget": null})), Ok(default));
+        assert_eq!(budget_arg(&json!({"budget": 200})), Ok(200));
+        assert_eq!(budget_arg(&json!({"budget": 5000})), Ok(5000));
+        for low in [100, 0] {
+            let refusal = budget_arg(&json!({"budget": low})).expect_err("below the minimum");
+            assert!(refusal.contains("minimum of 200"), "names the minimum: {refusal}");
+            assert!(refusal.contains("wallet is not debited"), "{refusal}");
+        }
+        assert!(budget_arg(&json!({"budget": -5})).is_err());
+        assert!(budget_arg(&json!({"budget": "lots"})).is_err());
     }
 
     #[test]

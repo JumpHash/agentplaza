@@ -1,5 +1,6 @@
 //! Amazon Bedrock's Converse API (not streamed). Auth is a Bedrock API key
-//! (bearer) when one is configured, else SigV4 from the `AWS_*` variables.
+//! (bearer) when one is configured, else SigV4 from the `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+//! (and optional `AWS_SESSION_TOKEN`) secrets, which come from the secret source, not the environment.
 
 use std::time::SystemTime;
 
@@ -29,14 +30,26 @@ fn authorize(ctx: &Ctx, req: Req, region: &str, service: &str) -> Result<Req, Ga
     if let Some(token) = ctx.credential()?.or_else(|| ctx.env("AWS_BEARER_TOKEN_BEDROCK")) {
         return Ok(req.bearer(&token));
     }
-    let (Some(access_key), Some(secret_key)) = (ctx.env("AWS_ACCESS_KEY_ID"), ctx.env("AWS_SECRET_ACCESS_KEY")) else {
-        return Err(GatewayError::Auth(
-            "no AWS credentials: set AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY".into(),
-        ));
-    };
-    let creds = Credentials { access_key, secret_key, session_token: ctx.env("AWS_SESSION_TOKEN") };
+    let creds = pair(ctx)?;
     sigv4::sign(&mut req, &creds, region, service, SystemTime::now());
     Ok(req)
+}
+
+/// The AWS key pair this provider signs with, read for this provider's id (vault binding `provider:<id>`):
+/// both keys are required, the session token is optional. A vault refusal is passed on as it is; a
+/// missing key is named, with where to set it.
+fn pair(ctx: &Ctx) -> Result<Credentials, GatewayError> {
+    let missing = |err: GatewayError| match err {
+        GatewayError::Auth(what) => GatewayError::Auth(format!(
+            "no AWS credentials: {what}; set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the vault bound to provider `{}`",
+            ctx.p.id
+        )),
+        other => other,
+    };
+    let access_key = ctx.required_secret("AWS_ACCESS_KEY_ID").map_err(missing)?;
+    let secret_key = ctx.required_secret("AWS_SECRET_ACCESS_KEY").map_err(missing)?;
+    let session_token = ctx.optional_secret("AWS_SESSION_TOKEN")?;
+    Ok(Credentials { access_key, secret_key, session_token })
 }
 
 pub(crate) fn complete(
@@ -159,9 +172,38 @@ pub(crate) fn list_models(ctx: &Ctx) -> Result<Vec<ModelInfo>, GatewayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Auth, ProviderKind};
+    use crate::config::{Auth, ProviderConfig, ProviderKind};
     use crate::testutil::{FakeServer, Reply, gateway_with_env, provider, request};
+    use crate::{Gateway, SecretReason, SecretRead, SecretSource};
     use apz_proto::chat::ToolSpec;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// Fake AWS values: no test asserts anything but that these reach the signer, or stay out of it.
+    const AWS_KEY: &str = "AKIAFAKESENTINEL0001";
+    const AWS_SECRET: &str = "SENTINEL-AWS-SECRET-7";
+    const AWS_TOKEN: &str = "SENTINEL-AWS-TOKEN-7";
+
+    /// A gateway whose secret source answers `secrets` as (provider id, name, value) and whose environment
+    /// answers `env`. Also returns every environment name the gateway asked for.
+    fn gateway_with_secrets(providers: Vec<ProviderConfig>, secrets: &[(&str, &str, &str)], env: &[(&str, &str)]) -> (Gateway, Arc<Mutex<Vec<String>>>) {
+        let secrets: Vec<(String, String, String)> = secrets.iter().map(|(p, k, v)| (p.to_string(), k.to_string(), v.to_string())).collect();
+        let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let env_reads = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::clone(&env_reads);
+        let gw = Gateway::builder()
+            .providers(providers)
+            .secrets(move |name: &str, read: &SecretRead<'_>| {
+                secrets.iter().find(|(p, k, _)| p == read.provider && k == name).map(|(_, _, v)| v.clone())
+            })
+            .env(move |name: &str| {
+                asked.lock().unwrap().push(name.to_string());
+                env.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+            })
+            .retry(2, Duration::from_millis(5))
+            .build();
+        (gw, env_reads)
+    }
 
     #[test]
     fn converse_with_sigv4_and_reasoning_replay() {
@@ -175,13 +217,13 @@ mod tests {
             "usage": {"inputTokens": 11, "outputTokens": 7, "cacheReadInputTokens": 3},
         });
         let server = FakeServer::start(vec![Reply::json(200, &answer), Reply::json(200, &json!({"modelSummaries": [{"modelId": "amazon.nova-pro-v1:0", "modelName": "Nova Pro"}]}))]);
-        let mut p = provider("aws", ProviderKind::Bedrock, &server, Auth::None);
+        let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
         p.options = json!({"region": "us-west-2"});
         p.models = vec!["us.anthropic.claude-sonnet-4-5-20250929-v1:0".into()];
-        let env = [("AWS_ACCESS_KEY_ID", "AKIDTEST"), ("AWS_SECRET_ACCESS_KEY", "sekrit"), ("AWS_SESSION_TOKEN", "tok")];
-        let gw = gateway_with_env(vec![p], &env);
+        let pair = [("bedrock", "AWS_ACCESS_KEY_ID", "AKIDTEST"), ("bedrock", "AWS_SECRET_ACCESS_KEY", "sekrit"), ("bedrock", "AWS_SESSION_TOKEN", "tok")];
+        let (gw, _) = gateway_with_secrets(vec![p], &pair, &[]);
         let mut req = ChatRequest {
-            model: "aws/us.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
+            model: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
             system: Some("sys".into()),
             tools: vec![ToolSpec { name: "bash".into(), description: "d".into(), input_schema: json!({"type": "object"}) }],
             ..request("hi")
@@ -212,7 +254,7 @@ mod tests {
             json!({"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "content": [{"text": "(no output)"}], "status": "error"}}]}),
         ]);
 
-        let models = gw.list_models("aws").unwrap();
+        let models = gw.list_models("bedrock").unwrap();
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["amazon.nova-pro-v1:0", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"]);
         let sent = server.requests();
         assert_eq!((sent[0].method.as_str(), sent[1].method.as_str()), ("POST", "GET"));
@@ -226,5 +268,101 @@ mod tests {
         let resp = gw.complete(&ChatRequest { model: "aws/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}).unwrap();
         assert_eq!((resp.text().as_str(), resp.model.as_str()), ("hi", "aws/amazon.nova-pro-v1:0"));
         assert_eq!(server.requests()[0].header("authorization"), Some("Bearer bedrock-key"));
+    }
+
+    #[test]
+    fn sigv4_signs_with_the_pair_from_the_secret_source_and_not_the_environment() {
+        let server = FakeServer::start(vec![Reply::json(200, &json!({"output": {"message": {"content": [{"text": "ok"}]}}, "stopReason": "end_turn"}))]);
+        let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
+        p.options = json!({"region": "eu-west-1"});
+        let pair = [("bedrock", "AWS_ACCESS_KEY_ID", AWS_KEY), ("bedrock", "AWS_SECRET_ACCESS_KEY", AWS_SECRET), ("bedrock", "AWS_SESSION_TOKEN", AWS_TOKEN)];
+        let (gw, env_reads) = gateway_with_secrets(vec![p], &pair, &[]);
+        let resp = gw.complete(&ChatRequest { model: "bedrock/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}).unwrap();
+        assert_eq!(resp.text(), "ok");
+
+        let sent = &server.requests()[0];
+        let auth = sent.header("authorization").unwrap();
+        assert!(auth.starts_with(&format!("AWS4-HMAC-SHA256 Credential={AWS_KEY}/")), "{auth}");
+        assert_eq!(sent.header("x-amz-security-token"), Some(AWS_TOKEN));
+        // The pair is never asked of the environment; only the bearer-token name is, as before.
+        let asked = env_reads.lock().unwrap();
+        assert!(asked.iter().all(|n| !n.starts_with("AWS_ACCESS") && !n.starts_with("AWS_SECRET") && n != "AWS_SESSION_TOKEN"), "{asked:?}");
+    }
+
+    #[test]
+    fn a_missing_pair_is_the_auth_error_even_when_the_environment_holds_one() {
+        let server = FakeServer::start(vec![]);
+        let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
+        p.options = json!({"region": "eu-west-1"});
+        let (gw, _) = gateway_with_secrets(vec![p], &[("bedrock", "AWS_ACCESS_KEY_ID", AWS_KEY)], &[("AWS_SECRET_ACCESS_KEY", AWS_SECRET)]);
+        match gw.complete(&ChatRequest { model: "bedrock/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}) {
+            Err(GatewayError::Auth(message)) => assert!(message.contains("AWS_ACCESS_KEY_ID"), "{message}"),
+            other => panic!("expected an auth error, got {:?}", other.map(|r| r.model)),
+        }
+        assert!(server.requests().is_empty(), "no request is sent without the pair");
+    }
+
+    fn converse_ok() -> Reply {
+        Reply::json(200, &json!({"output": {"message": {"content": [{"text": "ok"}]}}, "stopReason": "end_turn"}))
+    }
+
+    #[test]
+    fn each_bedrock_provider_signs_with_the_pair_bound_to_its_own_id() {
+        let server = FakeServer::start(vec![converse_ok(), converse_ok()]);
+        let mut eu = provider("bedrock-eu", ProviderKind::Bedrock, &server, Auth::None);
+        eu.options = json!({"region": "eu-west-1"});
+        let mut us = provider("aws", ProviderKind::Bedrock, &server, Auth::None);
+        us.options = json!({"region": "us-east-1"});
+        let (gw, _) = gateway_with_secrets(vec![eu, us], &[
+            ("bedrock-eu", "AWS_ACCESS_KEY_ID", "AKIAFAKEEU0001"),
+            ("bedrock-eu", "AWS_SECRET_ACCESS_KEY", "SENTINEL-EU-SECRET"),
+            ("aws", "AWS_ACCESS_KEY_ID", "AKIAFAKEUS0001"),
+            ("aws", "AWS_SECRET_ACCESS_KEY", "SENTINEL-US-SECRET"),
+        ], &[]);
+        gw.complete(&ChatRequest { model: "bedrock-eu/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}).unwrap();
+        gw.complete(&ChatRequest { model: "aws/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}).unwrap();
+        let sent = server.requests();
+        let (eu_auth, us_auth) = (sent[0].header("authorization").unwrap(), sent[1].header("authorization").unwrap());
+        assert!(eu_auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAFAKEEU0001/") && eu_auth.contains("/eu-west-1/"), "{eu_auth}");
+        assert!(us_auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIAFAKEUS0001/") && us_auth.contains("/us-east-1/"), "{us_auth}");
+    }
+
+    #[test]
+    fn a_bedrock_provider_does_not_borrow_the_pair_of_another_provider() {
+        let server = FakeServer::start(vec![]);
+        let mut other = provider("aws-b", ProviderKind::Bedrock, &server, Auth::None);
+        other.options = json!({"region": "eu-west-1"});
+        let (gw, _) = gateway_with_secrets(vec![other], &[("aws", "AWS_ACCESS_KEY_ID", AWS_KEY), ("aws", "AWS_SECRET_ACCESS_KEY", AWS_SECRET)], &[]);
+        match gw.complete(&ChatRequest { model: "aws-b/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}) {
+            Err(GatewayError::Auth(message)) => assert!(message.contains("AWS_ACCESS_KEY_ID") && message.contains("`aws-b`"), "{message}"),
+            other => panic!("expected an auth error, got {:?}", other.map(|r| r.model)),
+        }
+        assert!(server.requests().is_empty());
+    }
+
+    /// A secret source that refuses every name, as a sealed vault does.
+    struct Sealed;
+
+    impl SecretSource for Sealed {
+        fn get(&self, _name: &str, _read: &SecretRead<'_>) -> Option<String> {
+            None
+        }
+
+        fn fetch(&self, _name: &str, _read: &SecretRead<'_>) -> Result<String, SecretReason> {
+            Err(SecretReason::Sealed)
+        }
+    }
+
+    #[test]
+    fn a_refused_pair_fails_with_the_refusal_not_with_a_missing_key() {
+        let server = FakeServer::start(vec![]);
+        let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
+        p.options = json!({"region": "eu-west-1"});
+        let gw = Gateway::builder().providers(vec![p]).secrets(Sealed).retry(0, Duration::from_millis(1)).build();
+        match gw.complete(&ChatRequest { model: "bedrock/amazon.nova-pro-v1:0".into(), ..request("hi") }, &mut |_| {}) {
+            Err(GatewayError::Vault { status, message }) => assert_eq!((status, message.as_str()), (503, "vault sealed")),
+            other => panic!("expected the vault's refusal, got {:?}", other.map(|r| r.model)),
+        }
+        assert!(server.requests().is_empty());
     }
 }

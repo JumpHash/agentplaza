@@ -1,6 +1,6 @@
 //! Hugging Face imports and their routes (`docs/design/foundry.md`, "Hugging Face"): the import list
 //! (`<state>/foundry/hf/imports.json`), the queue (one download at a time), resumable downloads with
-//! their sha256 checks, the registration, and the token file. The HTTP client is `hf.rs`.
+//! their sha256 checks, the registration, and the token (a vault entry, `HF_TOKEN`). The HTTP client is `hf.rs`.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -18,6 +18,12 @@ use sha2::{Digest, Sha256};
 use super::hf::{self, Fail, Search, TreeFile};
 use super::registry::{self, ModelRecord, Source, State};
 use crate::state::App;
+use crate::vault::{Consumer, OnBehalf, Store as Vault};
+use secrecy::{ExposeSecret, SecretString};
+
+/// The vault entry of the owner's Hugging Face token, and the consumer that reads it.
+const HF_NAME: &str = "HF_TOKEN";
+const HF_BINDING: &str = "hf";
 
 const CHUNK: usize = 64 << 10;
 const PROGRESS_BYTES: u64 = 512 << 10;
@@ -171,32 +177,56 @@ impl Imports {
         self.lock().imports.iter().find(|i| i.n == n).cloned()
     }
 
-    fn token_path(&self) -> PathBuf {
-        self.dir.join("token")
+    /// The owner's Hugging Face token: the vault entry `HF_TOKEN` that `hf` reads. Never leaves the hub. A read
+    /// that fails (the vault sealed, or no entry) is no token.
+    pub fn token(&self, vault: &Vault) -> Option<String> {
+        let consumer = Consumer { binding: HF_BINDING.into(), on_behalf: OnBehalf::Hub };
+        vault
+            .resolve(HF_NAME, &consumer, apz_plaza::now_ms())
+            .ok()
+            .map(|t| t.expose_secret().trim().to_string())
+            .filter(|t| !t.is_empty())
     }
 
-    /// The owner's Hugging Face token. Never leaves the hub.
-    pub fn token(&self) -> Option<String> {
-        fs::read_to_string(self.token_path()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
-    }
-
-    /// Stores the token (mode 0600). One line, no spaces.
-    pub fn set_token(&self, value: &str) -> Result<(), String> {
+    /// Stores the token as the plaza entry `HF_TOKEN` (a new version of it when there is one). One line, no spaces.
+    pub fn set_token(&self, vault: &Vault, value: &str) -> Result<(), String> {
         let value = value.trim();
         if value.is_empty() || value.len() > 512 || value.bytes().any(|b| b.is_ascii_whitespace() || b.is_ascii_control()) {
             return Err("the token must be one line with no spaces".into());
         }
-        fs::create_dir_all(&self.dir).map_err(|e| format!("creating {}: {e}", self.dir.display()))?;
-        crate::providers::write_atomic(&self.token_path(), value.as_bytes(), 0o600)
-            .map_err(|e| format!("storing the token: {e}"))
+        vault
+            .put_plaza(HF_NAME, HF_BINDING, "Hugging Face token", &SecretString::from(value.to_string()), "owner", apz_plaza::now_ms())
+            .map(|_| ())
+            .map_err(|e| e.message())
     }
 
-    pub fn clear_token(&self) -> Result<(), String> {
-        match fs::remove_file(self.token_path()) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("removing the token: {e}")),
+    /// Removes the token: the entry goes when `hf` was its only reader, else only the binding.
+    pub fn clear_token(&self, vault: &Vault) -> Result<(), String> {
+        let now = apz_plaza::now_ms();
+        let named = vault.entries_named(HF_NAME).map_err(|e| e.message())?;
+        for entry in named.iter().filter(|e| e.bindings.iter().any(|b| b == HF_BINDING)) {
+            if entry.bindings.len() == 1 {
+                vault.delete(&entry.id, "owner", now).map_err(|e| e.message())?;
+            } else {
+                let rest: Vec<String> = entry.bindings.iter().filter(|b| *b != HF_BINDING).cloned().collect();
+                vault.patch(&entry.id, None, None, Some(rest), "owner", now).map_err(|e| e.message())?;
+            }
         }
+        Ok(())
+    }
+
+    /// The `/test` check: the account Hugging Face names for the stored token. The detail is the name, never the token.
+    pub fn check_token(&self, vault: &Vault, block: &[String]) -> Result<String, String> {
+        let token = self.token(vault).ok_or_else(|| "no token is stored".to_string())?;
+        let url = format!("{}/api/whoami-v2", hf::ORIGIN);
+        let (value, _) = hf::get_json(&url, Some(&token), block, "the token").map_err(|f| {
+            if f.status == 403 {
+                "Hugging Face refused the token".to_string()
+            } else {
+                f.message
+            }
+        })?;
+        signed_in(&value)
     }
 
     /// Starts an import: resolves the revision and its tree, checks the size, the disk and the duplicates,
@@ -221,7 +251,7 @@ impl Imports {
         let settings = app.settings.get();
         let block = settings.fetch_block;
         let max_gb = settings.foundry.hf_max_gb;
-        let token = self.token();
+        let token = self.token(&app.vault);
         let (sha, task) = hf::resolve_revision(&id, &revision, token.as_deref(), &block)?;
         let files = hf::tree(&id, &sha, token.as_deref(), &block)?;
         let picked = pick(&id, &kind, &requested, &files)?;
@@ -764,7 +794,7 @@ fn status(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
     Response::json(
         200,
         &json!({
-            "hf_token_set": app.hf.token().is_some(),
+            "hf_token_set": app.vault.presence(HF_NAME, HF_BINDING) == "secret",
             "hf_max_gb": app.settings.get().foundry.hf_max_gb,
             "free_bytes": free_bytes(dir),
             "downloads_dir": dir.display().to_string(),
@@ -782,14 +812,14 @@ fn put_token(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(response) => return response,
     };
-    match app.hf.set_token(&body.value) {
+    match app.hf.set_token(&app.vault, &body.value) {
         Ok(()) => Response::json(200, &json!({ "hf_token_set": true })),
         Err(message) => Response::error(400, &message),
     }
 }
 
 fn delete_token(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
-    match app.hf.clear_token() {
+    match app.hf.clear_token(&app.vault) {
         Ok(()) => Response::json(200, &json!({ "hf_token_set": false })),
         Err(message) => Response::error(500, &message),
     }
@@ -825,7 +855,7 @@ fn detail_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if !hf::valid_revision(&revision) {
         return Response::error(400, &format!("{revision:?} is not a revision"));
     }
-    let token = app.hf.token();
+    let token = app.hf.token(&app.vault);
     let block = app.settings.get().fetch_block;
     match hf::detail(&id, &revision, token.as_deref(), &block) {
         Ok(card) => Response::json(200, &card),
@@ -870,7 +900,7 @@ pub fn rederive(app: &App, id: &str) -> Result<ModelRecord, Fail> {
     let task = match source.task.clone() {
         Some(task) => Some(task),
         None => {
-            let token = app.hf.token();
+            let token = app.hf.token(&app.vault);
             let block = app.settings.get().fetch_block;
             hf::resolve_revision(&source.hf, &source.revision, token.as_deref(), &block)?.1
         }
@@ -896,6 +926,16 @@ fn delete_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         Ok(value) => Response::json(200, &value),
         Err(fail) => fail_response(fail),
     }
+}
+
+/// The account name of a whoami reply, as the detail of a check.
+fn signed_in(value: &Value) -> Result<String, String> {
+    value
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("signed in as {name}"))
+        .ok_or_else(|| "Hugging Face sent no account name".to_string())
 }
 
 #[cfg(test)]
@@ -1077,23 +1117,37 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A booted vault in `dir`, as the hub has it at start.
+    fn vault_in(dir: &Path) -> crate::vault::Store {
+        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        vault.boot(apz_plaza::now_ms()).expect("boot");
+        vault
+    }
+
     #[test]
-    fn the_token_is_stored_private_and_refused_when_it_is_not_one_token() {
+    fn the_token_is_a_vault_entry_and_never_a_file_or_a_status_value() {
         let dir = scratch("token");
+        let vault = vault_in(&dir);
         let imports = Imports::open(&dir);
-        assert!(imports.token().is_none());
-        imports.set_token("  hf_test_value  ").unwrap();
-        assert_eq!(imports.token().as_deref(), Some("hf_test_value"));
-        assert!(imports.set_token("two words").is_err());
-        assert!(imports.set_token("").is_err());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(imports.token_path()).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        imports.clear_token().unwrap();
-        assert!(imports.token().is_none());
+        assert!(imports.token(&vault).is_none());
+        imports.set_token(&vault, "  SENTINEL-HF-2290  ").unwrap();
+        assert_eq!(imports.token(&vault).as_deref(), Some("SENTINEL-HF-2290"));
+        assert!(!imports.dir().join("token").exists(), "no token file is written");
+        assert!(!vault.status(&[]).to_string().contains("SENTINEL-HF-2290"));
+        assert_eq!(vault.presence("HF_TOKEN", "hf"), "secret");
+        assert!(imports.set_token(&vault, "two words").is_err());
+        assert!(imports.set_token(&vault, "").is_err());
+        imports.clear_token(&vault).unwrap();
+        assert!(imports.token(&vault).is_none());
+        assert_eq!(vault.presence("HF_TOKEN", "hf"), "missing");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_check_names_the_account_and_never_the_token() {
+        let value = serde_json::json!({ "name": "alice", "auth": { "accessToken": { "value": "SENTINEL-HF-2290" } } });
+        assert_eq!(signed_in(&value).unwrap(), "signed in as alice");
+        assert!(!signed_in(&value).unwrap().contains("SENTINEL-HF-2290"));
+        assert!(signed_in(&serde_json::json!({})).is_err());
     }
 }

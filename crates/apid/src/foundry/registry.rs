@@ -1031,7 +1031,7 @@ mod tests {
         assert_eq!(other.list(), models.list());
 
         let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        client.execute("DELETE FROM plaza_state WHERE component = $1", &[&component]).unwrap();
+        client.execute(crate::db::sql::STATE_DELETE, &[&component]).unwrap();
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&other_root);
     }

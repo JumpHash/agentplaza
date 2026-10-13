@@ -1,13 +1,81 @@
-//! Payments the owner must approve before they move.
+//! Payments the owner must approve before they move, and the one charge every model call makes.
 //!
 //! A payment over `settings.payments.approve_over` is queued as a `payment` approval by
 //! `plaza_pay`. Approving it executes the transfer; denying it cancels it. A held payment is
 //! not a law violation.
+//!
+//! [`charge_model_call`] is the charge the agent loop (`internal::meter`) and the gateway
+//! (`llm_proxy::bill_call`) both make for a model call: it honours `payments.charge_models`,
+//! posts one `model` entry, and records the task's metered spend for the chain's margin.
 
 use serde_json::Value;
 
 use crate::approvals::Approval;
 use crate::state::App;
+use apz_plaza::treasury::Treasury;
+
+/// The payer of an agent's model call: the task's escrow while the task still has money in it,
+/// else the agent's wallet (no task: the wallet). Returns the task to charge (`None` for the
+/// wallet) and the balance there.
+pub(crate) fn paying_from(task: Option<&str>, escrow: i128, wallet: i128) -> (Option<&str>, i128) {
+    match task {
+        Some(task) if escrow > 0 => (Some(task), escrow),
+        _ => (None, wallet),
+    }
+}
+
+/// What one model call's charge came to: the credits wanted, those charged, the balance of the
+/// payer, whether a task's escrow paid, and the error when the treasury refused the charge.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Settled {
+    pub wanted: i64,
+    pub charged: i64,
+    pub available: i128,
+    pub task_paid: bool,
+    pub error: Option<String>,
+}
+
+/// Charges `credits` for agent `cid`'s call to its payer (see [`paying_from`]), capped at that
+/// payer's balance so no balance goes negative.
+pub(crate) fn settle(treasury: &Treasury, cid: u64, task: Option<&str>, credits: i64, memo: &str) -> Settled {
+    let escrow = task.map_or(0, |task| treasury.escrow_balance(task));
+    let (charge_task, available) = paying_from(task, escrow, treasury.wallet(cid));
+    let amount = i64::try_from(available.max(0)).unwrap_or(i64::MAX).min(credits);
+    let (charged, error) = if amount > 0 {
+        match treasury.charge_model(cid, charge_task, amount, memo) {
+            Ok(_) => (amount, None),
+            Err(e) => (0, Some(e.to_string())),
+        }
+    } else {
+        (0, None)
+    };
+    Settled { wanted: credits, charged, available, task_paid: charge_task.is_some() && charged > 0, error }
+}
+
+/// The charge every model call makes, whichever path it came by. With `charging` off (the
+/// `payments.charge_models` switch) nothing is charged and this returns `None`. Otherwise one
+/// `model` entry for the charge goes to the payer, and when the task's escrow paid, `spend`
+/// records that amount as the task's metered spend (it feeds the chain's margin cap). A
+/// shortfall (`charged < wanted`) is for the caller to act on: the agent loop cancels the
+/// task's work, the gateway notes the call in the transcript.
+pub(crate) fn charge_model_call(
+    treasury: &Treasury,
+    charging: bool,
+    spend: impl FnOnce(&str, i64),
+    cid: u64,
+    task: Option<&str>,
+    credits: i64,
+    memo: &str,
+) -> Option<Settled> {
+    if !charging || credits <= 0 {
+        return None;
+    }
+    let settled = settle(treasury, cid, task, credits, memo);
+    if let (true, Some(task)) = (settled.task_paid, task) {
+        spend(task, settled.charged);
+    }
+    Some(settled)
+}
 
 /// Whether a payment of `amount` is held for the owner: it is over `approve_over`. With
 /// `approve_over` at 0 every payment asks. A payment of zero or less is not held; the transfer
@@ -133,5 +201,81 @@ mod tests {
     fn a_payment_detail_without_a_recipient_or_amount_is_refused() {
         assert!(Payment::from_detail(&json!({"cid": 7, "amount": 20})).is_err());
         assert!(Payment::from_detail(&json!({"cid": 7, "to": 8})).is_err());
+    }
+
+    /// Task "t1" holds 300 credits of escrow; agent 7 has no wallet.
+    fn task_funded() -> Treasury {
+        let treasury = Treasury::new(EventBus::new());
+        treasury.fund_task("t1", 300).expect("fund");
+        treasury
+    }
+
+    #[test]
+    fn the_agent_loop_charge_comes_off_the_escrow_and_is_metered_spend_when_charging_is_on() {
+        let treasury = task_funded();
+        let mut metered = Vec::new();
+        let settled = charge_model_call(&treasury, true, |task, credits| metered.push((task.to_string(), credits)), 7, Some("t1"), 40, "model m")
+            .expect("charging is on, so the call is charged");
+        assert_eq!((settled.wanted, settled.charged, settled.task_paid), (40, 40, true));
+        assert_eq!(settled.error, None);
+        assert_eq!(treasury.escrow_balance("t1"), 260);
+        assert_eq!(metered, vec![("t1".to_string(), 40)], "the task's metered spend is updated");
+        assert_eq!(treasury.view().spent, 40, "the Spent total counts it");
+        let kinds: Vec<_> = treasury.journal(10).entries.iter().map(|e| e.kind.to_string()).collect();
+        assert_eq!(
+            kinds,
+            vec!["mint".to_string(), "subcontract".to_string(), "model".to_string()],
+            "the funding entries, then one model entry and no spend entry"
+        );
+    }
+
+    #[test]
+    fn the_agent_loop_charges_nothing_when_charging_is_off() {
+        let treasury = task_funded();
+        assert_eq!(charge_model_call(&treasury, false, |_, _| {}, 7, Some("t1"), 40, "model m"), None);
+        assert_eq!(treasury.escrow_balance("t1"), 300);
+        assert_eq!(treasury.view().spent, 0);
+    }
+
+    #[test]
+    fn a_gateway_call_from_a_wallet_counts_in_spent_when_charging_is_on() {
+        let treasury = task_funded();
+        treasury.charge_spend(Some("t1"), 100, "real cost").expect("the cost is spent");
+        treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
+        let mut metered = Vec::new();
+        let settled = charge_model_call(&treasury, true, |task, credits| metered.push((task.to_string(), credits)), 7, None, 15, "model m")
+            .expect("charging is on");
+        assert_eq!((settled.charged, settled.task_paid), (15, false));
+        assert_eq!(treasury.wallet(7), 5, "the wallet pays");
+        assert!(metered.is_empty(), "a wallet call is no task's spend");
+        assert_eq!(treasury.view().spent, 115, "the 100 spent plus the 15 from the wallet");
+    }
+
+    #[test]
+    fn a_gateway_call_charges_nothing_when_charging_is_off() {
+        let treasury = task_funded();
+        treasury.charge_spend(Some("t1"), 100, "real cost").expect("the cost is spent");
+        treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
+        assert_eq!(charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"), None);
+        assert_eq!(treasury.wallet(7), 20);
+        assert_eq!(treasury.view().spent, 100);
+    }
+
+    #[test]
+    fn a_charge_larger_than_the_escrow_is_capped_and_reported_short() {
+        let treasury = Treasury::new(EventBus::new());
+        treasury.fund_task("t1", 30).expect("fund");
+        let settled = charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 50, "model m").expect("charging is on");
+        assert_eq!((settled.wanted, settled.charged, settled.available), (50, 30, 30));
+        assert_eq!(treasury.escrow_balance("t1"), 0, "never negative");
+    }
+
+    #[test]
+    fn a_model_charge_counts_toward_the_chain_margin_cap() {
+        let treasury = task_funded();
+        charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 40, "model m").expect("charged");
+        // The cap is 20 % of the chain's real cost: 40 of model cost allows 8 to the agent.
+        assert!(treasury.pay_agent("t1", 7, 9).is_err(), "a model charge is real cost for the margin");
+        assert!(treasury.pay_agent("t1", 7, 8).is_ok());
     }
 }

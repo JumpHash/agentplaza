@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "debug-leds",
+  "view": "part",
+  "size": [2.625, 0.2625, 0.5733],
+  "parts": [
+    {"id": "led", "geo": {"type": "box", "w": 0.42, "h": 0.2625, "d": 0.2625}, "at": [-1.1025, 0.1313, 0.1554], "mat": "led-off", "outline": false, "repeat": {"count": 4, "step": [0.735, 0.0, 0.0]}, "tag": "status"},
+    {"id": "dbg", "geo": {"type": "plane", "w": 1.26, "d": 0.21}, "at": [0.0, 0.0042, -0.1806], "mat": "silkscreen", "outline": false, "label": {"text": "DBG", "size": 0.5, "color": "#e8eadf"}}
+  ]
+}

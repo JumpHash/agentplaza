@@ -41,9 +41,10 @@ pub enum Cmd {
         /// The role that should do it.
         #[arg(long)]
         role: Option<String>,
-        /// The budget.
-        #[arg(long, default_value_t = 100)]
-        budget: i64,
+        /// The budget in credits, the escrow that pays the worker's work. Omit it for the
+        /// hub's default (2000); the hub refuses a budget under 200.
+        #[arg(long)]
+        budget: Option<u64>,
         /// Assign it now to this agent (its cid).
         #[arg(long)]
         assign: Option<i64>,
@@ -88,6 +89,41 @@ fn lane_of(state: &str) -> &'static str {
 /// The first line of a goal, the task's title.
 fn title_of(goal: &str) -> &str {
     goal.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled task")
+}
+
+/// The `POST /v1/tasks` body with only the fields the user gave. An omitted budget
+/// is left out, so the hub applies its default (the CLI holds no copy of it).
+fn create_body(goal: String, acceptance: Option<String>, role: Option<String>, budget: Option<u64>, assign: Option<i64>) -> Value {
+    let mut body = json!({ "goal": goal });
+    if let Some(budget) = budget {
+        body["budget"] = json!(budget);
+    }
+    if let Some(a) = acceptance {
+        body["acceptance"] = json!(a);
+    }
+    if let Some(r) = role {
+        body["role"] = json!(r);
+    }
+    if let Some(cid) = assign {
+        body["assignee"] = json!(cid);
+    }
+    body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_omits_the_budget_when_none_is_given() {
+        let bare = create_body("t".into(), None, None, None, None);
+        assert!(bare.get("budget").is_none(), "no budget field: {bare}");
+        assert_eq!(bare["goal"], "t");
+        let budgeted = create_body("t".into(), None, None, Some(500), Some(7));
+        assert_eq!(budgeted["budget"], 500);
+        assert_eq!(budgeted["assignee"], 7);
+        assert!(budgeted.get("acceptance").is_none());
+    }
 }
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
@@ -170,17 +206,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 Some(d) => format!("{title}\n\n{d}"),
                 None => title,
             };
-            let mut body = json!({ "goal": goal, "budget": budget });
             let acceptance = acceptance.filter(|a| !a.trim().is_empty()).map(|a| ctx::text_arg(&a)).transpose()?;
-            if let Some(a) = acceptance {
-                body["acceptance"] = json!(a);
-            }
-            if let Some(r) = role {
-                body["role"] = json!(r);
-            }
-            if let Some(cid) = assign {
-                body["assignee"] = json!(cid);
-            }
+            let body = create_body(goal, acceptance, role, budget, assign);
             let t = ctx.client.post("/v1/tasks", &body)?;
             ctx.out(&t, |t| println!("created task {} ({})", ctx::s(t, "id"), ctx::s(t, "state")));
             Ok(())

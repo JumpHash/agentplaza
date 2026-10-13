@@ -109,9 +109,14 @@ jobs:
           path: target/guest/${{ env.GARCH }}
           key: "guest-${{ env.GARCH }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
           enableCrossOsArchive: true
+      - name: The relay binaries (both architectures, from the relay job)
+        if: inputs.package
+        uses: actions/download-artifact@v4
+        with: { name: mcp-relay, path: relay }
       - name: Stage
         if: inputs.package
         env:
+          APZ_RELAY_DIR: relay
           # A hand-run package (no release job built the guest) may go without it.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: packaging/scripts/stage.sh ${{ env.TRIPLE }} "$CARGO_TARGET_DIR/${{ env.TRIPLE }}/release" stage "$VERSION"

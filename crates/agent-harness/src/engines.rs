@@ -34,12 +34,17 @@ const ENGINE_ENV: &[(&str, &str)] = &[
     ("DISABLE_AUTOUPDATER", "1"),
     ("CI", "1"),
 ];
+/// The plaza gateway as a VM names it. The hub relays it to apid, which adds the agent's
+/// id, so the VM never needs its own id.
+const GATEWAY: &str = "http://plaza.gateway";
+/// The models the gateway's `opencode` responses route serves (the Codex wire protocol).
+const RESPONSES_PREFIXES: [&str; 3] = ["gpt-", "grok-", "muse-spark-"];
 
 /// Runs one job through the chosen engine and returns its final report.
 pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
     let job = Job::parse(workspace, input)?;
     ensure_installed(workspace, job.engine)?;
-    let argv = command_args(job.engine, &job.prompt, workspace.dir());
+    let argv = command_args(job.engine, &job.prompt, workspace.dir(), &job.route);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let outcome = bash::execute(&job.dir, ENV_PROGRAM, &refs, job.timeout_s, Privilege::Agent);
     match (job.engine, outcome) {
@@ -84,9 +89,10 @@ impl Engine {
         }
     }
 
-    /// The arguments of one headless run; the prompt is a single argument.
-    fn args(self, prompt: &str) -> Vec<String> {
-        let words: Vec<&str> = match self {
+    /// The arguments of one headless run; the prompt is a single argument. `model` goes on
+    /// the engine's model flag; OpenCode takes its model from its config instead.
+    fn args(self, prompt: &str, model: Option<&str>) -> Vec<String> {
+        let mut words: Vec<&str> = match self {
             // Inside its own VM an agent may do anything (the owner's choice), so the engines run
             // without their own approval prompts or sandboxes. That never widens what the agent
             // can reach: the engine runs inside the agent's microVM (no NIC, vsock only, internet
@@ -99,19 +105,30 @@ impl Engine {
                 "--permission-mode",
                 "bypassPermissions",
             ],
-            Self::Codex => vec!["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", prompt],
+            Self::Codex => vec!["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"],
             Self::OpenCode => vec!["run", prompt],
         };
+        if let (Self::Codex, Some(model)) = (self, model) {
+            words.extend(["-m", model]);
+        }
+        if self == Self::Codex {
+            words.push(prompt);
+        }
+        if let (Self::Claude, Some(model)) = (self, model) {
+            words.extend(["--model", model]);
+        }
         words.into_iter().map(str::to_string).collect()
     }
 }
 
-/// A validated job: the engine, its prompt, the folder it runs in and its timeout.
+/// A validated job: the engine, its prompt, the folder it runs in, its timeout and the
+/// route to its model.
 struct Job {
     engine: Engine,
     prompt: String,
     dir: PathBuf,
     timeout_s: u64,
+    route: Route,
 }
 
 impl Job {
@@ -130,8 +147,18 @@ impl Job {
                     format!("invalid input: \"timeout_s\" must be a whole number of seconds from {MIN_TIMEOUT_S} to {MAX_TIMEOUT_S}")
                 })?,
         };
+        let model = match input.get("model") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .filter(|model| !model.trim().is_empty())
+                    .ok_or_else(|| "invalid input: \"model\" must be a non-empty string".to_string())?,
+            ),
+        };
+        let route = model_route(engine, model)?;
         let dir = job_dir(workspace, input.get("path"))?;
-        Ok(Self { engine, prompt, dir, timeout_s })
+        Ok(Self { engine, prompt, dir, timeout_s, route })
     }
 }
 
@@ -184,14 +211,126 @@ fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String>
 }
 
 /// The `env` arguments that start the engine: `HOME` is the workspace (the engine's own
-/// config lives there, not in a `path` subfolder), then the engine's environment, then
-/// the binary and its arguments.
-fn command_args(engine: Engine, prompt: &str, home: &Path) -> Vec<String> {
+/// config lives there, not in a `path` subfolder), then the engine's environment, then the
+/// route's settings (`env` applies its pairs in order, so they override the defaults),
+/// then the binary and its arguments.
+fn command_args(engine: Engine, prompt: &str, home: &Path, route: &Route) -> Vec<String> {
     let mut argv = vec![format!("HOME={}", home.display())];
     argv.extend(ENGINE_ENV.iter().map(|(key, value)| format!("{key}={value}")));
+    argv.extend(route.env.iter().map(|(key, value)| format!("{key}={value}")));
     argv.push(engine.binary().to_string());
-    argv.extend(engine.args(prompt));
+    argv.extend(engine.args(prompt, route.model.as_deref()));
     argv
+}
+
+/// How a run reaches its model: the environment settings the engine needs, and the model
+/// name the engine is given (the plaza id after its provider, as the gateway names it).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Route {
+    env: Vec<(String, String)>,
+    model: Option<String>,
+}
+
+/// Splits a plaza model id `<provider>/<rest>` on its first `/`.
+fn split_model(model: &str) -> Result<(&str, &str), String> {
+    match model.split_once('/') {
+        Some((provider, rest)) if !provider.is_empty() && !rest.is_empty() => Ok((provider, rest)),
+        _ => Err(format!("invalid input: \"model\" must be <provider>/<model>, not {model:?}")),
+    }
+}
+
+/// The OpenCode provider block that serves `model` from `provider`: its id, its npm package
+/// and its base URL. The gateway's opencode routes differ by model shape, so each shape gets
+/// its own block: Responses for `gpt-`, `grok-` and `muse-spark-`, Messages for `claude-`,
+/// and chat for the rest. Every other provider (openrouter included) gets one
+/// OpenAI-compatible chat block, `plaza-<provider>`.
+fn opencode_provider_for(provider: &str, model: &str) -> (String, &'static str, String) {
+    if provider == "opencode" {
+        let base_url = format!("{GATEWAY}/opencode/v1");
+        if model.starts_with("claude-") {
+            return ("plaza-opencode-anthropic".to_string(), "@ai-sdk/anthropic", base_url);
+        }
+        if RESPONSES_PREFIXES.iter().any(|prefix| model.starts_with(prefix)) {
+            return ("plaza-opencode-responses".to_string(), "@ai-sdk/openai", base_url);
+        }
+        return ("plaza-opencode".to_string(), "@ai-sdk/openai-compatible", base_url);
+    }
+    match provider {
+        "openai" => ("plaza-openai".to_string(), "@ai-sdk/openai", format!("{GATEWAY}/openai/v1")),
+        _ => (format!("plaza-{provider}"), "@ai-sdk/openai-compatible", format!("{GATEWAY}/{provider}/v1")),
+    }
+}
+
+/// The route for `model` under `engine`; no model keeps the engine's own defaults.
+/// Claude Code speaks Anthropic Messages, so it takes the anthropic, openrouter and
+/// opencode `claude-` routes. Codex speaks the Responses API, so it takes openai and the
+/// opencode `gpt-`, `grok-` and `muse-spark-` models. OpenCode gets its model from the
+/// provider block that `opencode_provider_for` picks for it.
+fn model_route(engine: Engine, model: Option<&str>) -> Result<Route, String> {
+    let Some(model) = model else {
+        return Ok(Route::default());
+    };
+    let (provider, rest) = split_model(model)?;
+    let gateway_env = |key: &str, path: &str| vec![(key.to_string(), format!("{GATEWAY}/{path}"))];
+    match engine {
+        Engine::Claude => {
+            let path = match provider {
+                "anthropic" | "openrouter" => provider,
+                "opencode" if rest.starts_with("claude-") => provider,
+                "opencode" => {
+                    return Err(format!(
+                        "invalid input: \"model\" is {model:?}. Claude Code needs an Anthropic-shaped model; OpenCode serves this one on its chat endpoint, so use OpenCode or Codex for it"
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "invalid input: \"model\" is {model:?}. Claude Code needs an Anthropic-shaped model: anthropic/..., openrouter/... or opencode/claude-..."
+                    ));
+                }
+            };
+            Ok(Route { env: gateway_env("ANTHROPIC_BASE_URL", path), model: Some(rest.to_string()) })
+        }
+        Engine::Codex => match provider {
+            "openai" => Ok(Route { env: Vec::new(), model: Some(rest.to_string()) }),
+            "opencode" if RESPONSES_PREFIXES.iter().any(|prefix| rest.starts_with(prefix)) => Ok(Route {
+                env: gateway_env("OPENAI_BASE_URL", "opencode/v1"),
+                model: Some(rest.to_string()),
+            }),
+            "opencode" => Err(format!(
+                "invalid input: \"model\" is {model:?}. Codex needs a Responses model on OpenCode (gpt-, grok- or muse-spark-); use OpenCode or Claude Code for this one"
+            )),
+            "openrouter" => Err(format!(
+                "invalid input: \"model\" is {model:?}. Codex needs the OpenAI Responses API, which the gateway's openrouter route does not serve; use OpenCode or Claude Code for it"
+            )),
+            _ => Err(format!(
+                "invalid input: \"model\" is {model:?}. Codex serves openai/... models and opencode gpt-, grok- or muse-spark- models"
+            )),
+        },
+        Engine::OpenCode => {
+            if !provider.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Err(format!(
+                    "invalid input: \"model\" provider must be letters, digits and dashes, not {provider:?}"
+                ));
+            }
+            let (id, npm, base_url) = opencode_provider_for(provider, rest);
+            let config = json!({
+                "$schema": "https://opencode.ai/config.json",
+                "model": format!("{id}/{rest}"),
+                "provider": {
+                    id.clone(): {
+                        "npm": npm,
+                        "name": format!("AgentPlaza {provider}"),
+                        "options": { "baseURL": base_url, "apiKey": "plaza" },
+                        "models": { rest: {} }
+                    }
+                }
+            });
+            Ok(Route {
+                env: vec![("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string())],
+                model: None,
+            })
+        }
+    }
 }
 
 /// Claude's `--output-format json` report: its `result`, then a footer with the turn
@@ -261,16 +400,25 @@ mod tests {
         assert_eq!(Engine::Codex.binary(), "codex");
         assert_eq!(Engine::OpenCode.binary(), "opencode");
         assert_eq!(
-            Engine::Claude.args("fix the bug"),
+            Engine::Claude.args("fix the bug", None),
             ["-p", "fix the bug", "--output-format", "json", "--permission-mode", "bypassPermissions"]
         );
-        assert_eq!(Engine::Codex.args("fix the bug"), ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "fix the bug"]);
-        assert_eq!(Engine::OpenCode.args("fix the bug"), ["run", "fix the bug"]);
+        assert_eq!(
+            Engine::Codex.args("fix the bug", None),
+            ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "fix the bug"]
+        );
+        assert_eq!(Engine::OpenCode.args("fix the bug", None), ["run", "fix the bug"]);
+        assert_eq!(Engine::Claude.args("fix", Some("claude-x"))[6..], ["--model", "claude-x"]);
+        assert_eq!(
+            Engine::Codex.args("fix", Some("gpt-5")),
+            ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5", "fix"]
+        );
+        assert_eq!(Engine::OpenCode.args("fix", Some("claude-x")), ["run", "fix"]);
     }
 
     #[test]
     fn the_command_sets_the_gateway_environment_and_runs_the_binary_last() {
-        let argv = command_args(Engine::Claude, "hi", Path::new("/workspace"));
+        let argv = command_args(Engine::Claude, "hi", Path::new("/workspace"), &Route::default());
         for pair in [
             "HOME=/workspace",
             "ANTHROPIC_BASE_URL=http://plaza.gateway/anthropic",
@@ -326,6 +474,8 @@ mod tests {
             (json!({ "engine": "codex", "prompt": "x", "timeout_s": 5 }), "timeout_s"),
             (json!({ "engine": "codex", "prompt": "x", "timeout_s": 3601 }), "timeout_s"),
             (json!({ "engine": "codex", "prompt": "x", "path": "../up" }), "path"),
+            (json!({ "engine": "codex", "prompt": "x", "model": "opencode/claude-x" }), "model"),
+            (json!({ "engine": "claude", "prompt": "x", "model": "opencode/deepseek-v4-pro" }), "Claude Code"),
         ] {
             let err = run(&workspace, &input).expect_err("refused");
             assert!(err.contains(reason), "{input}: {err}");
@@ -342,6 +492,99 @@ mod tests {
         assert!(job_dir(&workspace, Some(&json!("project"))).expect("a folder").ends_with("project"));
         for path in ["/etc", "../outside", "project/../../outside", "escape", "missing"] {
             assert!(job_dir(&workspace, Some(&json!(path))).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_model_id_splits_on_its_first_slash() {
+        assert_eq!(split_model("openrouter/anthropic/claude-x").expect("a split"), ("openrouter", "anthropic/claude-x"));
+        assert_eq!(split_model("opencode/claude-sonnet-5-5").expect("a split"), ("opencode", "claude-sonnet-5-5"));
+        for bad in ["claude-sonnet-5-5", "/claude", "openrouter/"] {
+            assert!(split_model(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn claude_code_points_at_the_anthropic_shaped_gateway_routes() {
+        let route = model_route(Engine::Claude, Some("openrouter/anthropic/claude-x")).expect("a route");
+        assert_eq!(route.env, [("ANTHROPIC_BASE_URL".to_string(), "http://plaza.gateway/openrouter".to_string())]);
+        assert_eq!(route.model.as_deref(), Some("anthropic/claude-x"));
+        let route = model_route(Engine::Claude, Some("opencode/claude-sonnet-5-5")).expect("a route");
+        assert_eq!(route.env, [("ANTHROPIC_BASE_URL".to_string(), "http://plaza.gateway/opencode".to_string())]);
+        assert_eq!(route.model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(model_route(Engine::Claude, None).expect("the default"), Route::default());
+    }
+
+    #[test]
+    fn claude_code_refuses_an_opencode_model_its_route_does_not_serve() {
+        let err = model_route(Engine::Claude, Some("opencode/deepseek-v4-pro")).expect_err("refused");
+        assert!(err.contains("Claude Code needs an Anthropic-shaped model"), "{err}");
+    }
+
+    #[test]
+    fn codex_takes_only_the_models_its_wire_protocol_serves() {
+        let route = model_route(Engine::Codex, Some("opencode/gpt-5")).expect("a route");
+        assert_eq!(route.env, [("OPENAI_BASE_URL".to_string(), "http://plaza.gateway/opencode/v1".to_string())]);
+        assert_eq!(route.model.as_deref(), Some("gpt-5"));
+        let openai = model_route(Engine::Codex, Some("openai/gpt-5")).expect("a route");
+        assert!(openai.env.is_empty());
+        assert_eq!(openai.model.as_deref(), Some("gpt-5"));
+        for refused in ["openrouter/anthropic/claude-x", "opencode/deepseek-v4-pro", "google/gemini-x"] {
+            assert!(model_route(Engine::Codex, Some(refused)).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn opencode_config_names_a_plaza_provider_at_the_gateway() {
+        let route = model_route(Engine::OpenCode, Some("openrouter/anthropic/claude-x")).expect("a route");
+        assert_eq!(route.model, None);
+        assert_eq!(route.env[0].0, "OPENCODE_CONFIG_CONTENT");
+        let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
+        assert_eq!(config["model"], "plaza-openrouter/anthropic/claude-x");
+        assert_eq!(config["provider"]["plaza-openrouter"]["options"]["baseURL"], "http://plaza.gateway/openrouter/v1");
+        assert!(config["provider"]["plaza-openrouter"]["models"].get("anthropic/claude-x").is_some());
+        let argv = command_args(Engine::OpenCode, "hi", Path::new("/workspace"), &route);
+        assert!(argv.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)), "{argv:?}");
+        assert!(model_route(Engine::OpenCode, Some("bad_name/x")).is_err());
+    }
+
+    #[test]
+    fn opencode_gives_each_model_the_block_whose_api_shape_serves_it() {
+        let opencode_base = "http://plaza.gateway/opencode/v1";
+        let (id, npm, base) = opencode_provider_for("opencode", "gpt-5.6-terra");
+        assert_eq!((id.as_str(), npm, base.as_str()), ("plaza-opencode-responses", "@ai-sdk/openai", opencode_base));
+        let (id, npm, base) = opencode_provider_for("opencode", "claude-sonnet-5-5");
+        assert_eq!((id.as_str(), npm, base.as_str()), ("plaza-opencode-anthropic", "@ai-sdk/anthropic", opencode_base));
+        let (id, npm, base) = opencode_provider_for("opencode", "deepseek-v4-pro");
+        assert_eq!((id.as_str(), npm, base.as_str()), ("plaza-opencode", "@ai-sdk/openai-compatible", opencode_base));
+        let (id, npm, base) = opencode_provider_for("openai", "gpt-5.6-terra");
+        assert_eq!(
+            (id.as_str(), npm, base.as_str()),
+            ("plaza-openai", "@ai-sdk/openai", "http://plaza.gateway/openai/v1")
+        );
+        let (id, npm, base) = opencode_provider_for("openrouter", "anthropic/claude-x");
+        assert_eq!(
+            (id.as_str(), npm, base.as_str()),
+            ("plaza-openrouter", "@ai-sdk/openai-compatible", "http://plaza.gateway/openrouter/v1")
+        );
+    }
+
+    #[test]
+    fn opencode_config_parses_and_its_model_names_the_block_that_serves_it() {
+        for (model, block, npm) in [
+            ("opencode/gpt-5.6-terra", "plaza-opencode-responses", "@ai-sdk/openai"),
+            ("opencode/claude-sonnet-5-5", "plaza-opencode-anthropic", "@ai-sdk/anthropic"),
+            ("opencode/deepseek-v4-pro", "plaza-opencode", "@ai-sdk/openai-compatible"),
+            ("openai/gpt-5.6-terra", "plaza-openai", "@ai-sdk/openai"),
+        ] {
+            let route = model_route(Engine::OpenCode, Some(model)).expect("a route");
+            let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
+            let selected = config["model"].as_str().expect("a model");
+            let (selected_block, served) = selected.split_once('/').expect("<block>/<model>");
+            assert_eq!(selected_block, block, "{model}: {config}");
+            assert_eq!(config["provider"][block]["npm"], npm, "{model}: {config}");
+            assert!(config["provider"][block]["models"].get(served).is_some(), "{model}: {config}");
+            assert_eq!(config["provider"].as_object().map(|blocks| blocks.len()), Some(1), "{model}: {config}");
         }
     }
 }

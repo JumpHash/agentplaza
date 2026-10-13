@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "cr2032",
+  "view": "part",
+  "size": [4.83, 0.924, 4.83],
+  "parts": [
+    {"id": "holder", "geo": {"type": "cyl", "rt": 2.415, "rb": 2.415, "h": 0.168}, "at": [0.0, 0.084, 0.0], "mat": "plastic-matte"},
+    {"id": "wall", "geo": {"type": "torus", "r": 2.142, "tube": 0.273}, "at": [0.0, 0.42, 0.0], "mat": "plastic-matte"},
+    {"id": "cell", "geo": {"type": "cyl", "rt": 2.1, "rb": 2.1, "h": 0.672}, "at": [0.0, 0.5065, 0.0], "mat": "nickel", "label": {"text": "CR2032", "size": 0.5, "color": "#e8eadf"}},
+    {"id": "clip", "geo": {"type": "box", "w": 3.36, "h": 0.084, "d": 0.462}, "at": [0.0, 0.882, -1.26], "mat": "nickel", "repeat": {"count": 2, "step": [0.0, 0.0, 2.52]}},
+    {"id": "plusH", "geo": {"type": "box", "w": 0.504, "h": 0.021, "d": 0.105}, "at": [-1.365, 0.8405, 0.0], "mat": "silkscreen", "outline": false, "detail": 2},
+    {"id": "plusV", "geo": {"type": "box", "w": 0.105, "h": 0.021, "d": 0.504}, "at": [-1.365, 0.8555, 0.0], "mat": "silkscreen", "outline": false, "detail": 2}
+  ]
+}

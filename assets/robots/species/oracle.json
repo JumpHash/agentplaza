@@ -23,14 +23,14 @@
     { "bone": "base", "geo": { "type": "rbox", "w": 0.46, "h": 0.12, "d": 0.46, "r": 0.03, "seg": [2] }, "at": [0, 0.06, 0], "mat": "trim" },
     { "bone": "base", "geo": { "type": "cyl", "rt": 0.22, "rb": 0.22, "h": 0.02, "seg": [24] }, "at": [0, 0.125, 0], "mat": "ink", "outline": false },
 
-    { "bone": "body", "geo": { "type": "cone", "r": 0.22, "h": 0.5, "seg": [6] }, "at": [0, 0.645, 0], "mat": "accent" },
-    { "bone": "body", "geo": { "type": "cone", "r": 0.22, "h": 0.3, "seg": [6] }, "at": [0, 0.24, 0], "rot": [180, 0, 0], "mat": "eye", "outline": false },
+    { "bone": "body", "geo": { "type": "cone", "r": 0.22, "h": 0.5, "seg": [6] }, "at": [0, 0.645, 0], "mat": "accent", "scale": [1, 1, 0.5] },
+    { "bone": "body", "geo": { "type": "cone", "r": 0.22, "h": 0.3, "seg": [6] }, "at": [0, 0.24, 0], "rot": [180, 0, 0], "mat": "eye", "outline": false, "scale": [1, 1, 0.5] },
 
     { "bone": "rings", "geo": { "type": "torus", "r": 0.34, "tube": 0.016, "seg": [6, 40] }, "rot": [65, 0, 0], "mat": "trim", "outline": false },
-    { "bone": "rings", "geo": { "type": "torus", "r": 0.34, "tube": 0.016, "seg": [6, 40] }, "rot": [65, 90, 0], "mat": "trim", "outline": false }
+    { "bone": "rings", "geo": { "type": "torus", "r": 0.34, "tube": 0.016, "seg": [6, 40] }, "rot": [65, -45, 0], "mat": "trim", "outline": false }
   ],
   "eyes": [
-    { "bone": "head", "at": [0, 0.14, 0.11], "pupil": 0.07, "shape": "ring", "glass": false }
+    { "bone": "body", "at": [0, 0.58, 0.0919], "r": 0.08, "pupil": 0.06, "shape": "ring", "glass": false }
   ],
   "spin": [{ "bone": "rings", "axis": "y", "walk": 0.9, "idle": 0.3, "offline": 0.05 }],
   "feet": [],

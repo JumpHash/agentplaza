@@ -99,7 +99,7 @@ else the plaza default.
 | `gemini` | Gemini `generateContent` (streaming) | `x-goog-api-key` (`GEMINI_API_KEY`) |
 | `bedrock` | Bedrock Converse | SigV4 (`AWS_*`) or bearer (`AWS_BEARER_TOKEN_BEDROCK`) |
 | `vertex-anthropic`, `vertex-gemini` | Vertex AI | bearer from a command (`gcloud auth print-access-token`) |
-| `openai-compatible` | Chat Completions | bearer / none — presets: xAI (`reasoning_effort`), DeepSeek (`reasoning_content` replayed — required with tools), Z.ai GLM, Moonshot Kimi, Groq, Mistral, OpenRouter, Together, Fireworks, Perplexity, Cerebras, NVIDIA NIM, Ollama, LM Studio, vLLM, llama.cpp |
+| `openai-compatible` | Chat Completions | bearer / none — presets: xAI (`reasoning_effort`), DeepSeek (`reasoning_content` replayed — required with tools), Z.ai GLM, Moonshot Kimi, Meta Muse (`meta`; its contributor models are flagged, see Model policy), Groq, Mistral, OpenRouter, Together, Fireworks, Perplexity, Cerebras, NVIDIA NIM, Ollama, LM Studio, vLLM, llama.cpp |
 | `mock` | deterministic, offline | none — tests and demos |
 
 ### Model policy (owner's rule, enforced by `apid`)
@@ -107,20 +107,33 @@ else the plaza default.
 A model name may pin a reasoning effort: `provider/model@effort`. Every agent
 has a **tier**: the `orchestrator` role is the **orchestrator** tier (the one
 agent that plans and delegates to all the others); every other role is the
-**worker** tier. An agent may only ever run a model on its tier's list:
+**worker** tier. The orchestrator may only ever run a model on its list. Workers
+may run any model: their list is only the presets offered first, plus the default.
 
-| tier | allowed models |
+| tier | list |
 |---|---|
-| orchestrator | `anthropic/claude-opus-5-5` (Claude Opus 5.5), `anthropic/claude-fable-5-1` (Claude Fable 5.1), `openai/gpt-6-astra` (Astra), `xai/grok-4.7` (Grok 4.7) |
-| worker | `deepseek/deepseek-flash` (DeepSeek V4.1 Flash), `anthropic/claude-haiku-5-5` (Haiku 5.5), `anthropic/claude-opus-5-5@low` (Opus 5.5, low effort), `openai/gpt-6-luna` (Luna), `openai/gpt-5.6-terra` (Terra), `xai/grok-4.7@low` (Grok 4.7, low effort) |
+| orchestrator (restricted) | `anthropic/claude-opus-5-5` (Claude Opus 5.5), `anthropic/claude-fable-5-1` (Claude Fable 5.1), `openai/gpt-6-astra` (Astra), `xai/grok-4.7` (Grok 4.7) |
+| worker (presets, not a limit) | `deepseek/deepseek-flash` (DeepSeek V4.1 Flash), `anthropic/claude-haiku-5-5` (Haiku 5.5), `anthropic/claude-opus-5-5@low` (Opus 5.5, low effort), `openai/gpt-6-luna` (Luna), `openai/gpt-5.6-terra` (Terra), `xai/grok-4.7@low` (Grok 4.7, low effort) |
 
 Defaults: orchestrator `anthropic/claude-opus-5-5`, worker
-`deepseek/deepseek-flash` (most agents run it). Setting a model outside the tier's list (agent,
-role default, plaza default) is refused with `400` naming the allowed list, and
-a model call whose resolved model is not allowed fails closed (the agent gets
-a model error; nothing is sent to a provider). The lists live in
+`deepseek/deepseek-flash` (most agents run it). Setting an orchestrator model
+outside its list (the orchestrator default, an orchestrator role model, the
+orchestrator agent's own model) is refused with `400` naming the allowed list,
+and an orchestrator model call whose resolved model is not on the list fails
+closed (the agent gets a model error; nothing is sent to a provider). Worker
+models are never refused for being off a list. The lists live in
 `settings.model_policy`; only the owner changes them (the Models screen), e.g. to admit GLM, Kimi or a local model to a tier. Server-side refusal
-fallbacks are off (their fallback models would be outside the lists).
+fallbacks are off (their fallback models would be outside the lists). An empty orchestrator list admits
+no model. A saved or loaded settings file is repaired on load where it breaks the rules above: a
+contributor model without `allow_training_models` is dropped from the policy or reset to the default, and an
+orchestrator model or orchestrator role model off its list is reset or dropped. Each change is logged.
+
+**Contributor models** (Meta's `muse-spark-1.3-contributor` and `muse-spark-1.2-contributor`) train Meta's
+future models on everything sent to and returned by them. They are flagged `trains_on_data` in
+`/v1/models` and are never a default. `settings.allow_training_models` (default `false`) must be set by
+the owner before a save may name one as the orchestrator or worker default, a role model or a policy
+entry; a save without it is refused with `400`. A per-agent pick is the owner's explicit choice and is
+not refused here.
 
 `apid --dev-models` relaxes the policy for development and tests only (the
 offline `mock` provider and local models such as Ollama); both consoles show a

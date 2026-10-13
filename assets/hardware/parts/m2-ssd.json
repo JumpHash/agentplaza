@@ -2,13 +2,15 @@
   "schema": 1,
   "kind": "m2-ssd",
   "view": "part",
-  "size": [8.0, 0.5, 2.2],
+  "size": [16.8, 0.63, 4.62],
   "parts": [
-    { "id": "pcb", "geo": { "type": "box", "w": 8.0, "h": 0.2, "d": 2.2 }, "at": [0, 0.1, 0], "mat": "pcb" },
-    { "id": "fingers", "geo": { "type": "box", "w": 0.5, "h": 0.06, "d": 1.8 }, "at": [-3.75, 0.23, 0], "mat": "gold" },
-    { "id": "nand", "repeat": { "count": 4, "step": [0.85, 0, 0] }, "geo": { "type": "box", "w": 0.75, "h": 0.25, "d": 1.2 }, "at": [-2.0, 0.325, 0], "mat": "ic" },
-    { "id": "dram", "geo": { "type": "box", "w": 0.9, "h": 0.2, "d": 0.9 }, "at": [1.1, 0.3, 0.2], "mat": "ic" },
-    { "id": "controller", "geo": { "type": "box", "w": 1.1, "h": 0.3, "d": 1.1 }, "at": [2.5, 0.35, 0], "mat": "ic", "label": { "text": "CTRL", "size": 0.28, "color": "#e8eadf" } },
-    { "id": "label-plate", "geo": { "type": "box", "w": 2.0, "h": 0.02, "d": 0.35 }, "at": [-2.0, 0.21, -0.9], "mat": "silkscreen", "label": { "text": "2280", "size": 0.3, "color": "#1f2328" } }
+    {"id": "pcb", "geo": {"type": "box", "w": 16.8, "h": 0.315, "d": 4.62}, "at": [0.0, 0.1575, 0.0], "mat": "mask-green"},
+    {"id": "edge-pads", "geo": {"type": "box", "w": 0.252, "h": 0.021, "d": 0.105}, "at": [-7.938, 0.3805, -1.9845], "mat": "gold", "outline": false, "repeat": {"count": 22, "step": [0.0, 0.0, 0.189]}, "detail": 2},
+    {"id": "controller", "geo": {"type": "box", "w": 2.31, "h": 0.294, "d": 2.31}, "at": [-4.62, 0.4645, 0.0], "mat": "ic", "label": {"text": "CTRL", "size": 0.45, "color": "#e8eadf"}},
+    {"id": "nand", "geo": {"type": "box", "w": 1.89, "h": 0.21, "d": 2.31}, "at": [-0.84, 0.43, 0.0], "mat": "ic", "repeat": {"count": 4, "step": [2.1, 0.0, 0.0]}, "detail": 1},
+    {"id": "dram", "geo": {"type": "box", "w": 1.26, "h": 0.21, "d": 1.68}, "at": [7.035, 0.4225, -1.26], "mat": "ic", "detail": 1},
+    {"id": "standoff-pad", "geo": {"type": "ring", "ri": 0.252, "ro": 0.462}, "at": [7.875, 0.2892, 0.0], "mat": "copper", "outline": false},
+    {"id": "standoff", "geo": {"type": "cyl", "rt": 0.252, "rb": 0.252, "h": 0.252, "seg": 16}, "at": [7.875, 0.4435, 0.0], "mat": "nickel"},
+    {"id": "sticker", "geo": {"type": "box", "w": 3.36, "h": 0.042, "d": 0.945}, "at": [0.0, 0.3385, 1.785], "mat": "case-light", "label": {"text": "2280", "size": 0.5, "color": "#1f1f1f"}}
   ]
 }

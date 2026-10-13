@@ -12,17 +12,19 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read};
 use std::time::{Duration, Instant};
 
+use apz_gateway::Caller;
 use apz_http::client::Target;
 use apz_http::ws::{self, Message, Origins, Socket};
 use apz_http::{Request, Response, Router};
-use apz_plaza::treasury::Treasury;
 use serde_json::{json, Value};
 
 use crate::agents::Agent;
 use crate::internal::authorized;
+use crate::payments::{charge_model_call, paying_from};
 use crate::prices::{Tokens, USD_PER_CREDIT};
-use crate::settings::{tier_of, Tier};
+use crate::settings::{tier_of, ModelPolicy, Tier};
 use crate::state::App;
+use crate::vault::VaultError;
 
 /// How long one wait on a socket blocks: a relay reads its two sockets in turns.
 const TICK: Duration = Duration::from_millis(20);
@@ -61,6 +63,27 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .get("/internal/v1/agents/{cid}/gateway/openai/v1/models", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| list_models(app, cid, "openai"))
+        })
+        .post("/internal/v1/agents/{cid}/gateway/openrouter/v1/chat/completions", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| relay(app, req, cid, "openrouter", "/v1/chat/completions"))
+        })
+        .post("/internal/v1/agents/{cid}/gateway/openrouter/v1/messages", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| relay(app, req, cid, "openrouter", "/v1/messages"))
+        })
+        .get("/internal/v1/agents/{cid}/gateway/openrouter/v1/models", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| list_models(app, cid, "openrouter"))
+        })
+        .post("/internal/v1/agents/{cid}/gateway/opencode/v1/chat/completions", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| relay(app, req, cid, "opencode", "/v1/chat/completions"))
+        })
+        .post("/internal/v1/agents/{cid}/gateway/opencode/v1/responses", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| relay(app, req, cid, "opencode", "/v1/responses"))
+        })
+        .post("/internal/v1/agents/{cid}/gateway/opencode/v1/messages", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| relay(app, req, cid, "opencode", "/v1/messages"))
+        })
+        .get("/internal/v1/agents/{cid}/gateway/opencode/v1/models", |app, req, p| {
+            authorized(app, req, p.get("cid"), |cid| list_models(app, cid, "opencode"))
         })
 }
 
@@ -119,13 +142,18 @@ fn check_model(body: &mut Value, provider: &str, own: &str, list: &[String]) -> 
     }
 }
 
-/// The tier list an agent's model calls are held to: `None` when they are not held to one
-/// (dev models, or a worker).
-fn held_to(app: &App, agent: &Agent) -> Option<Vec<String>> {
-    if app.settings.dev_models() || tier_of(&agent.role) != Tier::Orchestrator {
+/// The tier list an agent's model calls are held to: the orchestrator's list, or `None` when they
+/// are not held to one. Workers are not held to a list (they may run any model), nor are dev models.
+fn held_list(dev_models: bool, tier: Tier, policy: &ModelPolicy) -> Option<Vec<String>> {
+    if dev_models || tier != Tier::Orchestrator {
         return None;
     }
-    Some(app.settings.get().model_policy.orchestrator)
+    Some(policy.orchestrator.clone())
+}
+
+/// [`held_list`] for `agent`, from the settings as they are now.
+fn held_to(app: &App, agent: &Agent) -> Option<Vec<String>> {
+    held_list(app.settings.dev_models(), tier_of(&agent.role), &app.settings.get().model_policy)
 }
 
 /// The upstream URL for `path` under `base`. A base that already ends in `/v1` takes the
@@ -291,16 +319,6 @@ fn current_task(app: &App, cid: u64) -> Option<String> {
     app.work.current(cid).and_then(|item| item.origin.task)
 }
 
-/// The money a model call is paid from: the task's escrow when the agent works on a task that
-/// still has money in it, else the agent's wallet. Returns the task to charge (`None` for the
-/// wallet) and the balance there.
-fn paying_from(task: Option<&str>, escrow: i128, wallet: i128) -> (Option<&str>, i128) {
-    match task {
-        Some(task) if escrow > 0 => (Some(task), escrow),
-        _ => (None, wallet),
-    }
-}
-
 /// The 402 message when agent `cid` cannot pay for a model call, or `None` when it can (or when
 /// charging is off).
 fn refusal(charging: bool, task: Option<&str>, escrow: i128, wallet: i128) -> Option<String> {
@@ -335,51 +353,17 @@ fn credits_for(cost_usd: Option<f64>, estimate: impl FnOnce() -> f64) -> i64 {
     (usd / USD_PER_CREDIT - 1e-9).ceil() as i64
 }
 
-/// What one model call's charge came to: the credits wanted, those charged, the balance of the
-/// payer, and the error when the treasury refused the charge.
-#[derive(Debug, Clone, PartialEq)]
-struct Settled {
-    wanted: i64,
-    charged: i64,
-    available: i128,
-    error: Option<String>,
-}
-
-/// Charges `credits` for agent `cid`'s call to its payer (see [`paying_from`]), capped at that
-/// payer's balance so no balance goes negative.
-fn settle(treasury: &Treasury, cid: u64, task: Option<&str>, credits: i64, memo: &str) -> Settled {
-    let escrow = task.map_or(0, |task| treasury.escrow_balance(task));
-    let (charge_task, available) = paying_from(task, escrow, treasury.wallet(cid));
-    let amount = i64::try_from(available.max(0)).unwrap_or(i64::MAX).min(credits);
-    let (charged, error) = if amount > 0 {
-        match treasury.charge_model(cid, charge_task, amount, memo) {
-            Ok(_) => (amount, None),
-            Err(e) => (0, Some(e.to_string())),
-        }
-    } else {
-        (0, None)
-    };
-    Settled { wanted: credits, charged, available, error }
-}
-
-/// Bills `credits` of one call to its payer when charging is on. `Some` only when the charge
-/// came up short (or was refused).
-fn bill(treasury: &Treasury, charging: bool, cid: u64, task: Option<&str>, credits: i64, model: &str) -> Option<Settled> {
-    if !charging || credits <= 0 {
-        return None;
-    }
-    let settled = settle(treasury, cid, task, credits, &format!("model {model} call"));
-    (settled.charged < settled.wanted).then_some(settled)
-}
-
-/// Bills agent `cid`'s model call after it ran. A shortfall is noted in the transcript.
+/// Bills agent `cid`'s model call after it ran, through the shared charge
+/// ([`charge_model_call`]). A shortfall is noted in the transcript.
 fn bill_call(app: &App, cid: u64, task: Option<&str>, model: &str, tokens: Tokens, cost_usd: Option<f64>) {
     let charging = app.settings.get().payments.charge_models;
     let credits = credits_for(cost_usd, || {
         let settings = app.settings.get();
         app.prices.lookup(model, &settings.prices).map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens))
     });
-    if let Some(settled) = bill(&app.plaza.treasury, charging, cid, task, credits, model) {
+    let spend = |task: &str, credits: i64| app.work.add_spend(task, credits);
+    let charge = charge_model_call(&app.plaza.treasury, charging, spend, cid, task, credits, &format!("model {model}"));
+    if let Some(settled) = charge.filter(|settled| settled.charged < settled.wanted) {
         let available = settled.available.clamp(0, i128::from(i64::MAX)) as i64;
         app.transcripts.record(
             &app.bus,
@@ -411,13 +395,26 @@ fn anthropic_headers(req: &Request) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The provider's upstream base and key, as the HTTP path takes them.
-fn provider_upstream(app: &App, provider: &str) -> Result<(String, String), Response> {
-    let (base, key) = app
-        .providers
-        .upstream(provider)
-        .ok_or_else(|| Response::error(503, &format!("no `{provider}` provider is configured")))?;
-    let key = key.ok_or_else(|| Response::error(503, &format!("the `{provider}` provider has no key")))?;
+/// The provider's upstream base and key for agent `cid`'s call, as the HTTP path takes them. The key
+/// is the one the vault holds for the agent's node (see `providers::Store::upstream`).
+fn provider_upstream(app: &App, provider: &str, cid: u64) -> Result<(String, String), Response> {
+    let caller = Caller::Agent { cid, node: crate::vault::node_for_cid(&app.nodes.list(), cid) };
+    upstream_for(&app.providers, provider, &caller).map_err(|(status, message)| Response::error(status, &message))
+}
+
+/// [`provider_upstream`] over the providers store: `Err` is the status and message that refuse the call.
+/// A sealed, uninitialised or tampered vault refuses it with 503 (`vault sealed`, or `vault tampered: …`);
+/// a key only other nodes hold refuses it with 403. No key is taken from the environment instead.
+fn upstream_for(providers: &crate::providers::Store, provider: &str, caller: &Caller) -> Result<(String, String), (u16, String)> {
+    let (base, key) = providers
+        .upstream(provider, caller)
+        .map_err(|err| match err {
+            VaultError::Tampered(_) => (503, err.message()),
+            VaultError::OutOfScope => (403, err.message()),
+            _ => (503, "vault sealed".to_string()),
+        })?
+        .ok_or_else(|| (503, format!("no `{provider}` provider is configured")))?;
+    let key = key.ok_or_else(|| (503, format!("the `{provider}` provider has no key")))?;
     Ok((base, key))
 }
 
@@ -435,13 +432,77 @@ fn upstream_post(
     let mut call = client.post(url.as_str());
     if provider == "anthropic" {
         call = call.header("x-api-key", key);
-        for (name, value) in headers {
-            call = call.header(name.as_str(), value.as_str());
-        }
     } else {
         call = call.header("authorization", format!("Bearer {key}"));
+        // The Messages path of OpenRouter and OpenCode takes the key as `x-api-key` too.
+        if is_aggregator(provider) && path.ends_with("/messages") {
+            call = call.header("x-api-key", key);
+        }
+    }
+    for (name, value) in headers {
+        call = call.header(name.as_str(), value.as_str());
     }
     call.send_json(body).map_err(|e| format!("upstream: {e}"))
+}
+
+/// OpenRouter and OpenCode, whose model ids are `provider/model` (the first `/` splits the provider off).
+fn is_aggregator(provider: &str) -> bool {
+    matches!(provider, "openrouter" | "opencode")
+}
+
+/// The headers a relayed call sends upstream beyond its key: the Anthropic version and beta headers
+/// for Anthropic and for the Messages path of OpenRouter and OpenCode, and those two providers' extra headers.
+fn upstream_headers(app: &App, req: &Request, provider: &str, path: &str) -> Vec<(String, String)> {
+    let mut headers = if provider == "anthropic" || (is_aggregator(provider) && path.ends_with("/messages")) {
+        anthropic_headers(req)
+    } else {
+        Vec::new()
+    };
+    if is_aggregator(provider) {
+        headers.extend(app.providers.extra_headers(provider));
+    }
+    headers
+}
+
+/// Why OpenCode cannot serve a call to `path` for `model` (provider-relative, as the agent names it), or
+/// `None` when it can. The Messages endpoint takes `claude-` models and a few Qwen ones; the Responses
+/// endpoint takes `gpt-`, `grok-` and `muse-spark-`; chat completions takes the rest, bar `claude-`,
+/// `gemini-` and `jev-`.
+pub fn opencode_endpoint_error(path: &str, model: &str) -> Option<String> {
+    let model = canonical(model);
+    let responses = model.starts_with("gpt-") || model.starts_with("grok-") || model.starts_with("muse-spark-");
+    if path.ends_with("messages") {
+        let qwen = ["qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus"];
+        if model.starts_with("claude-") || qwen.contains(&model) {
+            return None;
+        }
+        let (name, endpoint) = if responses {
+            ("responses", "/v1/responses")
+        } else {
+            ("chat completions", "/v1/chat/completions")
+        };
+        return Some(format!(
+            "OpenCode serves `{model}` on its {name} endpoint ({endpoint}), not Messages, so Claude Code cannot call it"
+        ));
+    }
+    if path.ends_with("responses") {
+        if responses {
+            return None;
+        }
+        let endpoint = if model.starts_with("claude-") { "/v1/messages" } else { "/v1/chat/completions" };
+        return Some(format!(
+            "the responses endpoint serves only gpt-, grok- and muse-spark- models; `{model}` belongs on {endpoint}"
+        ));
+    }
+    if path.ends_with("chat/completions") {
+        if model.starts_with("claude-") {
+            return Some(format!("`{model}` is served on /v1/messages, not chat completions"));
+        }
+        if model.starts_with("gemini-") || model.starts_with("jev-") {
+            return Some(format!("`{model}` is not relayed by the gateway: gemini- and jev- models are not served here"));
+        }
+    }
+    None
 }
 
 /// Relays one model call for agent `cid` to `provider`'s `path`, streaming when asked.
@@ -459,11 +520,18 @@ fn relay(app: &App, req: &Request, cid: u64, provider: &str, path: &str) -> Resu
             .map_err(|message| Response::json(403, &json!({ "error": message })))?;
     }
     let model = body.get("model").and_then(Value::as_str).unwrap_or_default().to_string();
+    if provider == "opencode" {
+        if let Some(message) = opencode_endpoint_error(path, &model) {
+            return Err(Response::json(400, &json!({ "error": message })));
+        }
+    }
+    // OpenRouter and OpenCode models are metered as `provider/model`, as the policy names them.
+    let model = if is_aggregator(provider) { format!("{provider}/{model}") } else { model };
     if let Some(message) = payment_refusal(app, cid) {
         return Err(Response::json(402, &json!({ "error": message })));
     }
-    let (base, key) = provider_upstream(app, provider)?;
-    let headers = anthropic_headers(req);
+    let (base, key) = provider_upstream(app, provider, cid)?;
+    let headers = upstream_headers(app, req, provider, path);
     let resp = upstream_post(provider, &base, &key, path, &headers, &body).map_err(|e| Response::error(502, &e))?;
 
     let status = resp.status().as_u16();
@@ -541,7 +609,7 @@ struct Grant {
 
 fn grant_for(app: &App, req: &Request, cid: u64, provider: &str) -> Result<Grant, Response> {
     let agent = app.agents.get(cid).ok_or_else(|| Response::error(404, "unknown agent"))?;
-    let (base, key) = provider_upstream(app, provider)?;
+    let (base, key) = provider_upstream(app, provider, cid)?;
     let _ = agent;
     Ok(Grant {
         cid,
@@ -804,6 +872,104 @@ fn list_models(app: &App, cid: u64, provider: &str) -> Result<Response, Response
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_sealed_vault_refuses_the_upstream_call_with_503_and_no_key() {
+        use crate::vault::{NewSecret, Scope};
+        use secrecy::SecretString;
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("apid-llm-sealed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = apz_plaza::now_ms();
+        let vault = Arc::new(crate::vault::Store::open(&dir, &dir.join("vault.key"), None));
+        vault.boot(now).unwrap();
+        vault
+            .create(
+                NewSecret {
+                    name: "ANTHROPIC_API_KEY".into(),
+                    kind: "api_key".into(),
+                    label: "test".into(),
+                    value: SecretString::from("PLAZA-VALUE-4417".to_string()),
+                    scope: Scope::Plaza,
+                    bindings: vec!["provider:anthropic".into()],
+                },
+                "owner",
+                now,
+            )
+            .unwrap();
+        let providers = crate::providers::Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let caller = Caller::Agent { cid: 7, node: Some("n3".into()) };
+        // Unsealed, the entry is served.
+        assert_eq!(upstream_for(&providers, "anthropic", &caller).map(|(_, key)| key).as_deref(), Ok("PLAZA-VALUE-4417"));
+        vault.seal("owner", now).unwrap();
+        assert_eq!(upstream_for(&providers, "anthropic", &caller), Err((503, "vault sealed".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A booted vault in `dir` with one Anthropic key entry in `scope`.
+    fn anthropic_key_in(dir: &std::path::Path, scope: crate::vault::Scope) -> std::sync::Arc<crate::vault::Store> {
+        use crate::vault::NewSecret;
+        use secrecy::SecretString;
+        let now = apz_plaza::now_ms();
+        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        vault.boot(now).unwrap();
+        vault
+            .create(
+                NewSecret {
+                    name: "ANTHROPIC_API_KEY".into(),
+                    kind: "api_key".into(),
+                    label: "test".into(),
+                    value: SecretString::from("PLAZA-VALUE-4417".to_string()),
+                    scope,
+                    bindings: vec!["provider:anthropic".into()],
+                },
+                "owner",
+                now,
+            )
+            .unwrap();
+        std::sync::Arc::new(vault)
+    }
+
+    #[test]
+    fn a_tampered_vault_refuses_the_upstream_call_with_503_naming_the_tamper() {
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("apid-llm-tampered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = anthropic_key_in(&dir, crate::vault::Scope::Plaza);
+        drop(vault);
+        let path = dir.join("vault.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replacen("provider:anthropic", "provider:anthropix", 1)).unwrap();
+        // Boot refuses the changed file; the vault stays up to say why.
+        let vault = crate::vault::Store::open(&dir, &dir.join("vault.key"), None);
+        let _ = vault.boot(apz_plaza::now_ms());
+        let providers = crate::providers::Store::load(&dir, Arc::new(vault)).unwrap();
+        let caller = Caller::Agent { cid: 7, node: Some("n3".into()) };
+        let refusal = upstream_for(&providers, "anthropic", &caller).err();
+        assert_eq!(refusal.as_ref().map(|(status, _)| *status), Some(503));
+        let message = refusal.unwrap().1;
+        assert!(message.starts_with("vault tampered: ") && message.contains("index MAC"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_agent_off_the_nodes_holding_the_key_is_refused_403_by_the_upstream_call() {
+        use crate::vault::Scope;
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("apid-llm-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = anthropic_key_in(&dir, Scope::Nodes { nodes: vec!["n3".into()] });
+        let providers = crate::providers::Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let elsewhere = Caller::Agent { cid: 7, node: Some("n4".into()) };
+        assert_eq!(
+            upstream_for(&providers, "anthropic", &elsewhere),
+            Err((403, "that secret is not scoped to this node".to_string()))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn allowed(models: &[&str]) -> Vec<String> {
         models.iter().map(|m| m.to_string()).collect()
     }
@@ -813,6 +979,22 @@ mod tests {
         let list = allowed(&["anthropic/claude-haiku-5-5", "anthropic/claude-opus-5-5@low"]);
         assert_eq!(decide_model("anthropic", "claude-haiku-5-5", "anthropic/claude-haiku-5-5", &list), Decision::Allow);
         assert_eq!(decide_model("anthropic", "claude-opus-5-5", "anthropic/claude-haiku-5-5", &list), Decision::Allow);
+    }
+
+    #[test]
+    fn workers_are_not_held_to_a_model_list_and_the_orchestrator_is() {
+        let policy = ModelPolicy::default();
+        // Workers may run any model: no list is handed to the relay for them, dev models neither.
+        assert_eq!(held_list(false, Tier::Worker, &policy), None);
+        assert_eq!(held_list(true, Tier::Orchestrator, &policy), None);
+        // The orchestrator is held to its own list, fail closed.
+        assert_eq!(held_list(false, Tier::Orchestrator, &policy), Some(policy.orchestrator.clone()));
+        let list = held_list(false, Tier::Orchestrator, &policy).unwrap();
+        assert_eq!(decide_model("anthropic", "claude-fable-5-1", "anthropic/claude-opus-5-5", &list), Decision::Allow);
+        assert!(matches!(
+            decide_model("deepseek", "deepseek-flash", "anthropic/claude-opus-5-5", &list),
+            Decision::Refuse(_)
+        ));
     }
 
     #[test]
@@ -860,6 +1042,84 @@ mod tests {
             "https://api.openai.com/v1/chat/completions"
         );
         assert_eq!(ws_base("https://api.openai.com/v1/"), "https://api.openai.com");
+    }
+
+    #[test]
+    fn an_openrouter_model_is_policed_as_its_provider_prefixed_id() {
+        let own = "openrouter/anthropic/claude-y";
+        assert_eq!(
+            decide_model("openrouter", "anthropic/claude-x", own, &allowed(&["openrouter/anthropic/claude-x"])),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide_model("openrouter", "anthropic/claude-x", own, &allowed(&["openrouter/anthropic/claude-z"])),
+            Decision::Rewrite("anthropic/claude-y".into())
+        );
+        assert!(matches!(
+            decide_model("openrouter", "anthropic/claude-x", "anthropic/claude-y", &allowed(&["openrouter/anthropic/claude-z"])),
+            Decision::Refuse(_)
+        ));
+    }
+
+    #[test]
+    fn opencode_calls_go_to_the_endpoint_their_model_is_served_on() {
+        assert_eq!(opencode_endpoint_error("/v1/messages", "claude-x"), None);
+        assert!(opencode_endpoint_error("/v1/messages", "gpt-5.6-terra").is_some());
+        assert!(opencode_endpoint_error("/v1/messages", "deepseek-v4-pro").is_some());
+        assert_eq!(opencode_endpoint_error("/v1/responses", "gpt-5.6-terra"), None);
+        assert!(opencode_endpoint_error("/v1/responses", "claude-x").is_some());
+        assert_eq!(opencode_endpoint_error("/v1/chat/completions", "deepseek-v4-pro"), None);
+        assert!(opencode_endpoint_error("/v1/chat/completions", "claude-x").is_some());
+        assert!(opencode_endpoint_error("/v1/chat/completions", "gemini-3-flash").is_some());
+    }
+
+    /// Reads one HTTP request: its head, and a body as long as its Content-Length says.
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&seen).to_lowercase();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let len = text[..end]
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if seen.len() >= end + 4 + len {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&seen).to_string()
+    }
+
+    #[test]
+    fn an_openrouter_messages_call_goes_upstream_with_its_bearer_key_x_api_key_and_referer() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let seen = read_request(&mut stream);
+            let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            std::io::Write::write_all(&mut stream, reply.as_bytes()).unwrap();
+            seen
+        });
+        let headers = [("HTTP-Referer".to_string(), "https://plaza.example".to_string())];
+        let body = json!({ "model": "anthropic/claude-x", "messages": [] });
+        let base = format!("http://{addr}/api/v1");
+        let resp = upstream_post("openrouter", &base, "sk-test-7", "/v1/messages", &headers, &body).unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let seen = server.join().unwrap().to_lowercase();
+        assert!(seen.starts_with("post /api/v1/messages http/1.1"), "{seen}");
+        assert!(seen.contains("authorization: bearer sk-test-7\r\n"), "{seen}");
+        assert!(seen.contains("x-api-key: sk-test-7\r\n"), "{seen}");
+        assert!(seen.contains("http-referer: https://plaza.example\r\n"), "{seen}");
     }
 
     #[test]
@@ -992,6 +1252,8 @@ data: [DONE]\n\n";
         assert_eq!(sse_frame(&json!(7), "ping", "not json")["data"], json!("not json"));
     }
 
+    use apz_plaza::treasury::Treasury;
+
     const PAYER: u64 = 7;
 
     /// A treasury where agent `PAYER` has `wallet` credits (paid from the task "job", whose
@@ -1030,7 +1292,7 @@ data: [DONE]\n\n";
     fn charging_off_never_refuses_and_charges_nothing() {
         assert_eq!(refusal(false, None, 0, 0), None);
         let treasury = funded(100);
-        assert_eq!(bill(&treasury, false, PAYER, None, 50, "m"), None);
+        assert_eq!(charge_model_call(&treasury, false, |_, _| {}, PAYER, None, 50, "m"), None);
         assert_eq!(treasury.wallet(PAYER), 100);
     }
 
@@ -1051,7 +1313,7 @@ data: [DONE]\n\n";
     #[test]
     fn a_call_is_charged_its_credits_from_the_wallet() {
         let treasury = funded(100);
-        let settled = settle(&treasury, PAYER, None, 50, "model call");
+        let settled = crate::payments::settle(&treasury, PAYER, None, 50, "model call");
         assert_eq!((settled.wanted, settled.charged), (50, 50));
         assert_eq!(settled.error, None);
         assert_eq!(treasury.wallet(PAYER), 50);
@@ -1060,12 +1322,12 @@ data: [DONE]\n\n";
     #[test]
     fn a_charge_larger_than_the_balance_is_capped_and_never_negative() {
         let treasury = funded(30);
-        let settled = bill(&treasury, true, PAYER, None, 50, "model call").expect("short, so noted");
+        let settled = charge_model_call(&treasury, true, |_, _| {}, PAYER, None, 50, "model call").expect("short, so noted");
         assert_eq!((settled.wanted, settled.charged, settled.available), (50, 30, 30));
         assert_eq!(treasury.wallet(PAYER), 0);
         // A broke agent is charged nothing, and the call still goes through.
         let broke = funded(0);
-        let settled = bill(&broke, true, PAYER, None, 5, "model call").expect("short, so noted");
+        let settled = charge_model_call(&broke, true, |_, _| {}, PAYER, None, 5, "model call").expect("short, so noted");
         assert_eq!((settled.charged, settled.available), (0, 0));
         assert_eq!(broke.wallet(PAYER), 0);
     }
@@ -1074,13 +1336,147 @@ data: [DONE]\n\n";
     fn a_task_escrow_pays_first_and_is_capped_there() {
         let treasury = funded(30);
         // The task keeps 1000 in escrow: a 1200 charge is capped there, the wallet is untouched.
-        let settled = settle(&treasury, PAYER, Some("job"), 1200, "model call");
+        let settled = crate::payments::settle(&treasury, PAYER, Some("job"), 1200, "model call");
         assert_eq!((settled.charged, settled.available), (1000, 1000));
         assert_eq!(treasury.escrow_balance("job"), 0);
         assert_eq!(treasury.wallet(PAYER), 30);
         // With the escrow empty, the wallet pays.
-        let settled = settle(&treasury, PAYER, Some("job"), 10, "model call");
+        let settled = crate::payments::settle(&treasury, PAYER, Some("job"), 10, "model call");
         assert_eq!((settled.charged, settled.available), (10, 30));
         assert_eq!(treasury.wallet(PAYER), 20);
+    }
+
+    /// What a mock upstream saw of one call: the request line and the whole head, lowercased.
+    struct Recorded {
+        line: String,
+        head: String,
+    }
+
+    /// A local upstream on 127.0.0.1 that reads one request, records it and answers 200 with `json`. The
+    /// base is the server's root; the receiver yields what it saw once the request has arrived.
+    fn spawn_mock(json: &'static str) -> (String, std::sync::mpsc::Receiver<Recorded>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let head = read_request(&mut stream).to_lowercase();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                json.len()
+            );
+            std::io::Write::write_all(&mut stream, reply.as_bytes()).unwrap();
+            let line = head.lines().next().unwrap_or_default().to_string();
+            tx.send(Recorded { line, head }).unwrap();
+        });
+        (root, rx)
+    }
+
+    /// The attribution headers the OpenRouter preset sends with every call.
+    fn openrouter_attribution() -> Vec<(String, String)> {
+        vec![
+            ("HTTP-Referer".to_string(), "https://agentplaza.io".to_string()),
+            ("X-OpenRouter-Title".to_string(), "AgentPlaza".to_string()),
+        ]
+    }
+
+    /// POSTs a call for `model` to `path` through `upstream_post`, with a provider base of a fresh mock's root
+    /// plus `prefix`. Returns what the mock saw; the call must have been answered 200.
+    fn post_to_mock(
+        provider: &str,
+        prefix: &str,
+        key: &str,
+        path: &str,
+        headers: &[(String, String)],
+        model: &str,
+    ) -> Recorded {
+        let (root, rx) = spawn_mock(r#"{"id":"c","choices":[]}"#);
+        let body = json!({ "model": model, "max_tokens": 1, "messages": [] });
+        let resp = upstream_post(provider, &format!("{root}{prefix}"), key, path, headers, &body).unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        rx.recv().unwrap()
+    }
+
+    #[test]
+    fn an_openrouter_chat_call_goes_to_its_base_v1_with_the_bearer_key_and_attribution() {
+        let seen = post_to_mock(
+            "openrouter",
+            "/api/v1",
+            "test-key-openrouter",
+            "/v1/chat/completions",
+            &openrouter_attribution(),
+            "openai/gpt-x",
+        );
+        assert_eq!(seen.line, "post /api/v1/chat/completions http/1.1");
+        assert!(seen.head.contains("authorization: bearer test-key-openrouter\r\n"), "{}", seen.head);
+        assert!(seen.head.contains("http-referer: https://agentplaza.io\r\n"), "{}", seen.head);
+        assert!(seen.head.contains("x-openrouter-title: agentplaza\r\n"), "{}", seen.head);
+        assert!(!seen.head.contains("x-api-key:"), "{}", seen.head);
+    }
+
+    #[test]
+    fn an_openrouter_messages_call_goes_to_its_base_v1_with_x_api_key_and_attribution() {
+        let mut headers = openrouter_attribution();
+        headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
+        let seen = post_to_mock(
+            "openrouter",
+            "/api/v1",
+            "test-key-openrouter",
+            "/v1/messages",
+            &headers,
+            "anthropic/claude-sonnet-5-5",
+        );
+        assert_eq!(seen.line, "post /api/v1/messages http/1.1");
+        assert!(seen.head.contains("authorization: bearer test-key-openrouter\r\n"), "{}", seen.head);
+        assert!(seen.head.contains("x-api-key: test-key-openrouter\r\n"), "{}", seen.head);
+        assert!(seen.head.contains("http-referer: https://agentplaza.io\r\n"), "{}", seen.head);
+        assert!(seen.head.contains("x-openrouter-title: agentplaza\r\n"), "{}", seen.head);
+    }
+
+    #[test]
+    fn an_opencode_chat_call_goes_to_its_inference_v1_with_the_bearer_key_and_no_attribution() {
+        let seen = post_to_mock("opencode", "/inference/v1", "test-key-opencode", "/v1/chat/completions", &[], "deepseek-v4-pro");
+        assert_eq!(seen.line, "post /inference/v1/chat/completions http/1.1");
+        assert!(seen.head.contains("authorization: bearer test-key-opencode\r\n"), "{}", seen.head);
+        assert!(!seen.head.contains("x-api-key:"), "{}", seen.head);
+        assert!(!seen.head.contains("http-referer:"), "{}", seen.head);
+    }
+
+    #[test]
+    fn an_opencode_responses_call_goes_to_its_inference_v1_with_the_bearer_key() {
+        let seen = post_to_mock("opencode", "/inference/v1", "test-key-opencode", "/v1/responses", &[], "gpt-5.6-terra");
+        assert_eq!(seen.line, "post /inference/v1/responses http/1.1");
+        assert!(seen.head.contains("authorization: bearer test-key-opencode\r\n"), "{}", seen.head);
+    }
+
+    #[test]
+    fn an_opencode_messages_call_goes_to_its_inference_v1_with_bearer_and_x_api_key() {
+        let headers = [("anthropic-version".to_string(), "2023-06-01".to_string())];
+        let seen = post_to_mock("opencode", "/inference/v1", "test-key-opencode", "/v1/messages", &headers, "claude-sonnet-5-5");
+        assert_eq!(seen.line, "post /inference/v1/messages http/1.1");
+        assert!(seen.head.contains("authorization: bearer test-key-opencode\r\n"), "{}", seen.head);
+        assert!(seen.head.contains("x-api-key: test-key-opencode\r\n"), "{}", seen.head);
+    }
+
+    #[test]
+    fn opencode_refuses_a_deepseek_model_on_messages_and_names_the_chat_completions_endpoint() {
+        let message = opencode_endpoint_error("/v1/messages", "deepseek-v4-pro").expect("refused");
+        assert!(message.contains("/v1/chat/completions"), "{message}");
+        assert!(message.contains("deepseek-v4-pro"), "{message}");
+        assert!(!message.contains("/v1/responses"), "{message}");
+    }
+
+    #[test]
+    fn opencode_refuses_a_claude_model_on_responses_and_names_the_messages_endpoint() {
+        let message = opencode_endpoint_error("/v1/responses", "claude-sonnet-5-5").expect("refused");
+        assert!(message.contains("/v1/messages"), "{message}");
+        assert!(message.contains("claude-sonnet-5-5"), "{message}");
+    }
+
+    #[test]
+    fn opencode_refuses_a_gpt_model_on_messages_and_names_the_responses_endpoint() {
+        let message = opencode_endpoint_error("/v1/messages", "gpt-5.6-terra").expect("refused");
+        assert!(message.contains("/v1/responses"), "{message}");
+        assert!(message.contains("gpt-5.6-terra"), "{message}");
     }
 }

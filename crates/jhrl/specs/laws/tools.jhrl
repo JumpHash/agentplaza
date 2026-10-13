@@ -6,7 +6,7 @@
 //   principal.tier     "orchestrator" | "worker" (settings::tier_of)
 //   principal.seated   Bool, the agent's role holds a council seat (council::is_seated)
 //   resource.name      the tool's name, e.g. "plaza_post_task"
-//   resource.kind      "connector" | "library" | "host" | "guest" (laws.rs tool_kind)
+//   resource.kind      "connector" | "mcp" | "library" | "host" | "guest" (laws.rs tool_kind)
 
 law "T-001" "Every agent may use its own workspace tools" {
   tier statute
@@ -150,4 +150,16 @@ law "T-012" "Only the orchestrator proposes new agents" {
   principal is Agent
   resource is Tool
   when resource.name == "plaza_agent_propose" and principal.tier == "orchestrator"
+}
+
+law "T-013" "Agents may use enabled MCP tools" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may use an MCP tool that the owner enabled for its role and node."
+  rationale "An MCP server is an outside tool the owner added. Its access list decides which roles and nodes are offered its tools (mcp::allowed); this law lets an agent call the tools it was offered. The owner rules may still forbid or limit a call through mcp.call."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.kind == "mcp"
 }

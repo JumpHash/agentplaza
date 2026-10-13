@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "penguin",
   "name": "Waddles",
-  "blurb": "A tuxedo penguin with flipper arms and orange feet. It waddles about, then flops onto its belly to slide.",
+  "blurb": "A tuxedo penguin with flipper arms and orange feet. It waddles about, then flops onto its belly to slide. The audit warnings are on purpose: the head sits in the egg-shaped body, the white front plate sinks into the head, and the head is small against the body.",
   "accent": "#ff9d3b",
   "height": 1.0,
   "label_top": 1.18,
@@ -12,10 +12,10 @@
     "base": { "parent": "root", "at": [0, 0, 0] },
     "body": { "parent": "root", "at": [0, 0, 0] },
     "head": { "parent": "body", "at": [0, 0.74, 0] },
-    "armL": { "parent": "body", "at": [-0.3, 0.5, 0] },
-    "armR": { "parent": "body", "at": [0.3, 0.5, 0] },
-    "gripL": { "parent": "armL", "at": [0, -0.36, 0.1] },
-    "gripR": { "parent": "armR", "at": [0, -0.36, 0.1] },
+    "armL": { "parent": "body", "at": [-0.42, 0.5, 0] },
+    "armR": { "parent": "body", "at": [0.42, 0.5, 0] },
+    "gripL": { "parent": "armL", "at": [0, -0.36, 0.4] },
+    "gripR": { "parent": "armR", "at": [0, -0.36, 0.4] },
     "carry": { "parent": "body", "at": [0, 0.2, 0.46] },
     "footL": { "parent": "base", "at": [-0.13, 0, 0.02] },
     "footR": { "parent": "base", "at": [0.13, 0, 0.02] }
@@ -25,18 +25,19 @@
     { "bone": "body", "geo": { "type": "sphere", "r": 0.26 }, "at": [0, 0.4, 0.24], "scale": [0.9, 1.15, 0.4], "mat": "paper", "outline": false },
 
     { "bone": "head", "geo": { "type": "sphere", "r": 0.24 }, "mat": "shell" },
-    { "bone": "head", "geo": { "type": "sphere", "r": 0.2 }, "at": [0, -0.02, 0.2], "scale": [1, 0.9, 0.35], "mat": "paper", "outline": false },
-    { "bone": "head", "geo": { "type": "cone", "r": 0.06, "h": 0.12 }, "rot": [90, 0, 0], "at": [0, -0.05, 0.27], "mat": "signal" },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.2 }, "at": [0, -0.06, 0.155], "scale": [1, 0.9, 0.45], "mat": "paper", "outline": false },
+    { "bone": "head", "geo": { "type": "cone", "r": 0.085, "h": 0.2 }, "rot": [100, 0, 0], "scale": [1, 1, 0.5], "at": [0, -0.137, 0.294], "mat": "accent" },
 
     { "bone": "armL", "geo": { "type": "rbox", "w": 0.12, "h": 0.42, "d": 0.22, "r": 0.06, "seg": [3] }, "at": [0, -0.22, 0], "rot": [0, 0, -10], "mat": "shell2" },
     { "bone": "armR", "geo": { "type": "rbox", "w": 0.12, "h": 0.42, "d": 0.22, "r": 0.06, "seg": [3] }, "at": [0, -0.22, 0], "rot": [0, 0, 10], "mat": "shell2" },
 
-    { "bone": "footL", "geo": { "type": "rbox", "w": 0.16, "h": 0.07, "d": 0.26, "r": 0.03, "seg": [2] }, "at": [0, 0.035, 0.06], "mat": "accent", "outline": false },
-    { "bone": "footR", "geo": { "type": "rbox", "w": 0.16, "h": 0.07, "d": 0.26, "r": 0.03, "seg": [2] }, "at": [0, 0.035, 0.06], "mat": "accent", "outline": false }
+    { "bone": "base", "geo": { "type": "cyl", "rt": 0.2, "rb": 0.2, "h": 0.06, "seg": [16] }, "at": [0, 0.03, 0.02], "mat": "shell2", "outline": false },
+    { "bone": "footL", "geo": { "type": "rbox", "w": 0.16, "h": 0.07, "d": 0.26, "r": 0.03, "seg": [2] }, "at": [0, 0.03, 0.06], "mat": "accent", "outline": false },
+    { "bone": "footR", "geo": { "type": "rbox", "w": 0.16, "h": 0.07, "d": 0.26, "r": 0.03, "seg": [2] }, "at": [0, 0.03, 0.06], "mat": "accent", "outline": false }
   ],
   "eyes": [
-    { "bone": "head", "at": [-0.1, 0.06, 0.265], "r": 0.075, "pupil": 0.05, "shape": "round" },
-    { "bone": "head", "at": [0.1, 0.06, 0.265], "r": 0.075, "pupil": 0.05, "shape": "round" }
+    { "bone": "head", "at": [-0.095, 0.02, 0.2462], "r": 0.075, "pupil": 0.05, "shape": "round" },
+    { "bone": "head", "at": [0.095, 0.02, 0.2462], "r": 0.075, "pupil": 0.05, "shape": "round" }
   ],
   "spin": [],
   "feet": ["footL", "footR"],

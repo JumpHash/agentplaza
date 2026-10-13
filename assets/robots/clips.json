@@ -642,6 +642,44 @@
         {"bone": "armR", "prop": "rot.x", "base": 0.08},
         {"bone": "body", "prop": "pos.y", "amp": 0.008, "freq": 0.2}
       ]
+    },
+    "jump.crouch": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "scale", "base": 0.92 },
+        { "bone": "body", "prop": "pos.y", "base": -0.06 },
+        { "bone": "armL", "prop": "rot.z", "base": -0.5 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.5 },
+        { "bone": "head", "prop": "rot.x", "base": 0.15 }
+      ]
+    },
+    "jump.air": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "scale", "base": 1.04 },
+        { "bone": "body", "prop": "pos.y", "base": 0.02 },
+        { "bone": "armL", "prop": "rot.z", "base": -2.4 },
+        { "bone": "armR", "prop": "rot.z", "base": 2.4 },
+        { "bone": "head", "prop": "rot.x", "base": -0.2 }
+      ]
+    },
+    "fall.air": {
+      "loop": true,
+      "channels": [
+        { "bone": "armL", "prop": "rot.z", "base": -1.6 },
+        { "bone": "armR", "prop": "rot.z", "base": 1.6 },
+        { "bone": "head", "prop": "rot.x", "base": 0.1 }
+      ]
+    },
+    "land": {
+      "loop": false,
+      "dur": 0.3,
+      "channels": [
+        { "bone": "body", "prop": "scale", "base": 0.86 },
+        { "bone": "body", "prop": "pos.y", "base": -0.05 },
+        { "bone": "armL", "prop": "rot.z", "base": -0.4 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.4 }
+      ]
     }
   }
 }

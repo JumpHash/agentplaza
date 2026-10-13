@@ -1,7 +1,6 @@
 //! External-tool connectors. Every call to an outside service is made here, at
-//! the orchestrator: a connector's credentials live in `connector-secrets.json`
-//! (0600, write-only through the API) or in apid's environment, and never enter
-//! a VM. Each action carries a risk class (`read`, `write` or `irreversible`) for
+//! the orchestrator: a connector's credentials are vault entries (docs/design/vault.md),
+//! write-only through the API, and never enter a VM. Each action carries a risk class (`read`, `write` or `irreversible`) for
 //! the policy that gates it.
 //!
 //! `CATALOG` is data. `Store` holds what the operator enabled and the credential
@@ -11,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, Router};
@@ -21,6 +20,8 @@ use serde_json::{json, Map, Value};
 
 use crate::providers::write_atomic;
 use crate::state::App;
+use crate::vault::{node_for_cid, OnBehalf};
+use secrecy::SecretString;
 
 /// How much of a response body `call` returns.
 const BODY_CAP: usize = 256 * 1024;
@@ -28,8 +29,6 @@ const BODY_CAP: usize = 256 * 1024;
 const BINARY_CAP: usize = 100 * 1024 * 1024;
 /// The timeout of one upstream request.
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// The vault file: `{connector: {field: value}}`.
-const VAULT: &str = "connector-secrets.json";
 
 /// A failed mutation: the HTTP status and a message that never names a value.
 type Failure = (u16, String);
@@ -66,11 +65,14 @@ impl Kind {
     }
 }
 
-/// Where a field's value came from.
+/// Where a field's value comes from, for the views: the vault, the process environment, or why not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     Vault,
     Env,
+    Missing,
+    Sealed,
+    OutOfScope,
 }
 
 impl Source {
@@ -78,8 +80,30 @@ impl Source {
         match self {
             Source::Vault => "vault",
             Source::Env => "env",
+            Source::Missing => "missing",
+            Source::Sealed => "sealed",
+            Source::OutOfScope => "out_of_scope",
         }
     }
+}
+
+/// The vault binding of a connector's credentials.
+fn binding_of(id: &str) -> String {
+    format!("connector:{id}")
+}
+
+/// A vault refusal as a failure of a connector route. A sealed vault is 503; no message carries a value.
+fn vault_failure(err: crate::vault::VaultError) -> Failure {
+    use crate::vault::VaultError as E;
+    let status = match &err {
+        E::Uninitialized | E::Sealed | E::Tampered(_) => 503,
+        E::Conflict(_) | E::LastSlot => 409,
+        E::Invalid(_) => 400,
+        E::NotFound => 404,
+        E::OutOfScope => 403,
+        _ => 500,
+    };
+    (status, err.message())
 }
 
 /// One named credential of a connector. The vault holds it under `name`; when the
@@ -498,12 +522,12 @@ pub fn catalog() -> Vec<&'static Connector> {
     all
 }
 
-fn find(id: &str) -> Option<&'static Connector> {
+pub(crate) fn find(id: &str) -> Option<&'static Connector> {
     catalog().into_iter().find(|c| c.id == id)
 }
 
 /// The connector's main key: the first required field, else the first field.
-fn main_field(c: &Connector) -> Option<&'static Field> {
+pub(crate) fn main_field(c: &Connector) -> Option<&'static Field> {
     c.fields.iter().find(|f| f.required).or_else(|| c.fields.first())
 }
 
@@ -541,10 +565,8 @@ struct Patch {
 pub struct Store {
     dir: PathBuf,
     settings: Mutex<BTreeMap<String, Setting>>,
-    /// Connector id → field name → value, as the vault holds them.
-    vault: Mutex<BTreeMap<String, BTreeMap<String, String>>>,
-    /// apid's environment, read once at start: the env file over the process's own.
-    env: BTreeMap<String, String>,
+    /// The vault. A connector field's credential is the entry named `Field.env`, bound to `connector:<id>`.
+    vault: Arc<crate::vault::Store>,
     /// Serializes every write to the files.
     write: Mutex<()>,
     /// Every connector proposal an agent made, oldest first. Kept whatever its state.
@@ -552,60 +574,66 @@ pub struct Store {
 }
 
 impl Store {
-    /// Loads `<state-dir>/connectors.json`, the vault and the proposals. A connector
-    /// without a setting is disabled. The vault may hold the old shape, `{connector: "key"}`,
-    /// which is read as the connector's main key; entries for connectors or fields
-    /// the catalog does not know are dropped. Approved proposals join the catalog first,
-    /// so their vaulted fields load too.
-    pub fn load(state_dir: &Path, env: BTreeMap<String, String>) -> io::Result<Self> {
+    /// Loads `<state-dir>/connectors.json` and the proposals. A connector without a setting is disabled.
+    /// Approved proposals join the catalog first, so their fields register with the vault too.
+    pub fn load(state_dir: &Path, vault: Arc<crate::vault::Store>) -> io::Result<Self> {
         std::fs::create_dir_all(state_dir)?;
         let proposals = read_proposals(&state_dir.join(PROPOSALS))?;
         for proposal in proposals.iter().filter(|p| p.state == "approved") {
             adopt(&proposal.spec);
         }
-        Ok(Self {
+        let store = Self {
             dir: state_dir.to_path_buf(),
             settings: Mutex::new(read_map(&state_dir.join("connectors.json"))?),
-            vault: Mutex::new(read_vault(&state_dir.join(VAULT))?),
-            env,
+            vault,
             write: Mutex::new(()),
             proposals: Mutex::new(proposals),
-        })
+        };
+        store.register();
+        Ok(store)
+    }
+
+    /// Registers every catalog field with the vault: its binding, the connector's label, and the entry name it
+    /// reads. Called at load and after every change.
+    pub fn register(&self) {
+        for c in catalog() {
+            for f in c.fields {
+                self.vault.register_consumer(&binding_of(c.id), c.label, f.env);
+            }
+        }
     }
 
     fn setting(&self, id: &str) -> Setting {
         lock(&self.settings).get(id).cloned().unwrap_or_default()
     }
 
-    /// A field's value and where it came from: the vault, else the environment.
-    fn resolve(&self, id: &str, field: &Field) -> Option<(String, Source)> {
-        let vaulted = lock(&self.vault)
-            .get(id)
-            .and_then(|fields| fields.get(field.name))
-            .filter(|v| !v.is_empty())
-            .cloned();
-        if let Some(value) = vaulted {
-            return Some((value, Source::Vault));
+    /// Where a field's value comes from, for the views. A presence check: nothing is decrypted or audited.
+    fn source_of(&self, id: &str, field: &Field) -> Source {
+        match self.vault.presence(field.env, &binding_of(id)) {
+            "secret" => Source::Vault,
+            "missing" if std::env::var(field.env).is_ok_and(|v| !v.is_empty()) => Source::Env,
+            "missing" => Source::Missing,
+            "out_of_scope" => Source::OutOfScope,
+            _ => Source::Sealed,
         }
-        self.env
-            .get(field.env)
-            .cloned()
-            .or_else(|| std::env::var(field.env).ok())
-            .filter(|v| !v.is_empty())
-            .map(|v| (v, Source::Env))
     }
 
-    /// Every field that has a value, by field name.
-    fn values(&self, c: &Connector) -> BTreeMap<String, String> {
+    /// Every field that has a value, by field name, as `on_behalf` may read it. Gathered per call, never cached.
+    fn values(&self, c: &Connector, on_behalf: &OnBehalf) -> BTreeMap<String, String> {
         c.fields
             .iter()
-            .filter_map(|f| self.resolve(c.id, f).map(|(value, _)| (f.name.to_string(), value)))
+            .filter_map(|f| self.vault.value_for(f.env, &binding_of(c.id), on_behalf).map(|v| (f.name.to_string(), v)))
             .collect()
     }
 
-    /// True when every required field has a value.
+    /// True when every required field is in `values`.
+    fn complete(c: &Connector, values: &BTreeMap<String, String>) -> bool {
+        c.fields.iter().filter(|f| f.required).all(|f| values.contains_key(f.name))
+    }
+
+    /// True when every required field has a source (the views: no decrypt).
     fn configured(&self, c: &Connector) -> bool {
-        c.fields.iter().filter(|f| f.required).all(|f| self.resolve(c.id, f).is_some())
+        c.fields.iter().filter(|f| f.required).all(|f| matches!(self.source_of(c.id, f), Source::Vault | Source::Env))
     }
 
     /// The whole catalog with each connector's settings. Never carries a value.
@@ -621,9 +649,8 @@ impl Store {
             .fields
             .iter()
             .map(|f| {
-                let found = self.resolve(c.id, f);
-                let set = found.is_some();
-                let source = found.map(|(_, source)| source.as_str());
+                let source = self.source_of(c.id, f);
+                let set = matches!(source, Source::Vault | Source::Env);
                 json!({
                     "name": f.name,
                     "label": f.label,
@@ -632,7 +659,7 @@ impl Store {
                     "secret": f.secret,
                     "required": f.required,
                     "set": set,
-                    "source": source,
+                    "source": source.as_str(),
                 })
             })
             .collect();
@@ -676,55 +703,61 @@ impl Store {
         Ok(self.view(c))
     }
 
-    /// Stores one field write-only, in the vault. No field names the main key.
+    /// Stores one field write-only, as the vault entry `Field.env` that `connector:<id>` reads. No field names the
+    /// main key. A new value for a name another consumer already reads is a new version of that entry.
     fn set_secret(&self, id: &str, field: Option<&str>, value: &str) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
         let field = pick_field(c, field)?;
         let _guard = lock(&self.write);
-        let mut next = lock(&self.vault).clone();
-        next.entry(id.to_string())
-            .or_default()
-            .insert(field.name.to_string(), value.to_string());
-        save(&self.dir.join(VAULT), &next).map_err(io_failure)?;
-        *lock(&self.vault) = next;
+        let label = format!("{}: {}", c.label, field.label);
+        self.vault
+            .put_plaza(field.env, &binding_of(c.id), &label, &SecretString::from(value.to_string()), "owner", apz_plaza::now_ms())
+            .map_err(vault_failure)?;
+        self.register();
         Ok(self.view(c))
     }
 
-    /// Removes one field from the vault, or every vaulted field when none is named.
+    /// Removes this connector's binding from the named field's entry (the entry goes when this connector was its
+    /// only reader), or from every field when none is named.
     fn remove_secret(&self, id: &str, field: Option<&str>) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
-        let names: Vec<&str> = match field {
-            Some(_) => vec![pick_field(c, field)?.name],
-            None => c.fields.iter().map(|f| f.name).collect(),
+        let fields: Vec<&Field> = match field {
+            Some(_) => vec![pick_field(c, field)?],
+            None => c.fields.iter().collect(),
         };
         let _guard = lock(&self.write);
-        let mut next = lock(&self.vault).clone();
-        let Some(stored) = next.get_mut(id) else {
-            return Err((404, format!("connector `{id}` has no key stored")));
-        };
+        let binding = binding_of(c.id);
+        let now = apz_plaza::now_ms();
         let mut removed = false;
-        for name in names {
-            removed |= stored.remove(name).is_some();
+        for f in fields {
+            for entry in self.vault.entries_named(f.env).map_err(vault_failure)? {
+                if !entry.bindings.contains(&binding) {
+                    continue;
+                }
+                removed = true;
+                if entry.bindings.len() == 1 {
+                    self.vault.delete(&entry.id, "owner", now).map_err(vault_failure)?;
+                } else {
+                    let rest: Vec<String> = entry.bindings.iter().filter(|b| **b != binding).cloned().collect();
+                    self.vault.patch(&entry.id, None, None, Some(rest), "owner", now).map_err(vault_failure)?;
+                }
+            }
         }
         if !removed {
             return Err((404, format!("connector `{id}` has no key stored")));
         }
-        if stored.is_empty() {
-            next.remove(id);
-        }
-        save(&self.dir.join(VAULT), &next).map_err(io_failure)?;
-        *lock(&self.vault) = next;
+        self.register();
         Ok(self.view(c))
     }
 
-    /// Runs the first read action that needs no input from the caller. The
-    /// required keys must be set; enabling and roles do not apply to a test.
-    fn test(&self, id: &str) -> Result<Value, Failure> {
+    /// Runs the first read action that needs no input from the caller, reading the key as `node` (the hub's
+    /// machine when None) would. Enabling and roles do not apply to a check. The detail never carries a key.
+    pub fn check(&self, id: &str, node: Option<String>) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
-        if !self.configured(c) {
+        let values = self.values(c, &OnBehalf::Owner { node });
+        if !Self::complete(c, &values) {
             return Ok(json!({ "ok": false, "latency_ms": 0, "detail": "no key stored" }));
         }
-        let values = self.values(c);
         let probe = c
             .actions
             .iter()
@@ -812,7 +845,7 @@ fn delete_secret_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 fn test_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
-    match app.connectors.test(p.get("id")) {
+    match app.connectors.check(p.get("id"), None) {
         Ok(report) => Response::json(200, &report),
         Err(f) => failure(f),
     }
@@ -827,7 +860,11 @@ fn failure((status, message): Failure) -> Response {
 /// `agent` is `(cid, name)` for an agent's call, which stores a binary reply in the file
 /// store and returns its id; `None` (an owner or console call) gets the base64 text.
 pub fn call(app: &App, agent: Option<(u64, &str)>, role: &str, connector: &str, action: &str, input: &Value) -> Result<String, String> {
-    let plan = gate(&app.connectors, role, connector, action)?;
+    let on_behalf = match agent {
+        Some((cid, _)) => OnBehalf::Agent { cid, node: node_for_cid(&app.nodes.list(), cid) },
+        None => OnBehalf::Owner { node: None },
+    };
+    let plan = gate(&app.connectors, role, connector, action, &on_behalf)?;
     match execute(plan.connector, plan.action, &plan.values, input)? {
         Reply::Text(text) => Ok(text),
         Reply::Binary { content_type, bytes } => match agent {
@@ -892,7 +929,7 @@ struct Plan {
     values: BTreeMap<String, String>,
 }
 
-fn gate(store: &Store, role: &str, connector: &str, action: &str) -> Result<Plan, String> {
+fn gate(store: &Store, role: &str, connector: &str, action: &str, on_behalf: &OnBehalf) -> Result<Plan, String> {
     let c = find(connector).ok_or_else(|| format!("no connector `{connector}`"))?;
     let a = c
         .actions
@@ -906,10 +943,11 @@ fn gate(store: &Store, role: &str, connector: &str, action: &str) -> Result<Plan
     if !setting.roles.is_empty() && !setting.roles.iter().any(|r| r == role) {
         return Err(format!("role `{role}` may not use `{}`", c.id));
     }
-    if !store.configured(c) {
+    let values = store.values(c, on_behalf);
+    if !Store::complete(c, &values) {
         return Err(format!("connector `{}` has no key stored", c.id));
     }
-    Ok(Plan { connector: c, action: a, values: store.values(c) })
+    Ok(Plan { connector: c, action: a, values })
 }
 
 /// Sends one action upstream. The credentials are attached here and redacted from
@@ -1086,7 +1124,7 @@ fn scalar(value: &Value) -> Result<String, String> {
 }
 
 /// Percent-encodes everything but the unreserved characters.
-fn encode(text: &str) -> String {
+pub(crate) fn encode(text: &str) -> String {
     let mut out = String::new();
     for b in text.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
@@ -1117,7 +1155,7 @@ fn is_text(content_type: &str) -> bool {
 }
 
 /// Standard base64 with padding.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -1151,36 +1189,6 @@ fn read_map<T: DeserializeOwned>(path: &Path) -> io::Result<BTreeMap<String, T>>
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(e) => Err(e),
     }
-}
-
-/// Reads the vault in either shape: `{connector: "key"}` (the main key) or
-/// `{connector: {field: value}}`. Unknown connectors and fields are dropped.
-fn read_vault(path: &Path) -> io::Result<BTreeMap<String, BTreeMap<String, String>>> {
-    let raw: BTreeMap<String, Value> = read_map(path)?;
-    let mut vault = BTreeMap::new();
-    for (id, entry) in raw {
-        let Some(c) = find(&id) else { continue };
-        let mut fields = BTreeMap::new();
-        match entry {
-            Value::String(key) => {
-                if let Some(main) = main_field(c) {
-                    fields.insert(main.name.to_string(), key);
-                }
-            }
-            Value::Object(map) => {
-                for (name, value) in map {
-                    if let (Some(f), Value::String(s)) = (c.fields.iter().find(|f| f.name == name.as_str()), value) {
-                        fields.insert(f.name.to_string(), s);
-                    }
-                }
-            }
-            _ => {}
-        }
-        if !fields.is_empty() {
-            vault.insert(id, fields);
-        }
-    }
-    Ok(vault)
 }
 
 /// Saves a map atomically at mode 0600.
@@ -1223,11 +1231,18 @@ impl Store {
     }
 }
 
+/// A booted vault in `dir`, as the hub has it at start (unsealed by its key file).
+#[cfg(test)]
+fn vault_for(dir: &Path) -> Arc<crate::vault::Store> {
+    let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+    vault.boot(apz_plaza::now_ms()).expect("boot");
+    Arc::new(vault)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("apid-connectors-{}-{name}", std::process::id()));
@@ -1267,62 +1282,45 @@ mod tests {
     }
 
     #[test]
-    fn secret_is_stored_0600_and_never_listed() {
+    fn secret_is_stored_in_the_vault_and_never_listed() {
         let dir = scratch("secret");
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
-        store.set_secret("unsplash", None, "KEY-SECRET-987").unwrap();
+        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        store.set_secret("unsplash", None, "SENTINEL-CONN-4417").unwrap();
         let listed = serde_json::to_string(&store.views()).unwrap();
-        assert!(!listed.contains("KEY-SECRET-987"));
+        assert!(!listed.contains("SENTINEL-CONN-4417"));
         assert!(listed.contains("\"configured\":true"));
-        #[cfg(unix)]
-        assert_eq!(std::fs::metadata(dir.join(VAULT)).unwrap().permissions().mode() & 0o777, 0o600);
-        let reloaded = Store::load(&dir, BTreeMap::new()).unwrap();
+        assert_eq!(store.view(connector("unsplash"))["fields"][0]["source"], "vault");
+        assert!(!dir.join("connector-secrets.json").exists(), "no plaintext connector file is written");
+        let vault_file = std::fs::read(dir.join("vault.json")).unwrap();
+        assert!(!String::from_utf8_lossy(&vault_file).contains("SENTINEL-CONN-4417"));
         assert_eq!(
-            reloaded.values(connector("unsplash")).get("access_key").map(String::as_str),
-            Some("KEY-SECRET-987")
+            store.values(connector("unsplash"), &OnBehalf::Hub).get("access_key").map(String::as_str),
+            Some("SENTINEL-CONN-4417")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn both_vault_shapes_load() {
-        let dir = scratch("shapes");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(VAULT), r#"{"unsplash":"OLD-KEY","pexels":"PX-KEY","nosuch":"x"}"#).unwrap();
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
-        assert_eq!(store.values(connector("unsplash")).get("access_key").map(String::as_str), Some("OLD-KEY"));
-        assert!(store.configured(connector("unsplash")));
-        assert!(store.configured(connector("pexels")));
-        drop(store);
-
-        std::fs::write(dir.join(VAULT), r#"{"telegram":{"bot_token":"123:ABC","chat_id":"-100"}}"#).unwrap();
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
-        let values = store.values(connector("telegram"));
-        assert_eq!(values.get("bot_token").map(String::as_str), Some("123:ABC"));
-        assert_eq!(values.get("chat_id").map(String::as_str), Some("-100"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn environment_fills_a_missing_field_and_the_vault_wins() {
-        let dir = scratch("env");
-        let store = Store::load(&dir, only(&[("FIRECRAWL_API_KEY", "fc-ENV-111")])).unwrap();
-        let fc = connector("firecrawl");
-        assert!(store.configured(fc));
-        let view = store.view(fc);
-        assert_eq!(view["fields"][0]["source"], "env");
-        assert_eq!(view["fields"][0]["set"], true);
-        assert!(!serde_json::to_string(&view).unwrap().contains("fc-ENV-111"));
-        store.set_secret("firecrawl", None, "fc-VAULT-222").unwrap();
-        assert_eq!(store.view(fc)["fields"][0]["source"], "vault");
-        assert_eq!(store.values(fc).get("api_key").map(String::as_str), Some("fc-VAULT-222"));
+    fn a_field_is_registered_and_removal_takes_its_binding_away() {
+        let dir = scratch("remove");
+        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let vault = Arc::clone(&store.vault);
+        let wanted = |v: &crate::vault::Store| {
+            v.consumers(&[]).unwrap().iter().any(|c| c["binding"] == "connector:firecrawl" && c["wants"] == "FIRECRAWL_API_KEY")
+        };
+        assert!(wanted(&vault), "the field registers at load");
+        store.set_secret("firecrawl", None, "SENTINEL-CONN-4417").unwrap();
+        assert_eq!(vault.presence("FIRECRAWL_API_KEY", "connector:firecrawl"), "secret");
+        store.remove_secret("firecrawl", None).unwrap();
+        assert_eq!(vault.presence("FIRECRAWL_API_KEY", "connector:firecrawl"), "missing");
+        assert_eq!(store.remove_secret("firecrawl", None).unwrap_err().0, 404);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn unsplash_needs_only_its_access_key() {
         let dir = scratch("unsplash");
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let store = Store::load(&dir, vault_for(&dir)).unwrap();
         let ua = connector("unsplash");
         assert!(!store.configured(ua));
         store.set_secret("unsplash", Some("app_id"), "APP-1").unwrap();
@@ -1342,7 +1340,7 @@ mod tests {
     #[test]
     fn unknown_fields_are_refused() {
         let dir = scratch("unknown");
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let store = Store::load(&dir, vault_for(&dir)).unwrap();
         assert_eq!(store.set_secret("unsplash", Some("nope"), "x").unwrap_err().0, 400);
         assert_eq!(store.remove_secret("unsplash", Some("nope")).unwrap_err().0, 400);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1381,21 +1379,21 @@ mod tests {
     #[test]
     fn gate_refuses_unknown_disabled_keyless_and_foreign_roles() {
         let dir = scratch("gate");
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
-        assert!(refusal(gate(&store, "any", "nope", "x")).contains("no connector"));
-        assert!(refusal(gate(&store, "any", "unsplash", "nope")).contains("no action"));
-        assert!(refusal(gate(&store, "any", "unsplash", "search")).contains("disabled"));
+        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        assert!(refusal(gate(&store, "any", "nope", "x", &OnBehalf::Hub)).contains("no connector"));
+        assert!(refusal(gate(&store, "any", "unsplash", "nope", &OnBehalf::Hub)).contains("no action"));
+        assert!(refusal(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub)).contains("disabled"));
         store
             .update("unsplash", Patch { enabled: Some(true), roles: None })
             .unwrap();
-        assert!(refusal(gate(&store, "any", "unsplash", "search")).contains("no key"));
+        assert!(refusal(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub)).contains("no key"));
         store.set_secret("unsplash", None, "k").unwrap();
-        assert!(gate(&store, "any", "unsplash", "search").is_ok());
+        assert!(gate(&store, "any", "unsplash", "search", &OnBehalf::Hub).is_ok());
         store
             .update("unsplash", Patch { enabled: None, roles: Some(vec!["researcher".into()]) })
             .unwrap();
-        assert!(refusal(gate(&store, "writer", "unsplash", "search")).contains("may not"));
-        assert!(gate(&store, "researcher", "unsplash", "search").is_ok());
+        assert!(refusal(gate(&store, "writer", "unsplash", "search", &OnBehalf::Hub)).contains("may not"));
+        assert!(gate(&store, "researcher", "unsplash", "search", &OnBehalf::Hub).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1612,7 +1610,7 @@ fn host_problem(host: &str) -> Option<String> {
     }
 }
 
-fn private_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn private_ip(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast(),
@@ -1778,6 +1776,7 @@ impl Store {
         *lock(&self.proposals) = next;
         if approve {
             adopt(&reviewed.spec);
+            self.register();
         }
         Ok(reviewed)
     }
@@ -1897,7 +1896,7 @@ mod proposal_tests {
     #[test]
     fn approved_proposals_join_the_catalog_and_persist() {
         let dir = scratch("proposals");
-        let store = Store::load(&dir, BTreeMap::new()).unwrap();
+        let store = Store::load(&dir, vault_for(&dir)).unwrap();
         let mut bad_spec = sample("acme-bad");
         bad_spec.base_url = "http://api.acme-test.example".to_string();
         let bad = store.submit(7, "scout", bad_spec).unwrap();
@@ -1916,7 +1915,7 @@ mod proposal_tests {
         assert_eq!(store.review(&good.id, false, None).unwrap_err().0, 409);
         drop(store);
 
-        let reloaded = Store::load(&dir, BTreeMap::new()).unwrap();
+        let reloaded = Store::load(&dir, vault_for(&dir)).unwrap();
         let listed = reloaded.proposals_newest_first();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, "cp2");

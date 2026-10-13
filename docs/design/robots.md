@@ -302,6 +302,46 @@ Every spot is reserved by one robot at a time; a busy spot is skipped.
 
 Idle extras by trait: a ball (play ≥ 7), a broom (tidy ≥ 7), a coffee mug (focus ≥ 7).
 
+### Engine status and integration (floor)
+
+Status: the engine is built in both apps with the same algorithm and the same tables.
+`apps/web/src/views/floor3d/behaviour.ts` (`Behaviour`, `runScenario`) and
+`apps/desktop/src/console/floor3d/world/behaviour.rs`. Tables: `assets/robots/behaviour.json` (tool categories,
+roles and work, activities, idle scores, events, scoring). Parity: `assets/robots/behaviour-fixtures.json` holds
+the decision hashes of 100 seeded scenarios (40 ticks each); both apps must reproduce every hash. It is not yet
+called from `floor.ts` or `motion.rs`; those wait for nav to land.
+
+Per tick (the floor calls `step` at most every `scoring.decision_s`, 0.25 s, and never per frame):
+
+1. **Input.** `now` (simulation seconds). `robots`: one per agent on the board, `{cid, role, personality` (the
+   species' six traits), `state` (`idle`, `working`, `offline` from the agent status), `lastTool` (the latest tool
+   call name from the activity line, or null), `talkingTo` (the cid it is messaging, or null), `at` (`{x, z, region}`
+   from the robot's current pose, region 0 = the PCB, else the room id), `desk` (its desk spot key), `quirks` (the
+   species' `quirks`)`}`. `spots`: every place from the rooms (`spots` of each room, with the room's floor
+   transformed to board coordinates and `region` = the room id), the component spots (`kind` `component:<slot>`),
+   commons, docks (`dock`), traces (`trace`), free points (`anywhere`), and the desks (`desk`). `held`: the STOP ALL
+   state. `events`: `celebrate` (a task done, `cid`), `standup` (a project advanced: `conductor`, `members`),
+   `respond` (a failure at a component: `slot`), `payment` (`to`), `deliver` (`from`, `to`, `item`: crate or
+   coin-bag).
+2. **Output.** One `Decision` per robot: `activity`, `clip`, `tool`, `carry`, `spot` (reserved until its next
+   decision), `goal` (`{x, z, region, face}`), `partner` (a cid), `until` (seconds), `changed`. Only `changed`
+   decisions need action. Act on them:
+   - `goal` set: `nav` walks the robot there and turns to `face` (null: keep the heading).
+   - `goal` null and `partner` set: a mover walks beside the partner (nav follows its position).
+   - `goal` set and `partner` set: a host stays and faces its partner (the pair's other half is the mover).
+   - `clip` `@walk` means the species' walk clip for its locomotion (the floor resolves it); every other clip is a
+     clip id from `clips.json` or the species' own.
+   - `tool` is held in `gripR`; `carry` sits at the `carry` bone.
+3. **Pairs and groups.** A chat, a talk (huddle) or a review links two robots through `partner`; a standup or a
+   cheer is a star on its conductor or celebrant. Groups are at most 4 (`scoring.group_max`). The floor draws the
+   pair's packets or bubbles from these links; it never sets them itself.
+4. **Determinism.** Given the same inputs in the same order the engine returns the same decisions (a seeded pick per
+   robot and decision). The floor must pass the robots in any order: the engine sorts them by cid itself.
+
+Check: `apps/web/test/tests.ts` ("Robot behaviour engine") and the Rust tests in `world/behaviour.rs` run the same
+checks (data, choice per role and category, idle traits, reservation, groups, offline, held, pairs, payments,
+determinism, fixtures).
+
 ## Rendering notes
 
 - Species geometry is built once per species and shared by every robot of it; each robot has its own

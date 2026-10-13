@@ -132,7 +132,7 @@ pub fn gateway_with_env(providers: Vec<ProviderConfig>, env: &[(&str, &str)]) ->
     let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     Gateway::builder()
         .providers(providers)
-        .secrets(|name: &str| (name == "s").then(|| "sk-secret-value".to_string()))
+        .secrets(|name: &str, _: &crate::SecretRead<'_>| (name == "s").then(|| "sk-secret-value".to_string()))
         .env(move |name: &str| {
             if let Some((_, v)) = env.iter().find(|(k, _)| k == name) {
                 return Some(v.clone());

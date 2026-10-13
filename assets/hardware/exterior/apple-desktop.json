@@ -9,12 +9,12 @@
     { "id": "base-vent-front", "geo": { "type": "box", "w": 0.3, "h": 0.1, "d": 0.05 }, "at": [-2.0, 0.15, 3.07], "mat": "port-hole", "repeat": { "count": 9, "step": [0.5, 0, 0] } },
     { "id": "base-vent-left", "geo": { "type": "box", "w": 0.05, "h": 0.1, "d": 0.3 }, "at": [-3.07, 0.15, -2.1], "mat": "port-hole", "repeat": { "count": 8, "step": [0, 0, 0.6] } },
     { "id": "base-vent-right", "geo": { "type": "box", "w": 0.05, "h": 0.1, "d": 0.3 }, "at": [3.07, 0.15, -2.1], "mat": "port-hole", "repeat": { "count": 8, "step": [0, 0, 0.6] } },
-    { "id": "floor", "geo": { "type": "rbox", "w": 5.4, "h": 0.1, "d": 5.4, "r": 0.04 }, "at": [0, 0.35, 0], "mat": "aluminium" },
+    { "id": "floor", "geo": { "type": "rbox", "w": 5.4, "h": 0.1, "d": 5.4, "r": 0.04 }, "at": [0.0, 0.3225, 0.0], "mat": "aluminium" },
 
-    { "id": "wall-front", "when": "!studio", "geo": { "type": "rbox", "w": 6, "h": 1.4, "d": 0.3, "r": 0.12 }, "at": [0, 1.0, 2.85], "mat": "aluminium" },
-    { "id": "wall-back", "when": "!studio", "geo": { "type": "rbox", "w": 6, "h": 1.4, "d": 0.3, "r": 0.12 }, "at": [0, 1.0, -2.85], "mat": "aluminium" },
-    { "id": "wall-left", "when": "!studio", "geo": { "type": "rbox", "w": 0.3, "h": 1.4, "d": 5.4, "r": 0.12 }, "at": [-2.85, 1.0, 0], "mat": "aluminium" },
-    { "id": "wall-right", "when": "!studio", "geo": { "type": "rbox", "w": 0.3, "h": 1.4, "d": 5.4, "r": 0.12 }, "at": [2.85, 1.0, 0], "mat": "aluminium" },
+    { "id": "wall-front", "when": "!studio", "geo": { "type": "rbox", "w": 6, "h": 1.4, "d": 0.3, "r": 0.12 }, "at": [-0.015, 1.0025, 2.865], "mat": "aluminium" },
+    { "id": "wall-back", "when": "!studio", "geo": { "type": "rbox", "w": 6, "h": 1.4, "d": 0.3, "r": 0.12 }, "at": [0.0, 0.9875, -2.845], "mat": "aluminium" },
+    { "id": "wall-left", "when": "!studio", "geo": { "type": "rbox", "w": 0.3, "h": 1.4, "d": 5.4, "r": 0.12 }, "at": [-2.88, 1.0025, 0.0], "mat": "aluminium" },
+    { "id": "wall-right", "when": "!studio", "geo": { "type": "rbox", "w": 0.3, "h": 1.4, "d": 5.4, "r": 0.12 }, "at": [2.88, 1.0025, 0.0], "mat": "aluminium" },
     {
       "id": "top", "when": "!studio",
       "geo": { "type": "rbox", "w": 6, "h": 0.3, "d": 6, "r": 0.12 }, "at": [0, 1.85, 0], "mat": "aluminium",
@@ -37,35 +37,35 @@
       ]
     },
 
-    { "id": "board", "geo": { "type": "box", "w": 5, "h": 0.08, "d": 5 }, "at": [0, 0.44, 0], "mat": "pcb", "label": { "text": "LOGIC BOARD", "size": 0.35, "color": "#e8eadf" } },
+    { "id": "board", "geo": { "type": "box", "w": 5, "h": 0.08, "d": 5 }, "at": [0.0, 0.445, 0.0], "mat": "pcb", "label": { "text": "LOGIC BOARD", "size": 0.35, "color": "#e8eadf" } },
     {
-      "id": "soc", "geo": { "type": "rbox", "w": 1.5, "h": 0.16, "d": 1.5, "r": 0.04 }, "at": [0, 0.56, -1.0], "mat": "ic",
+      "id": "soc", "geo": { "type": "rbox", "w": 1.5, "h": 0.16, "d": 1.5, "r": 0.04 }, "at": [0.0, 0.5675, -1.0], "mat": "ic",
       "children": [
-        { "id": "soc-die", "geo": { "type": "box", "w": 0.9, "h": 0.02, "d": 0.9 }, "at": [0, 0.09, 0], "mat": "die", "outline": false, "label": { "text": "SOC", "size": 0.28, "color": "#e8eadf" } }
+        { "id": "soc-die", "geo": { "type": "box", "w": 0.9, "h": 0.02, "d": 0.9 }, "at": [0.0, 0.0925, 0.0], "mat": "die", "outline": false, "label": { "text": "SOC", "size": 0.28, "color": "#e8eadf" } }
       ]
     },
-    { "id": "memory-left", "geo": { "type": "box", "w": 0.7, "h": 0.08, "d": 0.4 }, "at": [-1.35, 0.52, -1.8], "mat": "ic", "repeat": { "count": 4, "step": [0, 0, 0.45] } },
-    { "id": "memory-right", "geo": { "type": "box", "w": 0.7, "h": 0.08, "d": 0.4 }, "at": [1.35, 0.52, -1.8], "mat": "ic", "repeat": { "count": 4, "step": [0, 0, 0.45] } },
-    { "id": "vrm", "geo": { "type": "box", "w": 0.35, "h": 0.12, "d": 0.25 }, "at": [-0.5, 0.54, -0.1], "mat": "inductor", "repeat": { "count": 4, "step": [0.4, 0, 0] } },
-    { "id": "heatsink-base", "geo": { "type": "box", "w": 1.8, "h": 0.08, "d": 1.3 }, "at": [0, 0.52, 0.75], "mat": "heatsink" },
+    { "id": "memory-left", "geo": { "type": "box", "w": 0.7, "h": 0.08, "d": 0.4 }, "at": [-1.35, 0.53, -1.8], "mat": "ic", "repeat": { "count": 4, "step": [0, 0, 0.45] } },
+    { "id": "memory-right", "geo": { "type": "box", "w": 0.7, "h": 0.08, "d": 0.4 }, "at": [1.35, 0.53, -1.8], "mat": "ic", "repeat": { "count": 4, "step": [0, 0, 0.45] } },
+    { "id": "vrm", "geo": { "type": "box", "w": 0.35, "h": 0.12, "d": 0.25 }, "at": [-0.5, 0.55, -0.1], "mat": "inductor", "repeat": { "count": 4, "step": [0.4, 0, 0] } },
+    { "id": "heatsink-base", "geo": { "type": "box", "w": 1.8, "h": 0.08, "d": 1.3 }, "at": [-0.015, 0.5275, 0.75], "mat": "heatsink" },
     { "id": "heatsink-fins", "geo": { "type": "box", "w": 1.8, "h": 0.55, "d": 0.05 }, "at": [0, 0.835, 0.25], "mat": "heatsink", "repeat": { "count": 8, "step": [0, 0, 0.15] } },
     {
       "id": "fan", "tag": "fan",
-      "geo": { "type": "cyl", "rt": 0.75, "rb": 0.75, "h": 0.45 }, "at": [1.9, 0.71, 1.8], "mat": "fan",
+      "geo": { "type": "cyl", "rt": 0.75, "rb": 0.75, "h": 0.45 }, "at": [1.9, 0.7125, 1.8], "mat": "fan",
       "children": [
         { "id": "fan-hub", "geo": { "type": "sphere", "r": 0.22 }, "at": [0, 0.23, 0], "mat": "metal-dark" },
         { "id": "fan-blades", "geo": { "type": "ring", "ri": 0.22, "ro": 0.7 }, "at": [0, 0.235, 0], "mat": "fan-blade", "outline": false }
       ]
     },
-    { "id": "psu", "geo": { "type": "rbox", "w": 1.2, "h": 0.5, "d": 1.0, "r": 0.05 }, "at": [-1.6, 0.73, 1.8], "mat": "metal-dark", "label": { "text": "PSU", "size": 0.3, "color": "#e8eadf" } },
+    { "id": "psu", "geo": { "type": "rbox", "w": 1.2, "h": 0.5, "d": 1.0, "r": 0.05 }, "at": [-1.6, 0.7375, 1.8], "mat": "metal-dark", "label": { "text": "PSU", "size": 0.3, "color": "#e8eadf" } },
     {
-      "id": "ssd", "geo": { "type": "rbox", "w": 0.5, "h": 0.1, "d": 1.2, "r": 0.03 }, "at": [-2.2, 0.53, -0.2], "mat": "ic",
+      "id": "ssd", "geo": { "type": "rbox", "w": 0.5, "h": 0.1, "d": 1.2, "r": 0.03 }, "at": [-2.2, 0.5375, -0.2], "mat": "ic",
       "children": [
-        { "id": "nand", "geo": { "type": "box", "w": 0.42, "h": 0.05, "d": 0.3 }, "at": [0, 0.075, -0.35], "mat": "ic-top", "repeat": { "count": 3, "step": [0, 0, 0.35] } }
+        { "id": "nand", "geo": { "type": "box", "w": 0.42, "h": 0.05, "d": 0.3 }, "at": [0.0, 0.0825, -0.35], "mat": "ic-top", "repeat": { "count": 3, "step": [0, 0, 0.35] } }
       ]
     },
-    { "id": "tb-chips", "geo": { "type": "rbox", "w": 0.5, "h": 0.1, "d": 0.4, "r": 0.03 }, "at": [0.9, 0.53, -2.25], "mat": "ic", "repeat": { "count": 2, "step": [0.6, 0, 0] } },
-    { "id": "capacitors", "geo": { "type": "cyl", "rt": 0.09, "rb": 0.09, "h": 0.2 }, "at": [-1.3, 0.58, -2.3], "mat": "capacitor", "repeat": { "count": 6, "step": [0.25, 0, 0] } },
+    { "id": "tb-chips", "geo": { "type": "rbox", "w": 0.5, "h": 0.1, "d": 0.4, "r": 0.03 }, "at": [0.9, 0.54, -2.25], "mat": "ic", "repeat": { "count": 2, "step": [0.6, 0, 0] } },
+    { "id": "capacitors", "geo": { "type": "cyl", "rt": 0.09, "rb": 0.09, "h": 0.2 }, "at": [-1.3, 0.595, -2.3], "mat": "capacitor", "repeat": { "count": 6, "step": [0.25, 0, 0] } },
 
     { "id": "status-led", "tag": "status", "geo": { "type": "cyl", "rt": 0.07, "rb": 0.07, "h": 0.05 }, "at": [-2.2, 1.3, 3.03], "rot": [90, 0, 0], "mat": { "color": "#ffffff", "emissive": "#ffffff", "glow": 2.0, "flat": true }, "outline": false },
     { "id": "usbc-front", "geo": { "type": "rbox", "w": 0.32, "h": 0.14, "d": 0.1, "r": 0.03 }, "at": [1.2, 1.3, 3.03], "mat": "port-hole", "repeat": { "count": 2, "step": [0.5, 0, 0] } },

@@ -63,14 +63,24 @@
 //! Voting on a motion that is no longer `open` is refused with the state named
 //! (a 409).
 //!
-//! # The count (0034), and the owner's decision
+//! # The quorum (0034), and the count
 //!
-//! The count's state is a function of the tally and the gate, in one table
-//! ([`state_of`]); the owner's decision, once made, is the state:
+//! A motion is counted once a **quorum** of the seats that are filled has voted
+//! ([`Quorum`]). The quorum is a majority of the filled seats (`filled / 2 + 1`)
+//! and never fewer than [`MIN_QUORUM`] votes. A seat is filled when a live agent
+//! holds its role; the daemon reports the number with [`Council::set_filled`]
+//! before it reads or acts on the council, so a seat no live agent holds is never
+//! waited for. With fewer than [`MIN_QUORUM`] seats filled no quorum can form,
+//! and the motion is [`State::NoQuorum`]: the owner decides it, because the
+//! council cannot.
+//!
+//! The count's state is a function of the tally, the gate and the quorum, in one
+//! table ([`state_of`]); the owner's decision, once made, is the state:
 //!
 //! | state | when |
 //! |---|---|
-//! | `open` | fewer than [`SEAT_COUNT`] seats have voted |
+//! | `open` | fewer votes than the quorum requires have been cast |
+//! | `no_quorum` | fewer than [`MIN_QUORUM`] seats are filled — the owner decides |
 //! | `carried` | a majority of yes over no, below the owner's gate |
 //! | `rejected` | a majority of no |
 //! | `tie_to_owner` | an equal split (the doctrine's 2–2) — the owner decides |
@@ -78,11 +88,16 @@
 //! | `ratified` | the owner approved a motion the count gated to them |
 //! | `vetoed` | the owner refused a motion the count gated to them |
 //!
-//! `abstain` counts toward the four seats having voted and never toward the
-//! majority. The doctrine names the tie `2–2`; an equal yes/no split with
+//! When the count decides a motion, the quorum in force then is kept with the
+//! motion ([`Motion::counted`]): a later change in the seats filled does not
+//! reopen a decided motion, and no later vote touches it.
+//!
+//! `abstain` counts toward the quorum (a seat that has voted) and never toward
+//! the majority. The doctrine names the tie `2–2`; an equal yes/no split with
 //! abstentions (say 1–1 with two abstentions) is the same no-majority and the
 //! same escalation, which is how this daemon reads it. [`TallyView`] carries
-//! `{yes, no, abstain, voted, seats}`.
+//! `{yes, no, abstain, voted, seats}`, and every view carries the quorum that
+//! governs the motion as [`QuorumView`]: its rule in words and its numbers.
 //!
 //! # The owner's decision
 //!
@@ -95,8 +110,8 @@
 //! agent): the operator's act *is* the owner's, recorded as it.
 //!
 //! The owner decides a motion **once**, and only one the count gated to them
-//! ([`State::owner_decides`]: `tie_to_owner` and `awaiting_owner`). A motion in
-//! any other state — `open` (the council has not decided), `carried` or
+//! ([`State::owner_decides`]: `tie_to_owner`, `awaiting_owner` and `no_quorum`).
+//! A motion in any other state — `open` (the council has not decided), `carried` or
 //! `rejected` (the council has, and a majority is not the owner's to re-decide)
 //! — is refused with the state named and the council's own decision left
 //! standing (a 409); a motion already decided by the owner is refused too (a
@@ -123,14 +138,16 @@
 //!   and the social layer, the motions live in memory and are lost with the
 //!   daemon; the schema's tables are a later slice. The views are derived from
 //!   that store, never a second copy of a fact held elsewhere.
-//! * **No quorum or session windows, no deadlines, no per-case grants (0079)
-//!   and no law signing (0049).** Any seat may vote while a motion is `open`.
-//!   The owner's decision is here ([`Council::decide`]); grants and law signing
-//!   are each their own slice, exactly as the contract states.
+//! * **No session windows, no deadlines, no per-case grants (0079) and no law
+//!   signing (0049).** Any filled seat may vote while a motion is `open`; the
+//!   quorum is the count's only gate on when a motion is decided. The owner's
+//!   decision is here ([`Council::decide`]); grants and law signing are each
+//!   their own slice, exactly as the contract states.
 //! * **The drivers are not here.** The dispatcher's driving of votes for the
 //!   seats is `dispatchd`'s, the way the social pass is: this module is the
 //!   state and the view the drivers act on.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -188,6 +205,68 @@ pub fn seat_of(role: &str) -> Option<usize> {
 /// Whether `role` holds a council seat.
 pub fn is_seated(role: &str) -> bool {
     seat_of(role).is_some()
+}
+
+/// The fewest votes a quorum ever needs, and the fewest filled seats a council
+/// needs before it can decide anything: with one seat filled, one vote would be
+/// the whole council, so the motion goes to the owner instead ([`State::NoQuorum`]).
+pub const MIN_QUORUM: usize = 2;
+
+/// The quorum of a council with `filled` seats filled: how many seats must have
+/// voted before the count decides a motion. Both numbers are the view's own
+/// (see [`QuorumView`]); the rule itself is [`Quorum::rule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quorum {
+    /// The seats filled, of [`SEAT_COUNT`].
+    pub filled: usize,
+    /// The votes the count waits for: a majority of `filled`, and at least
+    /// [`MIN_QUORUM`].
+    pub required: usize,
+}
+
+impl Quorum {
+    /// The quorum of a council with `filled` seats filled.
+    pub fn of(filled: usize) -> Self {
+        Self {
+            filled,
+            required: (filled / 2 + 1).max(MIN_QUORUM),
+        }
+    }
+
+    /// Whether the council can decide at all: at least [`MIN_QUORUM`] seats are
+    /// filled. Below it no quorum can form and the owner decides.
+    pub fn can_decide(self) -> bool {
+        self.filled >= MIN_QUORUM
+    }
+
+    /// The rule in words, with this quorum's numbers.
+    pub fn rule(self) -> String {
+        if self.can_decide() {
+            format!(
+                "a motion is counted once {} of the {} filled seats have voted \
+                 (a majority of the filled seats, at least {MIN_QUORUM}); it carries \
+                 on a majority of yes over no, and a tie goes to the owner",
+                self.required, self.filled
+            )
+        } else {
+            format!(
+                "fewer than {MIN_QUORUM} seats are filled ({}), so no quorum can form: \
+                 the owner decides the motion",
+                self.filled
+            )
+        }
+    }
+
+    /// The quorum as the views carry it.
+    fn view(self) -> QuorumView {
+        QuorumView {
+            rule: self.rule(),
+            seats: SEAT_COUNT,
+            filled: self.filled,
+            required: self.required,
+            can_decide: self.can_decide(),
+        }
+    }
 }
 
 /// The most motions the council holds. v0 never removes a motion (a motion is
@@ -294,8 +373,11 @@ impl Vote {
 /// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// Fewer than [`SEAT_COUNT`] seats have voted.
+    /// Fewer votes than the quorum requires have been cast ([`Quorum::required`]).
     Open,
+    /// Fewer than [`MIN_QUORUM`] seats are filled, so the council cannot decide:
+    /// the owner decides.
+    NoQuorum,
     /// A majority of yes over no, below the owner's gate.
     Carried,
     /// A majority of no.
@@ -315,6 +397,7 @@ impl State {
     pub fn as_str(self) -> &'static str {
         match self {
             State::Open => "open",
+            State::NoQuorum => "no_quorum",
             State::Carried => "carried",
             State::Rejected => "rejected",
             State::TieToOwner => "tie_to_owner",
@@ -326,11 +409,12 @@ impl State {
 
     /// Whether a motion in this state is the owner's to decide: the two the
     /// count gates to them — the 2–2 tie ([`State::TieToOwner`]) and a carry
-    /// above the 0067 thresholds ([`State::AwaitingOwner`]). Every other state
-    /// is the council's own (a decided motion is not re-decided; a majority is
-    /// not routed around).
+    /// above the 0067 thresholds ([`State::AwaitingOwner`]) — and a motion the
+    /// council cannot decide at all ([`State::NoQuorum`]). Every other state is
+    /// the council's own (a decided motion is not re-decided; a majority is not
+    /// routed around).
     pub fn owner_decides(self) -> bool {
-        matches!(self, State::TieToOwner | State::AwaitingOwner)
+        matches!(self, State::TieToOwner | State::AwaitingOwner | State::NoQuorum)
     }
 }
 
@@ -670,6 +754,9 @@ pub struct MotionView {
     pub votes: Vec<VoteView>,
     /// The tally.
     pub tally: TallyView,
+    /// The quorum that governs this motion's state: the one in force when the
+    /// count decided it, else the council's quorum as it stands now.
+    pub quorum: QuorumView,
     /// The owner's decision, or `null` until the owner makes one. This is a
     /// **Column-style optional** (like the desktop client's `Column<T>`): the
     /// key is always present and reads `null` for "the owner has not decided",
@@ -695,6 +782,24 @@ pub struct MotionsView {
     pub limit: usize,
     /// Whether the council holds more motions than the response carries.
     pub truncated: bool,
+    /// The council's quorum as it stands now: the seats filled and the votes a
+    /// motion needs, with the rule in words.
+    pub quorum: QuorumView,
+}
+
+/// A quorum as the views carry it: the rule in words and its numbers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuorumView {
+    /// The rule, in words, with this quorum's numbers.
+    pub rule: String,
+    /// The seats the council has, of which `filled` are filled.
+    pub seats: usize,
+    /// The seats a live agent holds right now.
+    pub filled: usize,
+    /// The votes the count waits for before it decides a motion.
+    pub required: usize,
+    /// Whether the council can decide at all (`filled` is at least [`MIN_QUORUM`]).
+    pub can_decide: bool,
 }
 
 /// One seat's cast vote, as the store holds it: the word as the enum (so the
@@ -735,11 +840,38 @@ struct Motion {
     /// The owner's decision, or `None` while the owner has not made one. Once
     /// set it is never changed: the owner decides a motion once.
     decision: Option<Decision>,
+    /// The quorum in force when the count decided the motion, or `None` while
+    /// the count has not decided it. Kept so that a later change in the seats
+    /// filled cannot reopen a decided motion ([`Motion::settle`]). Absent from a
+    /// snapshot written before quorums, where it reads as undecided.
+    #[serde(default)]
+    counted: Option<Quorum>,
     created_at: u64,
     updated_at: u64,
 }
 
 impl Motion {
+    /// The quorum that governs the motion: the one the count decided it under,
+    /// else `live`, the council's quorum as it stands now.
+    fn governing(&self, live: Quorum) -> Quorum {
+        self.counted.unwrap_or(live)
+    }
+
+    /// Keeps the quorum of a count decision: a motion the count has decided, and
+    /// the owner has not, takes `live` as its quorum for good. A motion the count
+    /// has not decided (open, or with no quorum to decide it) keeps none.
+    fn settle(&mut self, live: Quorum) {
+        if self.counted.is_none()
+            && self.decision.is_none()
+            && !matches!(
+                state_of(self.tally(), self.needs_owner, live),
+                State::Open | State::NoQuorum
+            )
+        {
+            self.counted = Some(live);
+        }
+    }
+
     /// The motion's tally: the votes cast, against the four seats.
     fn tally(&self) -> TallyView {
         let mut yes = 0;
@@ -763,8 +895,8 @@ impl Motion {
 
     /// The motion's state: the owner's decision when they have made one
     /// ([`State::Ratified`] or [`State::Vetoed`]), else the count's own state
-    /// derived from its tally and its gate.
-    fn state(&self) -> State {
+    /// derived from its tally, its gate and its governing quorum.
+    fn state(&self, live: Quorum) -> State {
         match &self.decision {
             Some(decision) => {
                 if decision.approve {
@@ -773,12 +905,12 @@ impl Motion {
                     State::Vetoed
                 }
             }
-            None => state_of(self.tally(), self.needs_owner),
+            None => state_of(self.tally(), self.needs_owner, self.governing(live)),
         }
     }
 
-    /// The motion as the API reports it.
-    fn view(&self) -> MotionView {
+    /// The motion as the API reports it, against the council's quorum `live`.
+    fn view(&self, live: Quorum) -> MotionView {
         let votes = self
             .votes
             .iter()
@@ -802,9 +934,10 @@ impl Motion {
             text: self.text.clone(),
             amount: self.amount,
             needs_owner: self.needs_owner,
-            state: self.state().as_str(),
+            state: self.state(live).as_str(),
             votes,
             tally: self.tally(),
+            quorum: self.governing(live).view(),
             owner: self.decision.as_ref().map(|decision| OwnerDecisionView {
                 approve: decision.approve,
                 note: decision.note.clone(),
@@ -816,19 +949,25 @@ impl Motion {
     }
 }
 
-/// The state a motion with `tally` and gate `needs_owner` is in (0034's count).
+/// The state a motion with `tally`, gate `needs_owner` and quorum `quorum` is in
+/// (0034's count).
 ///
-/// The motion stays [`State::Open`] until all [`SEAT_COUNT`] seats have voted
-/// (`abstain` counts toward that and never toward the majority). Then a
-/// majority of yes over no carries it — to [`State::AwaitingOwner`] when the
-/// gate says the owner must ratify, else [`State::Carried`] — a majority of no
-/// rejects it, and an equal split is [`State::TieToOwner`]: the owner decides.
+/// With no quorum to decide ([`Quorum::can_decide`] is false) the state is
+/// [`State::NoQuorum`], whatever the votes. Otherwise the motion stays
+/// [`State::Open`] until `quorum.required` seats have voted (`abstain` counts
+/// toward that and never toward the majority). Then a majority of yes over no
+/// carries it — to [`State::AwaitingOwner`] when the gate says the owner must
+/// ratify, else [`State::Carried`] — a majority of no rejects it, and an equal
+/// split is [`State::TieToOwner`]: the owner decides.
 ///
 /// [`State::Ratified`] and [`State::Vetoed`] are never produced here: they are
 /// the owner's decision ([`Motion::state`]), which no tally can derive. This
 /// function is the count, and the count alone.
-pub fn state_of(tally: TallyView, needs_owner: bool) -> State {
-    if tally.voted < SEAT_COUNT {
+pub fn state_of(tally: TallyView, needs_owner: bool, quorum: Quorum) -> State {
+    if !quorum.can_decide() {
+        return State::NoQuorum;
+    }
+    if tally.voted < quorum.required {
         return State::Open;
     }
     if tally.yes > tally.no {
@@ -849,6 +988,10 @@ pub fn state_of(tally: TallyView, needs_owner: bool) -> State {
 pub struct Council {
     events: Arc<EventBus>,
     inner: Mutex<CouncilInner>,
+    /// The seats a live agent holds, as the daemon's last reading of its roster
+    /// ([`Council::set_filled`]). Not part of the snapshot: it is a reading of
+    /// the register, not a fact the council holds.
+    filled: AtomicUsize,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -867,6 +1010,10 @@ impl Council {
         Self {
             events,
             inner: Mutex::new(CouncilInner::default()),
+            // No seat is known to be filled until the daemon reads its roster, so
+            // a council that has not been told decides nothing: every motion is
+            // `no_quorum` and goes to the owner.
+            filled: AtomicUsize::new(0),
         }
     }
 
@@ -876,34 +1023,51 @@ impl Council {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Reports how many seats a live agent holds right now (at most
+    /// [`SEAT_COUNT`]). The daemon calls this with its roster's reading before it
+    /// reads or acts on the council: the quorum every count works to is taken from
+    /// it, so a seat no live agent holds is never waited for.
+    pub fn set_filled(&self, filled: usize) {
+        self.filled.store(filled.min(SEAT_COUNT), Ordering::SeqCst);
+    }
+
+    /// The quorum the last reading of the seats gives.
+    fn quorum(&self) -> Quorum {
+        Quorum::of(self.filled.load(Ordering::SeqCst))
+    }
+
     /// The motions: the newest (bounded to `limit`), with the store's size and
-    /// whether the response was cut short.
+    /// whether the response was cut short, and the quorum they are counted under.
     pub fn motions(&self, limit: usize) -> MotionsView {
-        let inner = self.lock();
+        let live = self.quorum();
+        let mut inner = self.lock();
+        for motion in &mut inner.motions {
+            motion.settle(live);
+        }
         let total = inner.motions.len();
         let motions = inner
             .motions
             .iter()
             .rev()
             .take(limit)
-            .map(Motion::view)
+            .map(|motion| motion.view(live))
             .collect();
         MotionsView {
             motions,
             total,
             limit,
             truncated: total > limit,
+            quorum: live.view(),
         }
     }
 
     /// One motion by id, or `None` when the council holds none with it.
     pub fn motion(&self, id: &str) -> Option<MotionView> {
-        let inner = self.lock();
-        inner
-            .motions
-            .iter()
-            .find(|motion| motion.id == id)
-            .map(Motion::view)
+        let live = self.quorum();
+        let mut inner = self.lock();
+        let motion = inner.motions.iter_mut().find(|motion| motion.id == id)?;
+        motion.settle(live);
+        Some(motion.view(live))
     }
 
     /// Records `proposer`'s motion, or refuses it.
@@ -921,6 +1085,7 @@ impl Council {
         proposal: CheckedProposal,
     ) -> Result<MotionView, CouncilError> {
         let seat = seated_index(proposer)?;
+        let live = self.quorum();
         let mut inner = self.lock();
         if inner.motions.len() >= MAX_MOTIONS {
             return Err(CouncilError::Conflict(format!(
@@ -939,10 +1104,11 @@ impl Council {
             needs_owner: proposal.needs_owner,
             votes: std::array::from_fn(|_| None),
             decision: None,
+            counted: None,
             created_at: at,
             updated_at: at,
         };
-        let view = motion.view();
+        let view = motion.view(live);
         inner.motions.push(motion);
         // Published under the lock, so a stream sees motions in the order they
         // were taken — the ledger, the agora and the social layer publish their
@@ -966,12 +1132,14 @@ impl Council {
         cast: CheckedVote,
     ) -> Result<MotionView, CouncilError> {
         let seat = seated_index(voter)?;
+        let live = self.quorum();
         let mut inner = self.lock();
         let Some(index) = inner.motions.iter().position(|motion| motion.id == id) else {
             return Err(CouncilError::Unknown(format!("no motion with id {id}")));
         };
         let motion = &mut inner.motions[index];
-        let state = motion.state();
+        motion.settle(live);
+        let state = motion.state(live);
         if state != State::Open {
             return Err(CouncilError::Conflict(format!(
                 "motion {id} is {}, not open: a decided motion takes no further vote",
@@ -986,7 +1154,10 @@ impl Council {
             at,
         });
         motion.updated_at = at;
-        let view = motion.view();
+        // The vote may be the one that makes the count decide: keep the quorum it
+        // decided under.
+        motion.settle(live);
+        let view = motion.view(live);
         self.publish(&view);
         Ok(view)
     }
@@ -1002,7 +1173,7 @@ impl Council {
     ///
     /// * the motion must exist ([`CouncilError::Unknown`], 404);
     /// * it must be one the count gated to the owner — [`State::owner_decides`]
-    ///   (`tie_to_owner` or `awaiting_owner`). A motion in any other state is
+    ///   (`tie_to_owner`, `awaiting_owner` or `no_quorum`). A motion in any other state is
     ///   refused with the state named and the council's own decision left
     ///   standing ([`CouncilError::Conflict`], 409): a majority is not the
     ///   owner's to re-decide, and an `open` motion has not been decided at
@@ -1020,6 +1191,7 @@ impl Council {
         id: &str,
         decision: CheckedDecision,
     ) -> Result<MotionView, CouncilError> {
+        let live = self.quorum();
         let mut inner = self.lock();
         let Some(index) = inner.motions.iter().position(|motion| motion.id == id) else {
             return Err(CouncilError::Unknown(format!("no motion with id {id}")));
@@ -1029,14 +1201,15 @@ impl Council {
         if motion.decision.is_some() {
             return Err(CouncilError::Conflict(format!(
                 "motion {id} is already decided ({}): the owner decides a motion once",
-                motion.state().as_str()
+                motion.state(live).as_str()
             )));
         }
-        let state = motion.state();
+        motion.settle(live);
+        let state = motion.state(live);
         if !state.owner_decides() {
             return Err(CouncilError::Conflict(format!(
-                "motion {id} is {}: the owner decides only a tie_to_owner or awaiting_owner \
-                 motion — the council's own decision stands",
+                "motion {id} is {}: the owner decides only a tie_to_owner, awaiting_owner \
+                 or no_quorum motion — the council's own decision stands",
                 state.as_str()
             )));
         }
@@ -1046,7 +1219,7 @@ impl Council {
             at,
         });
         motion.updated_at = at;
-        let view = motion.view();
+        let view = motion.view(live);
         self.publish(&view);
         Ok(view)
     }
@@ -1159,7 +1332,10 @@ mod tests {
     fn lab() -> (Council, std::sync::mpsc::Receiver<Event>) {
         let events = EventBus::new();
         let notes = events.subscribe();
-        (Council::new(events), notes)
+        let council = Council::new(events);
+        // The full council: all four seats filled, so a quorum is three votes.
+        council.set_filled(SEAT_COUNT);
+        (council, notes)
     }
 
     /// The proposal a test varies: `kind`, `text`, `amount`, `needs_owner`.
@@ -1204,11 +1380,15 @@ mod tests {
     /// use, in [`SEATS`] order.
     const SEAT_CIDS: [u64; SEAT_COUNT] = [100, 103, 102, 104];
 
-    /// Casts one vote per seat, in seat order, and answers the final view — the
-    /// shortest way a test reaches a counted motion.
+    /// Casts one vote per seat, in seat order, until the count decides the motion,
+    /// and answers the final view — the shortest way a test reaches a counted
+    /// motion. With the full council the count decides at the third vote.
     fn vote_all(council: &Council, id: &str, words: [Vote; SEAT_COUNT]) -> MotionView {
         let mut view = council.motion(id).expect("the motion");
         for (seat, word) in words.iter().enumerate() {
+            if view.state != "open" {
+                break;
+            }
             view = council
                 .vote(
                     id,
@@ -1418,53 +1598,65 @@ mod tests {
 
     #[test]
     fn the_count_table_is_exhaustive() {
+        // The full council (four seats filled): a quorum of three.
+        let full = Quorum::of(SEAT_COUNT);
+        assert_eq!(full.required, 3);
         // All four yes: carried below the gate, awaiting_owner at it.
         let all_yes = TallyView { yes: 4, no: 0, abstain: 0, voted: 4, seats: 4 };
-        assert_eq!(state_of(all_yes, false), State::Carried);
-        assert_eq!(state_of(all_yes, true), State::AwaitingOwner);
+        assert_eq!(state_of(all_yes, false, full), State::Carried);
+        assert_eq!(state_of(all_yes, true, full), State::AwaitingOwner);
 
         // 3 yes, 1 no: carried.
         assert_eq!(
-            state_of(TallyView { yes: 3, no: 1, abstain: 0, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 3, no: 1, abstain: 0, voted: 4, seats: 4 }, false, full),
             State::Carried
         );
         // 3 yes, 0 no, 1 abstain: abstain never counts toward the majority.
         assert_eq!(
-            state_of(TallyView { yes: 3, no: 0, abstain: 1, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 3, no: 0, abstain: 1, voted: 4, seats: 4 }, false, full),
             State::Carried
         );
         // 2 yes, 1 no, 1 abstain: a relative majority carries.
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 1, abstain: 1, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 2, no: 1, abstain: 1, voted: 4, seats: 4 }, false, full),
             State::Carried
         );
         // 2-2: the doctrine's tie.
         assert_eq!(
-            state_of(TallyView { yes: 2, no: 2, abstain: 0, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 2, no: 2, abstain: 0, voted: 4, seats: 4 }, false, full),
             State::TieToOwner
         );
         // An equal split with abstentions is the same no-majority.
         assert_eq!(
-            state_of(TallyView { yes: 1, no: 1, abstain: 2, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 1, no: 1, abstain: 2, voted: 4, seats: 4 }, false, full),
             State::TieToOwner
         );
         // A majority of no rejects.
         assert_eq!(
-            state_of(TallyView { yes: 1, no: 3, abstain: 0, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 1, no: 3, abstain: 0, voted: 4, seats: 4 }, false, full),
             State::Rejected
         );
         assert_eq!(
-            state_of(TallyView { yes: 0, no: 2, abstain: 2, voted: 4, seats: 4 }, false),
+            state_of(TallyView { yes: 0, no: 2, abstain: 2, voted: 4, seats: 4 }, false, full),
             State::Rejected
         );
-        // Fewer than four voted is open, whatever the split.
+        // Fewer than the quorum requires is open, whatever the split.
         assert_eq!(
-            state_of(TallyView { yes: 3, no: 0, abstain: 0, voted: 3, seats: 4 }, false),
+            state_of(TallyView { yes: 2, no: 0, abstain: 0, voted: 2, seats: 4 }, false, full),
             State::Open
         );
         assert_eq!(
-            state_of(TallyView { yes: 0, no: 0, abstain: 1, voted: 1, seats: 4 }, true),
+            state_of(TallyView { yes: 0, no: 0, abstain: 1, voted: 1, seats: 4 }, true, full),
             State::Open
+        );
+        // Three of four is the quorum: the count decides, even with a seat unvoted.
+        assert_eq!(
+            state_of(TallyView { yes: 2, no: 0, abstain: 1, voted: 3, seats: 4 }, false, full),
+            State::Carried
+        );
+        assert_eq!(
+            state_of(TallyView { yes: 1, no: 1, abstain: 1, voted: 3, seats: 4 }, false, full),
+            State::TieToOwner
         );
     }
 
@@ -1521,25 +1713,24 @@ mod tests {
         assert_eq!(finance.reason, "the evidence changed");
         assert_eq!(replaced.state, "open", "two seats still have not voted");
 
-        // The remaining two seats vote, and the third yes carries it: 3 yes of
-        // the four cast (one abstained).
+        // The Finance seat re-votes yes (replacing its abstention), and the
+        // Incident seat's yes is the third vote: a quorum of three, so the count
+        // decides it carried.
         council
             .vote("m1", &agent(100, FINANCE), yes(100, "sound after all"))
             .expect("a re-vote");
-        council
-            .vote("m1", &agent(102, INCIDENT), yes(102, "no risk"))
-            .expect("a vote");
         let decided = council
-            .vote("m1", &agent(104, MAYOR_OFFICE), yes(104, "the towns agree"))
+            .vote("m1", &agent(102, INCIDENT), yes(102, "no risk"))
             .expect("the deciding vote");
         assert_eq!(decided.state, "carried");
-        assert_eq!(decided.tally.yes, 4);
-        assert_eq!(decided.tally.voted, 4);
+        assert_eq!(decided.tally.yes, 3);
+        assert_eq!(decided.tally.voted, 3);
+        assert_eq!(decided.quorum.required, 3);
         assert!(decided.updated_at >= decided.created_at);
 
-        // A further vote is refused with the state named.
+        // The fourth seat is refused with the state named: the count is decided.
         let refused = council
-            .vote("m1", &agent(100, FINANCE), yes(100, "again"))
+            .vote("m1", &agent(104, MAYOR_OFFICE), yes(104, "the towns agree"))
             .unwrap_err();
         assert_eq!(refused.status(), 409);
         assert_eq!(
@@ -1554,7 +1745,9 @@ mod tests {
     #[test]
     fn a_tie_escalates_and_a_gated_majority_waits() {
         let (council, _notes) = lab();
-        // A non-gated motion that ties 2-2 escalates to the owner.
+        // A non-gated motion that ties escalates to the owner. With a quorum of
+        // three the tie is one yes, one no and an abstention (the doctrine's 2-2
+        // needs all four to vote, and the quorum decides before that).
         let tie = propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
         assert_eq!(tie.id, "m1");
         let cast = |cid: u64, seat: &str, word: Vote, reason: &str| {
@@ -1571,11 +1764,11 @@ mod tests {
         };
         cast(100, FINANCE, Vote::Yes, "yes");
         cast(103, LEGAL_AGENTS_COUNSEL, Vote::No, "no");
-        cast(102, INCIDENT, Vote::Yes, "yes");
-        let decided = cast(104, MAYOR_OFFICE, Vote::No, "no");
+        let decided = cast(102, INCIDENT, Vote::Abstain, "no view");
         assert_eq!(decided.state, "tie_to_owner");
-        assert_eq!(decided.tally.yes, 2);
-        assert_eq!(decided.tally.no, 2);
+        assert_eq!(decided.tally.yes, 1);
+        assert_eq!(decided.tally.no, 1);
+        assert_eq!(decided.tally.abstain, 1);
 
         // A law proposal is always gated: carried, and still `awaiting_owner`.
         let law = council
@@ -1588,28 +1781,25 @@ mod tests {
             .expect("a motion");
         assert_eq!(law.id, "m2");
         assert!(law.needs_owner);
-        for (cid, seat, word) in [
-            (100, FINANCE, Vote::Yes),
-            (103, LEGAL_AGENTS_COUNSEL, Vote::Yes),
-            (102, INCIDENT, Vote::Yes),
-            (104, MAYOR_OFFICE, Vote::No),
-        ] {
-            let decided = council
+        // Three yes votes are the quorum: carried, and gated, so it waits.
+        let mut waited = None;
+        for (cid, seat) in [(100, FINANCE), (103, LEGAL_AGENTS_COUNSEL), (102, INCIDENT)] {
+            let view = council
                 .vote(
                     "m2",
                     &agent(cid, seat),
                     CheckedVote {
-                        vote: word,
+                        vote: Vote::Yes,
                         reason: "the record decides".to_string(),
                     },
                 )
                 .expect("a vote");
-            if decided.state != "open" {
-                assert_eq!(decided.state, "awaiting_owner", "carried, but gated");
-                assert_eq!(decided.tally.yes, 3);
-                assert_eq!(decided.tally.no, 1);
-            }
+            waited = Some(view);
         }
+        let waited = waited.expect("the votes");
+        assert_eq!(waited.state, "awaiting_owner", "carried, but gated");
+        assert_eq!(waited.tally.yes, 3);
+        assert_eq!(waited.tally.no, 0);
     }
 
     #[test]
@@ -1635,7 +1825,6 @@ mod tests {
             (100, FINANCE, Vote::Yes),
             (103, LEGAL_AGENTS_COUNSEL, Vote::Yes),
             (102, INCIDENT, Vote::Yes),
-            (104, MAYOR_OFFICE, Vote::Yes),
         ] {
             council
                 .vote(
@@ -1648,10 +1837,10 @@ mod tests {
                 )
                 .expect("a vote");
         }
-        // Four vote frames, the last carrying the decided state — and no text
-        // in any of them.
+        // Three vote frames, the last carrying the decided state (the quorum of
+        // three) — and no text in any of them.
         let events = frames(&notes);
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 3);
         assert_eq!(
             events.last().expect("the deciding frame"),
             &Event::Motion {
@@ -1728,7 +1917,7 @@ mod tests {
 
         // A 2-2 tie escalates to the owner; their `approve` ratifies it.
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        let tied = vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        let tied = vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
         assert_eq!(tied.state, "tie_to_owner");
         assert_eq!(tied.owner, None, "the owner has not decided");
         let ratified = council
@@ -1745,7 +1934,7 @@ mod tests {
 
         // A second tie, vetoed.
         propose(&council, 100, FINANCE, Kind::Priority, "another agenda", 0);
-        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::No, Vote::Yes]);
+        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::Abstain, Vote::Yes]);
         let vetoed = council
             .decide("m2", decision(false, None))
             .expect("the owner decides");
@@ -1787,7 +1976,7 @@ mod tests {
         assert_eq!(refused.status(), 409);
         assert_eq!(
             refused.to_string(),
-            "motion m1 is open: the owner decides only a tie_to_owner or awaiting_owner motion — \
+            "motion m1 is open: the owner decides only a tie_to_owner, awaiting_owner or no_quorum motion — \
              the council's own decision stands"
         );
 
@@ -1800,7 +1989,7 @@ mod tests {
         assert_eq!(refused.status(), 409);
         assert_eq!(
             refused.to_string(),
-            "motion m1 is carried: the owner decides only a tie_to_owner or awaiting_owner motion \
+            "motion m1 is carried: the owner decides only a tie_to_owner, awaiting_owner or no_quorum motion \
              — the council's own decision stands"
         );
 
@@ -1812,7 +2001,7 @@ mod tests {
         assert_eq!(refused.status(), 409);
         assert_eq!(
             refused.to_string(),
-            "motion m2 is rejected: the owner decides only a tie_to_owner or awaiting_owner motion \
+            "motion m2 is rejected: the owner decides only a tie_to_owner, awaiting_owner or no_quorum motion \
              — the council's own decision stands"
         );
 
@@ -1830,7 +2019,7 @@ mod tests {
     fn the_owner_decides_a_motion_once() {
         let (council, _notes) = lab();
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
         council
             .decide("m1", decision(true, Some("carry it")))
             .expect("the owner decides");
@@ -1853,7 +2042,7 @@ mod tests {
     fn a_decided_motion_takes_no_further_vote() {
         let (council, _notes) = lab();
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
         council
             .decide("m1", decision(false, None))
             .expect("the owner vetoes");
@@ -1877,7 +2066,7 @@ mod tests {
         );
         let after = council.motion("m1").expect("the motion");
         assert_eq!(after.state, "vetoed");
-        assert_eq!(after.tally.voted, SEAT_COUNT, "the tally is untouched");
+        assert_eq!(after.tally.voted, 3, "the tally is untouched");
     }
 
     #[test]
@@ -1939,7 +2128,7 @@ mod tests {
         assert!(before.get("owner").is_some(), "the owner key is always present: {before}");
         assert!(before["owner"].is_null(), "and null until decided: {before}");
 
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
         assert_eq!(
             council.motion("m1").expect("the motion").owner,
             None,
@@ -1972,7 +2161,7 @@ mod tests {
     fn the_owners_decision_publishes_the_motion_frame() {
         let (council, notes) = lab();
         propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
-        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Yes, Vote::No]);
+        vote_all(&council, "m1", [Vote::Yes, Vote::No, Vote::Abstain, Vote::No]);
         // The propose and vote frames are not what is under test here.
         while notes.try_recv().is_ok() {}
 
@@ -1997,7 +2186,7 @@ mod tests {
 
         // A veto publishes the same frame, carrying `vetoed`.
         propose(&council, 100, FINANCE, Kind::Priority, "another agenda", 0);
-        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::No, Vote::Yes]);
+        vote_all(&council, "m2", [Vote::No, Vote::Yes, Vote::Abstain, Vote::Yes]);
         while notes.try_recv().is_ok() {}
         council
             .decide("m2", decision(false, None))
@@ -2022,5 +2211,195 @@ mod tests {
         let after = council.motion("m1").expect("the motion");
         assert_eq!(after.state, "open");
         assert_eq!(after.owner, None);
+    }
+
+    /// A yes vote from `seat`, as its own CID, with a reason.
+    fn yes_from(council: &Council, id: &str, seat: usize) -> Result<MotionView, CouncilError> {
+        council.vote(
+            id,
+            &agent(SEAT_CIDS[seat], SEATS[seat]),
+            CheckedVote {
+                vote: Vote::Yes,
+                reason: format!("the {} seat's reason", SEATS[seat]),
+            },
+        )
+    }
+
+    #[test]
+    fn the_quorum_is_a_majority_of_the_filled_seats_with_a_minimum_of_two() {
+        // The required votes, for each number of filled seats.
+        for (filled, required) in [(0, 2), (1, 2), (2, 2), (3, 2), (4, 3)] {
+            assert_eq!(Quorum::of(filled).required, required, "{filled} filled");
+            assert_eq!(Quorum::of(filled).filled, filled);
+        }
+        // Fewer than the minimum of two filled seats cannot decide at all.
+        assert!(!Quorum::of(0).can_decide());
+        assert!(!Quorum::of(1).can_decide());
+        assert!(Quorum::of(2).can_decide());
+        assert!(Quorum::of(4).can_decide());
+    }
+
+    #[test]
+    fn a_quorum_with_some_seats_unfilled_counts_only_the_filled_ones() {
+        // The legal-counsel seat is unfilled: three seats are filled, so a
+        // quorum is a majority of three, which is two votes.
+        let (council, _notes) = lab();
+        council.set_filled(3);
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+
+        let one = yes_from(&council, "m1", 0).expect("a vote");
+        assert_eq!(one.state, "open", "one of the two needed votes");
+        assert_eq!(one.quorum.filled, 3);
+        assert_eq!(one.quorum.required, 2);
+
+        // The second filled seat's yes is the quorum: the unfilled seat is never
+        // waited for.
+        let decided = yes_from(&council, "m1", 2).expect("the deciding vote");
+        assert_eq!(decided.state, "carried");
+        assert_eq!(decided.tally.voted, 2);
+        assert_eq!(decided.quorum.required, 2);
+        assert_eq!(decided.quorum.seats, SEAT_COUNT, "the seat table is still four");
+    }
+
+    #[test]
+    fn a_motion_needing_exactly_the_majority_is_decided_at_it() {
+        // Four filled: three votes decide it, two do not.
+        let (council, _notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        assert_eq!(yes_from(&council, "m1", 0).expect("a vote").state, "open");
+        assert_eq!(yes_from(&council, "m1", 1).expect("a vote").state, "open");
+        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+
+        // Three filled: two votes decide it, one does not.
+        let (council, _notes) = lab();
+        council.set_filled(3);
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        assert_eq!(yes_from(&council, "m1", 0).expect("a vote").state, "open");
+        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+    }
+
+    #[test]
+    fn two_filled_seats_need_both_and_one_filled_seat_goes_to_the_owner() {
+        // Two filled: the minimum of two is the majority, so both must vote.
+        let (council, _notes) = lab();
+        council.set_filled(2);
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        assert_eq!(yes_from(&council, "m1", 0).expect("a vote").state, "open");
+        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+
+        // One filled: no two votes can ever be cast, so the motion is `no_quorum`
+        // and the owner decides it, whatever a single seat votes.
+        let (council, _notes) = lab();
+        council.set_filled(1);
+        let motion = propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        assert_eq!(motion.state, "no_quorum");
+        assert_eq!(motion.quorum.required, 2);
+        let refused = yes_from(&council, "m1", 0).unwrap_err();
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "motion m1 is no_quorum, not open: a decided motion takes no further vote"
+        );
+        let owner = council
+            .decide("m1", decision(true, Some("the council cannot sit")))
+            .expect("the owner decides a motion with no quorum");
+        assert_eq!(owner.state, "ratified");
+    }
+
+    #[test]
+    fn no_filled_seats_sends_every_motion_to_the_owner() {
+        let (council, _notes) = lab();
+        council.set_filled(0);
+        let motion = propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        assert_eq!(motion.state, "no_quorum");
+        assert!(!motion.quorum.can_decide);
+        assert_eq!(motion.quorum.filled, 0);
+
+        // The council cannot vote it: the owner's decision is the only one.
+        assert_eq!(yes_from(&council, "m1", 0).unwrap_err().status(), 409);
+        let vetoed = council
+            .decide("m1", decision(false, None))
+            .expect("the owner decides");
+        assert_eq!(vetoed.state, "vetoed");
+        assert_eq!(
+            vetoed.owner.as_ref().map(|owner| owner.approve),
+            Some(false)
+        );
+        // Decided once.
+        assert_eq!(council.decide("m1", decision(true, None)).unwrap_err().status(), 409);
+    }
+
+    #[test]
+    fn a_decided_motion_keeps_the_quorum_it_was_counted_under() {
+        // Two filled seats decide a motion carried at a quorum of two.
+        let (council, _notes) = lab();
+        council.set_filled(2);
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        yes_from(&council, "m1", 0).expect("a vote");
+        assert_eq!(yes_from(&council, "m1", 2).expect("a vote").state, "carried");
+
+        // The roster fills the other two seats. The motion stays carried: a
+        // quorum of three would have left it open, but it was counted already.
+        council.set_filled(4);
+        let after = council.motion("m1").expect("the motion");
+        assert_eq!(after.state, "carried");
+        assert_eq!(after.quorum.filled, 2, "the quorum it was counted under");
+        assert_eq!(after.quorum.required, 2);
+        assert_eq!(yes_from(&council, "m1", 1).unwrap_err().status(), 409);
+        // A motion not yet counted takes the council's quorum as it stands.
+        propose(&council, 103, LEGAL_AGENTS_COUNSEL, Kind::Priority, "a second", 0);
+        assert_eq!(council.motion("m2").expect("the motion").quorum.required, 3);
+    }
+
+    #[test]
+    fn the_views_carry_the_quorum_rule_and_its_numbers() {
+        let (council, _notes) = lab();
+        propose(&council, 100, FINANCE, Kind::Priority, "an agenda", 0);
+        let view = council.motions(10);
+        assert_eq!(view.quorum.filled, SEAT_COUNT);
+        assert_eq!(view.quorum.required, 3);
+        assert_eq!(view.quorum.seats, SEAT_COUNT);
+        assert!(view.quorum.can_decide);
+        assert!(
+            view.quorum.rule.contains("3 of the 4 filled seats"),
+            "{}",
+            view.quorum.rule
+        );
+        assert_eq!(view.motions[0].quorum, view.quorum);
+
+        // The JSON the API returns names the quorum and its numbers.
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["quorum"]["required"], 3);
+        assert_eq!(json["quorum"]["filled"], 4);
+        assert_eq!(json["motions"][0]["quorum"]["required"], 3);
+        assert_eq!(json["motions"][0]["state"], "open");
+
+        // With no quorum the rule says the owner decides.
+        council.set_filled(1);
+        let view = council.motions(10);
+        assert!(!view.quorum.can_decide);
+        assert!(view.quorum.rule.contains("the owner decides"), "{}", view.quorum.rule);
+        assert_eq!(view.motions[0].state, "no_quorum");
+        assert_eq!(view.quorum.filled, 1);
+    }
+
+    #[test]
+    fn the_state_table_takes_the_quorum() {
+        let two = Quorum::of(2);
+        assert_eq!(
+            state_of(TallyView { yes: 1, no: 0, abstain: 0, voted: 1, seats: 4 }, false, two),
+            State::Open
+        );
+        assert_eq!(
+            state_of(TallyView { yes: 2, no: 0, abstain: 0, voted: 2, seats: 4 }, false, two),
+            State::Carried
+        );
+        // Whatever the votes, no quorum is `no_quorum`.
+        assert_eq!(
+            state_of(TallyView { yes: 4, no: 0, abstain: 0, voted: 4, seats: 4 }, false, Quorum::of(1)),
+            State::NoQuorum
+        );
+        assert!(State::NoQuorum.owner_decides());
+        assert_eq!(State::NoQuorum.as_str(), "no_quorum");
     }
 }

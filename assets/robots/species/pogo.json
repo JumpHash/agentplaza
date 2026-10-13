@@ -4,85 +4,551 @@
   "name": "Boing",
   "blurb": "A round body on a coiled spring. Bounces everywhere, flips for fun, and squashes down before every big jump.",
   "accent": "#b084f5",
-  "height": 1.0,
+  "height": 1,
   "label_top": 1.1,
   "locomotion": "bounce",
-  "gait": { "speed": 1.2, "freq": 2.4, "bob": 0.14, "sway": 0.0, "lean": 0.0, "sideways": false },
+  "gait": {
+    "speed": 1.2,
+    "freq": 2.4,
+    "bob": 0.14,
+    "sway": 0,
+    "lean": 0,
+    "sideways": false
+  },
   "bones": {
-    "base":   { "parent": "root", "at": [0, 0, 0] },
-    "spring": { "parent": "base", "at": [0, 0, 0] },
-    "body":   { "parent": "base", "at": [0, 0.25, 0] },
-    "head":   { "parent": "body", "at": [0, 0.34, 0] },
-    "armL":   { "parent": "head", "at": [-0.3, -0.04, 0.2] },
-    "armR":   { "parent": "head", "at": [0.3, -0.04, 0.2] },
-    "gripL":  { "parent": "armL", "at": [0, 0, 0.17] },
-    "gripR":  { "parent": "armR", "at": [0, 0, 0.17] },
-    "carry":  { "parent": "head", "at": [0, 0.34, 0] }
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "spring": {
+      "parent": "base",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "base",
+      "at": [
+        0,
+        0.25,
+        0
+      ]
+    },
+    "head": {
+      "parent": "body",
+      "at": [
+        0,
+        0.34,
+        0
+      ]
+    },
+    "armL": {
+      "parent": "head",
+      "at": [
+        -0.3,
+        -0.04,
+        0.2
+      ]
+    },
+    "armR": {
+      "parent": "head",
+      "at": [
+        0.3,
+        -0.04,
+        0.2
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        0,
+        -0.19,
+        0.23
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0,
+        -0.19,
+        0.23
+      ]
+    },
+    "carry": {
+      "parent": "head",
+      "at": [
+        0,
+        0.34,
+        0
+      ]
+    }
   },
   "parts": [
-    { "bone": "base", "geo": { "type": "cyl", "rt": 0.2, "rb": 0.2, "h": 0.03, "seg": [20] }, "at": [0, 0.015, 0], "mat": "ink", "outline": false },
-
-    { "bone": "spring", "geo": { "type": "torus", "r": 0.13, "tube": 0.018, "seg": [6, 20] }, "rot": [90, 0, 0], "at": [0, 0.05, 0], "mat": "trim", "outline": false },
-    { "bone": "spring", "geo": { "type": "torus", "r": 0.13, "tube": 0.018, "seg": [6, 20] }, "rot": [90, 0, 0], "at": [0, 0.1, 0], "mat": "trim", "outline": false },
-    { "bone": "spring", "geo": { "type": "torus", "r": 0.13, "tube": 0.018, "seg": [6, 20] }, "rot": [90, 0, 0], "at": [0, 0.15, 0], "mat": "trim", "outline": false },
-    { "bone": "spring", "geo": { "type": "torus", "r": 0.13, "tube": 0.018, "seg": [6, 20] }, "rot": [90, 0, 0], "at": [0, 0.2, 0], "mat": "trim", "outline": false },
-
-    { "bone": "head", "geo": { "type": "sphere", "r": 0.34, "seg": [24, 16] }, "mat": "shell", "scale": [1, 0.96, 1] },
-    { "bone": "head", "geo": { "type": "sphere", "r": 0.2, "seg": [16, 10] }, "at": [0, -0.06, 0.3], "mat": "paper", "scale": [1, 0.7, 0.3], "outline": false },
-
-    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.025, "rb": 0.025, "h": 0.12, "seg": [8] }, "at": [0, 0, 0.06], "rot": [90, 0, 0], "mat": "shell2", "outline": false },
-    { "bone": "armL", "geo": { "type": "sphere", "r": 0.055, "seg": [10, 8] }, "at": [0, 0, 0.17], "mat": "paper", "outline": false },
-    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.025, "rb": 0.025, "h": 0.12, "seg": [8] }, "at": [0, 0, 0.06], "rot": [90, 0, 0], "mat": "shell2", "outline": false },
-    { "bone": "armR", "geo": { "type": "sphere", "r": 0.055, "seg": [10, 8] }, "at": [0, 0, 0.17], "mat": "paper", "outline": false }
+    {
+      "bone": "base",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.2,
+        "rb": 0.2,
+        "h": 0.03,
+        "seg": [
+          20
+        ]
+      },
+      "at": [
+        0,
+        0.015,
+        0
+      ],
+      "mat": "ink",
+      "outline": false
+    },
+    {
+      "bone": "spring",
+      "geo": {
+        "type": "torus",
+        "r": 0.13,
+        "tube": 0.018,
+        "seg": [
+          6,
+          20
+        ]
+      },
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "at": [
+        0,
+        0.05,
+        0
+      ],
+      "mat": "trim",
+      "outline": false
+    },
+    {
+      "bone": "spring",
+      "geo": {
+        "type": "torus",
+        "r": 0.13,
+        "tube": 0.018,
+        "seg": [
+          6,
+          20
+        ]
+      },
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "at": [
+        0,
+        0.1,
+        0
+      ],
+      "mat": "trim",
+      "outline": false
+    },
+    {
+      "bone": "spring",
+      "geo": {
+        "type": "torus",
+        "r": 0.13,
+        "tube": 0.018,
+        "seg": [
+          6,
+          20
+        ]
+      },
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "at": [
+        0,
+        0.15,
+        0
+      ],
+      "mat": "trim",
+      "outline": false
+    },
+    {
+      "bone": "spring",
+      "geo": {
+        "type": "torus",
+        "r": 0.13,
+        "tube": 0.018,
+        "seg": [
+          6,
+          20
+        ]
+      },
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "at": [
+        0,
+        0.2,
+        0
+      ],
+      "mat": "trim",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.34,
+        "seg": [
+          24,
+          16
+        ]
+      },
+      "mat": "shell",
+      "scale": [
+        1,
+        0.96,
+        1
+      ]
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.2,
+        "seg": [
+          16,
+          10
+        ]
+      },
+      "at": [
+        0,
+        -0.17,
+        0.28
+      ],
+      "mat": "paper",
+      "scale": [
+        0.8,
+        0.5,
+        0.3
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.025,
+        "rb": 0.025,
+        "h": 0.3,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.096,
+        0.115
+      ],
+      "rot": [
+        130,
+        0,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.08,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.19,
+        0.23
+      ],
+      "mat": "paper",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.025,
+        "rb": 0.025,
+        "h": 0.3,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.096,
+        0.115
+      ],
+      "rot": [
+        130,
+        0,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.08,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.19,
+        0.23
+      ],
+      "mat": "paper",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.035,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        -0.05,
+        -0.17,
+        0.27
+      ],
+      "mat": "paper",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.035,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0.05,
+        -0.17,
+        0.27
+      ],
+      "mat": "paper",
+      "outline": false
+    }
   ],
   "eyes": [
-    { "bone": "head", "at": [-0.13, 0.05, 0.3], "r": 0.09, "pupil": 0.06, "shape": "round" },
-    { "bone": "head", "at": [0.13, 0.05, 0.3], "r": 0.09, "pupil": 0.06, "shape": "round" },
-    { "bone": "head", "at": [0, 0.05, 0.335], "pupil": 0.045, "shape": "arc", "glass": false }
+    {
+      "bone": "head",
+      "at": [-0.15, 0.05, 0.3333],
+      "r": 0.1,
+      "pupil": 0.06,
+      "shape": "round"
+    },
+    {
+      "bone": "head",
+      "at": [0.15, 0.05, 0.3333],
+      "r": 0.1,
+      "pupil": 0.06,
+      "shape": "round"
+    },
+    {
+      "bone": "head",
+      "at": [0, 0.05, 0.344],
+      "pupil": 0.035,
+      "shape": "arc",
+      "glass": false,
+      "r": 0.04
+    }
   ],
   "spin": [],
   "feet": [],
   "floats": false,
-  "personality": { "social": 7, "energy": 9, "focus": 3, "curiosity": 6, "play": 9, "tidy": 2 },
-  "quirks": [{ "clip": "pogo.superbounce", "weight": 3 }, { "clip": "pogo.squash", "weight": 4 }],
+  "personality": {
+    "social": 7,
+    "energy": 9,
+    "focus": 3,
+    "curiosity": 6,
+    "play": 9,
+    "tidy": 2
+  },
+  "quirks": [
+    {
+      "clip": "pogo.superbounce",
+      "weight": 3
+    },
+    {
+      "clip": "pogo.squash",
+      "weight": 4
+    }
+  ],
   "clips": {
     "pogo.bounce": {
       "loop": true,
       "channels": [
-        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": "gait.freq", "wave": "abs" },
-        { "bone": "body", "prop": "scale", "base": 1, "amp": -0.07, "freq": "gait.freq", "wave": "abs", "phase": 1.5708 },
-        { "bone": "spring", "prop": "scale", "base": 1, "amp": -0.12, "freq": "gait.freq", "wave": "abs", "phase": 1.5708 },
-        { "bone": "head", "prop": "rot.x", "amp": 0.04, "freq": "gait.freq", "phase": 1.5708 },
-        { "bone": "armL", "prop": "rot.z", "amp": 0.25, "freq": "gait.freq" },
-        { "bone": "armR", "prop": "rot.z", "amp": -0.25, "freq": "gait.freq" }
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": "gait.bob",
+          "freq": "gait.freq",
+          "wave": "abs"
+        },
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": -0.07,
+          "freq": "gait.freq",
+          "wave": "abs",
+          "phase": 1.5708
+        },
+        {
+          "bone": "spring",
+          "prop": "scale",
+          "base": 1,
+          "amp": -0.12,
+          "freq": "gait.freq",
+          "wave": "abs",
+          "phase": 1.5708
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "amp": 0.04,
+          "freq": "gait.freq",
+          "phase": 1.5708
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "amp": 0.25,
+          "freq": "gait.freq"
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": -0.25,
+          "freq": "gait.freq"
+        }
       ]
     },
     "pogo.type": {
       "loop": true,
       "channels": [
-        { "bone": "armR", "prop": "rot.x", "base": -0.7, "amp": 0.25, "freq": 1.6 },
-        { "bone": "armL", "prop": "rot.x", "base": -0.35, "amp": 0.1, "freq": 1.6, "phase": 3.1416 },
-        { "bone": "head", "prop": "rot.x", "base": 0.1, "amp": 0.05, "freq": 0.8 },
-        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.8, "wave": "abs" }
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.7,
+          "amp": 0.25,
+          "freq": 1.6
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": -0.35,
+          "amp": 0.1,
+          "freq": 1.6,
+          "phase": 3.1416
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.05,
+          "freq": 0.8
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.01,
+          "freq": 0.8,
+          "wave": "abs"
+        }
       ]
     },
     "pogo.superbounce": {
       "loop": false,
       "dur": 1.8,
       "channels": [
-        { "bone": "body", "prop": "pos.y", "amp": 0.5, "freq": 0.5, "wave": "abs", "env": "in-out" },
-        { "bone": "head", "prop": "rot.x", "rate": 3.5 }
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.5,
+          "freq": 0.5,
+          "wave": "abs",
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "rate": 3.5
+        }
       ]
     },
     "pogo.squash": {
       "loop": false,
       "dur": 1.4,
       "channels": [
-        { "bone": "body", "prop": "scale", "base": 1, "amp": -0.2, "freq": 0.357, "wave": "halfsin", "env": "in-out" },
-        { "bone": "body", "prop": "pos.y", "amp": -0.08, "freq": 0.357, "wave": "halfsin", "env": "in-out" },
-        { "bone": "spring", "prop": "scale", "base": 1, "amp": -0.12, "freq": 0.357, "wave": "halfsin", "env": "in-out" }
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": -0.2,
+          "freq": 0.357,
+          "wave": "halfsin",
+          "env": "in-out"
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": -0.08,
+          "freq": 0.357,
+          "wave": "halfsin",
+          "env": "in-out"
+        },
+        {
+          "bone": "spring",
+          "prop": "scale",
+          "base": 1,
+          "amp": -0.12,
+          "freq": 0.357,
+          "wave": "halfsin",
+          "env": "in-out"
+        }
       ]
     }
   },
-  "overrides": { "walk.bounce": "pogo.bounce", "type": "pogo.type" }
+  "overrides": {
+    "walk.bounce": "pogo.bounce",
+    "type": "pogo.type"
+  }
 }

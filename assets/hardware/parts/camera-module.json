@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "kind": "camera-module",
+  "view": "part",
+  "size": [2.52, 1.239, 2.52],
+  "parts": [
+    {"id": "pcb", "geo": {"type": "box", "w": 2.52, "h": 0.21, "d": 2.52}, "at": [0.0, 0.105, 0.0], "mat": "pcb-black"},
+    {"id": "sensor", "geo": {"type": "box", "w": 2.1, "h": 0.21, "d": 2.1}, "at": [0.0, 0.3175, 0.0], "mat": "ic", "label": {"text": "SENSOR", "size": 0.3, "color": "#e8eadf"}},
+    {"id": "lens-1", "geo": {"type": "cyl", "rt": 0.882, "rb": 0.882, "h": 0.42}, "at": [0.0, 0.635, 0.0], "mat": "plastic-matte"},
+    {"id": "lens-ring", "geo": {"type": "ring", "ri": 0.714, "ro": 0.882}, "at": [0.0, 0.8592, 0.0], "mat": "nickel", "outline": false},
+    {"id": "lens-2", "geo": {"type": "cyl", "rt": 0.714, "rb": 0.714, "h": 0.21}, "at": [0.0, 0.9525, 0.0], "mat": "metal-dark"},
+    {"id": "lens-3", "geo": {"type": "cyl", "rt": 0.546, "rb": 0.546, "h": 0.147}, "at": [0.0, 1.1335, 0.0], "mat": "glass"},
+    {"id": "aperture", "geo": {"type": "cyl", "rt": 0.252, "rb": 0.252, "h": 0.042}, "at": [0.0, 1.2305, 0.0], "mat": "port-hole", "outline": false, "detail": 2}
+  ]
+}

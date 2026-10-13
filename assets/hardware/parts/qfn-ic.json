@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "kind": "qfn-ic",
+  "view": "part",
+  "size": [1.47, 0.2205, 1.47],
+  "parts": [
+    {"id": "body", "geo": {"type": "rbox", "w": 1.26, "h": 0.189, "d": 1.26, "r": 0.021}, "at": [0.0, 0.126, 0.0], "mat": "ic", "label": {"text": "QFN", "size": 0.45, "color": "#e8eadf"}},
+    {"id": "pad", "geo": {"type": "box", "w": 0.882, "h": 0.021, "d": 0.882}, "at": [0.0, 0.0105, 0.0], "mat": "solder"},
+    {"id": "pin1", "geo": {"type": "cyl", "rt": 0.0525, "rb": 0.0525, "h": 0.0084}, "at": [-0.462, 0.2272, -0.462], "mat": "silkscreen", "outline": false, "detail": 2},
+    {"id": "lead-x-n", "geo": {"type": "box", "w": 0.0525, "h": 0.021, "d": 0.105}, "at": [-0.4725, 0.0105, -0.6825], "mat": "solder", "outline": false, "repeat": {"count": 10, "step": [0.105, 0.0, 0.0]}, "detail": 2},
+    {"id": "lead-x-p", "geo": {"type": "box", "w": 0.0525, "h": 0.021, "d": 0.105}, "at": [-0.4725, 0.0105, 0.6825], "mat": "solder", "outline": false, "repeat": {"count": 10, "step": [0.105, 0.0, 0.0]}, "detail": 2},
+    {"id": "lead-z-n", "geo": {"type": "box", "w": 0.105, "h": 0.021, "d": 0.0525}, "at": [-0.6825, 0.0105, -0.4725], "mat": "solder", "outline": false, "repeat": {"count": 10, "step": [0.0, 0.0, 0.105]}, "detail": 2},
+    {"id": "lead-z-p", "geo": {"type": "box", "w": 0.105, "h": 0.021, "d": 0.0525}, "at": [0.6825, 0.0105, -0.4725], "mat": "solder", "outline": false, "repeat": {"count": 10, "step": [0.0, 0.0, 0.105]}, "detail": 2}
+  ]
+}

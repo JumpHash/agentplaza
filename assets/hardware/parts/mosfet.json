@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "kind": "mosfet",
+  "view": "part",
+  "size": [1.26, 0.231, 1.05],
+  "parts": [
+    {"id": "body", "geo": {"type": "rbox", "w": 1.26, "h": 0.21, "d": 1.05, "r": 0.021}, "at": [0.0, 0.1385, 0.0], "mat": "ic", "label": {"text": "MOS", "size": 0.5, "color": "#e8eadf"}},
+    {"id": "lead", "geo": {"type": "box", "w": 0.105, "h": 0.021, "d": 0.126}, "at": [-0.5775, 0.0105, -0.315], "mat": "gold", "outline": false, "repeat": {"count": 4, "step": [0.0, 0.0, 0.21]}, "detail": 2},
+    {"id": "drain", "geo": {"type": "box", "w": 0.105, "h": 0.021, "d": 0.84}, "at": [0.5775, 0.0105, 0.0], "mat": "copper", "detail": 1}
+  ]
+}

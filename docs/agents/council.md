@@ -85,12 +85,17 @@ the owner's hand.
 
 ## The count (0034)
 
-Simple majority decides; the owner's decision, once made, is the state.
+A quorum decides: a motion is counted once a majority of the **filled**
+seats has voted (`filled / 2 + 1`, at least 2 votes; a seat is filled when a
+live agent holds its role). Each count then goes to a simple majority; the
+owner's decision, once made, is the state. With fewer than two seats filled
+no quorum can form and the motion goes to the owner (`no_quorum`).
 States, in one table:
 
 | state | when |
 |---|---|
-| `open` | fewer than four seats have voted |
+| `open` | fewer votes than the quorum requires have been cast |
+| `no_quorum` | fewer than two seats are filled — the owner decides |
 | `carried` | a majority of yes over no, below the owner's gate |
 | `rejected` | a majority of no |
 | `tie_to_owner` | 2–2 (escalates to the owner — never re-voted until it passes) |
@@ -98,8 +103,11 @@ States, in one table:
 | `ratified` | the owner approved a motion the count gated to them |
 | `vetoed` | the owner refused a motion the count gated to them |
 
-`abstain` counts toward four-seats-voted and never toward the majority.
-`tally` in every view: `{yes, no, abstain, voted, seats: 4}`.
+`abstain` counts toward the quorum (votes cast) and never toward the majority.
+`tally` in every view: `{yes, no, abstain, voted, seats: 4}`. Every motion view
+and the list carry `quorum`: `{rule, seats, filled, required, can_decide}`, the
+rule in words with its numbers. A decided motion keeps the quorum it was
+counted under.
 
 ## Surfaces
 
@@ -114,7 +122,7 @@ States, in one table:
 
 ## What v0 does NOT do (stated)
 
-- No quorum or session windows (any seat may vote while `open`) and no
+- No session windows (any filled seat may vote while `open`) and no
   deadlines. The owner's decision **is** here (`POST /api/v0/motions/{id}/decide`);
   no `per-case grants` (0079) and no law signing (0049) — each is its own
   slice.

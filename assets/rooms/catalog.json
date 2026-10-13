@@ -1,0 +1,971 @@
+{
+ "schema": 2,
+ "cell": 0.25,
+ "walls": {
+  "heights": {
+   "panel": 1.1,
+   "brick": 1,
+   "stone": 0.9,
+   "hedge": 0.8,
+   "glass": 1.2,
+   "fence": 0.6
+  },
+  "thick": {
+   "panel": 0.14,
+   "brick": 0.2,
+   "stone": 0.22,
+   "hedge": 0.35,
+   "glass": 0.06,
+   "fence": 0.08
+  }
+ },
+ "items": {
+  "desk": {
+   "model": "kit:deskTop",
+   "size": [
+    1,
+    0.56,
+    0.55
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.7,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.6
+     ],
+     "face": 180,
+     "clip": "type"
+    }
+   ]
+  },
+  "chair": {
+   "model": "kit:chair",
+   "size": [
+    0.42,
+    0.84,
+    0.42
+   ],
+   "place": "member",
+   "face": "in",
+   "walk": true,
+   "spots": [
+    {
+     "at": [
+      0,
+      0
+     ],
+     "face": 0,
+     "clip": "sit"
+    }
+   ]
+  },
+  "monitor": {
+   "model": "kit:monitor",
+   "size": [
+    0.62,
+    0.56,
+    0.18
+   ],
+   "place": "surface"
+  },
+  "shelf": {
+   "model": "kit:shelf",
+   "size": [
+    1.2,
+    1.6,
+    0.4
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.5,
+    "side": 0.1
+   }
+  },
+  "small-shelf": {
+   "model": "kit:smallShelf",
+   "size": [
+    0.8,
+    1,
+    0.3
+   ],
+   "place": "wall",
+   "face": "in"
+  },
+  "plant": {
+   "model": "kit:plant",
+   "size": [
+    0.68,
+    1.07,
+    0.68
+   ],
+   "place": "corner"
+  },
+  "rug": {
+   "model": "kit:rug",
+   "size": [
+    1.6,
+    0.01,
+    1.2
+   ],
+   "place": "center",
+   "layer": "floor"
+  },
+  "floor-lamp": {
+   "model": "kit:lamp",
+   "size": [
+    0.48,
+    1.88,
+    0.48
+   ],
+   "place": "corner"
+  },
+  "poster": {
+   "model": "kit:poster",
+   "size": [
+    0.5,
+    0.6,
+    0.1
+   ],
+   "place": "wallmount",
+   "mount": 0.45
+  },
+  "clock": {
+   "model": "kit:clock",
+   "size": [
+    0.36,
+    0.36,
+    0.08
+   ],
+   "place": "wallmount",
+   "mount": 0.8
+  },
+  "sofa": {
+   "model": "kit:sofa",
+   "size": [
+    1.6,
+    0.8,
+    0.7
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.5,
+    "side": 0.1
+   },
+   "walk": true,
+   "spots": [
+    {
+     "at": [
+      0,
+      0
+     ],
+     "face": 0,
+     "clip": "sit"
+    }
+   ]
+  },
+  "armchair": {
+   "model": "kit:armchair",
+   "size": [
+    0.8,
+    0.85,
+    0.8
+   ],
+   "place": "member",
+   "face": "in",
+   "walk": true,
+   "spots": [
+    {
+     "at": [
+      0,
+      0
+     ],
+     "face": 0,
+     "clip": "sit"
+    }
+   ]
+  },
+  "coffee-table": {
+   "model": "kit:coffeeTable",
+   "size": [
+    0.8,
+    0.42,
+    0.5
+   ],
+   "place": "member"
+  },
+  "side-table": {
+   "model": "kit:sideTable",
+   "size": [
+    0.5,
+    0.55,
+    0.5
+   ],
+   "place": "member"
+  },
+  "stool": {
+   "model": "kit:stool",
+   "size": [
+    0.36,
+    0.5,
+    0.36
+   ],
+   "place": "member",
+   "walk": true,
+   "spots": [
+    {
+     "at": [
+      0,
+      0
+     ],
+     "face": 0,
+     "clip": "sit"
+    }
+   ]
+  },
+  "bin": {
+   "model": "kit:bin",
+   "size": [
+    0.3,
+    0.6,
+    0.3
+   ],
+   "place": "corner"
+  },
+  "coat-stand": {
+   "model": "kit:coatStand",
+   "size": [
+    0.4,
+    1.8,
+    0.4
+   ],
+   "place": "corner"
+  },
+  "small-crate": {
+   "model": "kit:smallCrate",
+   "size": [
+    0.5,
+    0.5,
+    0.5
+   ],
+   "place": "wall"
+  },
+  "safe": {
+   "model": "kit:safe",
+   "size": [
+    0.7,
+    0.9,
+    0.6
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   }
+  },
+  "drafting-table": {
+   "model": "prop:drafting-table",
+   "size": [
+    1.2,
+    0.997,
+    0.8
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "type"
+    }
+   ]
+  },
+  "easel": {
+   "model": "prop:easel",
+   "size": [
+    0.9,
+    1.33,
+    0.9
+   ],
+   "place": "corner",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.9
+     ],
+     "face": 180,
+     "clip": "think"
+    }
+   ]
+  },
+  "whiteboard": {
+   "model": "prop:whiteboard",
+   "size": [
+    1.5,
+    1.82,
+    0.4
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.6
+     ],
+     "face": 180,
+     "clip": "wave"
+    }
+   ]
+  },
+  "lab-bench": {
+   "model": "prop:lab-bench",
+   "size": [
+    1.4,
+    1.09,
+    0.7
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      -0.2,
+      0.7
+     ],
+     "face": 164.1,
+     "clip": "type"
+    },
+    {
+     "at": [
+      0.4,
+      0.7
+     ],
+     "face": -150.3,
+     "clip": "think"
+    }
+   ]
+  },
+  "microscope-desk": {
+   "model": "prop:microscope-desk",
+   "size": [
+    1,
+    1.3,
+    0.7
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "think"
+    }
+   ]
+  },
+  "workbench": {
+   "model": "prop:workbench",
+   "size": [
+    1.4,
+    1.07,
+    0.7
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "type"
+    }
+   ]
+  },
+  "book-cart": {
+   "model": "prop:book-cart",
+   "size": [
+    0.8,
+    0.965,
+    0.6
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "idle"
+    }
+   ]
+  },
+  "counter": {
+   "model": "prop:counter",
+   "size": [
+    1.4,
+    1.15,
+    0.6
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "proud"
+    }
+   ]
+  },
+  "podium": {
+   "model": "prop:podium",
+   "size": [
+    0.7,
+    1.45,
+    0.6
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "wave"
+    }
+   ]
+  },
+  "crate-stack": {
+   "model": "prop:crate-stack",
+   "size": [
+    1.2,
+    0.76,
+    0.9
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.8
+     ],
+     "face": 180,
+     "clip": "idle"
+    }
+   ]
+  },
+  "server-rack": {
+   "model": "prop:server-rack",
+   "size": [
+    0.8,
+    1.6,
+    0.8
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.85
+     ],
+     "face": 180,
+     "clip": "type"
+    }
+   ]
+  },
+  "alarm-post": {
+   "model": "prop:alarm-post",
+   "size": [
+    0.6,
+    1.47,
+    0.6
+   ],
+   "place": "corner",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "think"
+    }
+   ]
+  },
+  "guard-post": {
+   "model": "prop:guard-post",
+   "size": [
+    1.1,
+    1,
+    1
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.85
+     ],
+     "face": 180,
+     "clip": "idle"
+    }
+   ]
+  },
+  "plant-bed": {
+   "model": "prop:plant-bed",
+   "size": [
+    1.4,
+    0.542,
+    0.9
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      -0.3,
+      0.85
+     ],
+     "face": 160.6,
+     "clip": "idle"
+    },
+    {
+     "at": [
+      0.3,
+      0.85
+     ],
+     "face": -160.6,
+     "clip": "proud"
+    }
+   ]
+  },
+  "meeting-table": {
+   "model": "prop:meeting-table",
+   "size": [
+    1.2,
+    0.875,
+    1.2
+   ],
+   "place": "center",
+   "face": "in",
+   "clear": {
+    "front": 0.3,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.85
+     ],
+     "face": 180,
+     "clip": "think"
+    },
+    {
+     "at": [
+      0.85,
+      0
+     ],
+     "face": -90,
+     "clip": "idle"
+    },
+    {
+     "at": [
+      0,
+      -0.85
+     ],
+     "face": 0,
+     "clip": "think"
+    },
+    {
+     "at": [
+      -0.85,
+      0
+     ],
+     "face": 90,
+     "clip": "idle"
+    }
+   ]
+  },
+  "charging-dock": {
+   "model": "prop:charging-dock",
+   "size": [
+    0.8,
+    0.53,
+    0.8
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "offline"
+    }
+   ]
+  },
+  "bench": {
+   "model": "prop:bench",
+   "size": [
+    1.4,
+    0.862,
+    0.5
+   ],
+   "place": "wall",
+   "face": "in",
+   "clear": {
+    "front": 0.6,
+    "side": 0.1
+   },
+   "spots": [
+    {
+     "at": [
+      0,
+      0.7
+     ],
+     "face": 180,
+     "clip": "idle"
+    }
+   ]
+  }
+ },
+ "groups": {
+  "desk-set": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "desk"
+    },
+    {
+     "id": "chair",
+     "rel": "front",
+     "gap": 0.05,
+     "face": "anchor"
+    },
+    {
+     "id": "monitor",
+     "rel": "on"
+    }
+   ]
+  },
+  "reading-nook": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "armchair"
+    },
+    {
+     "id": "floor-lamp",
+     "rel": "beside",
+     "gap": 0.05,
+     "optional": true
+    },
+    {
+     "id": "small-shelf",
+     "rel": "beside-other",
+     "gap": 0.05,
+     "optional": true
+    }
+   ]
+  },
+  "meeting": {
+   "anchor": "center",
+   "items": [
+    {
+     "id": "meeting-table"
+    },
+    {
+     "id": "chair",
+     "rel": "around",
+     "count": [
+      2,
+      4
+     ],
+     "face": "anchor"
+    }
+   ]
+  },
+  "lounge": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "sofa"
+    },
+    {
+     "id": "rug",
+     "rel": "front"
+    },
+    {
+     "id": "coffee-table",
+     "rel": "front",
+     "gap": 0.3,
+     "optional": true
+    },
+    {
+     "id": "side-table",
+     "rel": "beside",
+     "gap": 0.05,
+     "optional": true
+    }
+   ]
+  },
+  "storage-wall": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "shelf",
+     "count": [
+      1,
+      3
+     ],
+     "rel": "row",
+     "gap": 0.05
+    }
+   ]
+  },
+  "station": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "$station"
+    },
+    {
+     "id": "stool",
+     "rel": "front",
+     "gap": 0.05,
+     "face": "anchor",
+     "optional": true
+    }
+   ]
+  },
+  "bench": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "$station"
+    }
+   ]
+  },
+  "corner-station": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "$station"
+    }
+   ]
+  },
+  "podium-stage": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "$station"
+    }
+   ]
+  },
+  "safe-corner": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "safe"
+    }
+   ]
+  },
+  "easel-corner": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "easel"
+    }
+   ]
+  },
+  "board-wall": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "whiteboard"
+    }
+   ]
+  },
+  "corner-plant": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "plant"
+    }
+   ]
+  },
+  "coat-corner": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "coat-stand"
+    }
+   ]
+  },
+  "bin-corner": {
+   "anchor": "corner",
+   "items": [
+    {
+     "id": "bin"
+    }
+   ]
+  },
+  "crate-pile": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "small-crate",
+     "count": [
+      1,
+      3
+     ],
+     "rel": "row",
+     "gap": 0.05
+    }
+   ]
+  },
+  "cart-bay": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "book-cart"
+    }
+   ]
+  },
+  "dock-bay": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "charging-dock"
+    }
+   ]
+  },
+  "garden-bench": {
+   "anchor": "wall",
+   "items": [
+    {
+     "id": "bench"
+    }
+   ]
+  },
+  "door-flank": {
+   "anchor": "door",
+   "items": [
+    {
+     "id": "plant"
+    },
+    {
+     "id": "plant",
+     "rel": "mirror"
+    }
+   ]
+  },
+  "wall-art": {
+   "anchor": "wallmount",
+   "items": [
+    {
+     "id": "poster"
+    }
+   ]
+  },
+  "wall-clock": {
+   "anchor": "wallmount",
+   "items": [
+    {
+     "id": "clock"
+    }
+   ]
+  }
+ }
+}

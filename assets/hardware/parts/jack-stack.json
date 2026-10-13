@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "kind": "jack-stack",
+  "view": "part",
+  "size": [2.94, 1.575, 12.6],
+  "parts": [
+    {"id": "plate", "geo": {"type": "box", "w": 2.94, "h": 0.315, "d": 12.6}, "at": [0.0, 0.1575, 0.0], "mat": "plastic-matte"},
+    {"id": "jack0", "geo": {"type": "cyl", "rt": 0.63, "rb": 0.63, "h": 2.1}, "at": [-0.42, 0.945, -4.2], "rot": [0.0, 0.0, 90.0], "mat": {"color": "#e05d8a"}},
+    {"id": "hole0", "geo": {"type": "cyl", "rt": 0.336, "rb": 0.336, "h": 0.042}, "at": [-1.464, 0.945, -4.2], "rot": [0.0, 0.0, 90.0], "mat": "port-hole", "outline": false, "detail": 2},
+    {"id": "jack1", "geo": {"type": "cyl", "rt": 0.63, "rb": 0.63, "h": 2.1}, "at": [-0.42, 0.945, -2.1], "rot": [0.0, 0.0, 90.0], "mat": {"color": "#3cc47a"}},
+    {"id": "hole1", "geo": {"type": "cyl", "rt": 0.336, "rb": 0.336, "h": 0.042}, "at": [-1.464, 0.945, -2.1], "rot": [0.0, 0.0, 90.0], "mat": "port-hole", "outline": false, "detail": 2},
+    {"id": "jack2", "geo": {"type": "cyl", "rt": 0.63, "rb": 0.63, "h": 2.1}, "at": [-0.42, 0.945, 0.0], "rot": [0.0, 0.0, 90.0], "mat": {"color": "#3b7de0"}},
+    {"id": "hole2", "geo": {"type": "cyl", "rt": 0.336, "rb": 0.336, "h": 0.042}, "at": [-1.464, 0.945, 0.0], "rot": [0.0, 0.0, 90.0], "mat": "port-hole", "outline": false, "detail": 2},
+    {"id": "jack3", "geo": {"type": "cyl", "rt": 0.63, "rb": 0.63, "h": 2.1}, "at": [-0.42, 0.945, 2.1], "rot": [0.0, 0.0, 90.0], "mat": {"color": "#1a1a1a"}},
+    {"id": "hole3", "geo": {"type": "cyl", "rt": 0.336, "rb": 0.336, "h": 0.042}, "at": [-1.464, 0.945, 2.1], "rot": [0.0, 0.0, 90.0], "mat": "port-hole", "outline": false, "detail": 2},
+    {"id": "jack4", "geo": {"type": "cyl", "rt": 0.63, "rb": 0.63, "h": 2.1}, "at": [-0.42, 0.945, 4.2], "rot": [0.0, 0.0, 90.0], "mat": {"color": "#e8a03c"}},
+    {"id": "hole4", "geo": {"type": "cyl", "rt": 0.336, "rb": 0.336, "h": 0.042}, "at": [-1.464, 0.945, 4.2], "rot": [0.0, 0.0, 90.0], "mat": "port-hole", "outline": false, "detail": 2}
+  ]
+}

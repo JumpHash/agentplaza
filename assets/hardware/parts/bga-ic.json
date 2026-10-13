@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "kind": "bga-ic",
+  "view": "part",
+  "size": [3.15, 0.378, 3.15],
+  "parts": [
+    {"id": "body", "geo": {"type": "rbox", "w": 3.15, "h": 0.315, "d": 3.15, "r": 0.042}, "at": [0.0, 0.2205, 0.0], "mat": "ic", "label": {"text": "IC", "size": 0.6, "color": "#e8eadf"}},
+    {"id": "ball-n", "geo": {"type": "sphere", "r": 0.0525}, "at": [-1.155, 0.0525, -1.26], "mat": "solder", "outline": false, "repeat": {"count": 12, "step": [0.21, 0.0, 0.0]}, "detail": 2},
+    {"id": "ball-s", "geo": {"type": "sphere", "r": 0.0525}, "at": [-1.155, 0.0525, 1.26], "mat": "solder", "outline": false, "repeat": {"count": 12, "step": [0.21, 0.0, 0.0]}, "detail": 2},
+    {"id": "ball-w", "geo": {"type": "sphere", "r": 0.0525}, "at": [-1.26, 0.0525, -1.155], "mat": "solder", "outline": false, "repeat": {"count": 12, "step": [0.0, 0.0, 0.21]}, "detail": 2},
+    {"id": "ball-e", "geo": {"type": "sphere", "r": 0.0525}, "at": [1.26, 0.0525, -1.155], "mat": "solder", "outline": false, "repeat": {"count": 12, "step": [0.0, 0.0, 0.21]}, "detail": 2}
+  ]
+}

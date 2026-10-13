@@ -10,8 +10,9 @@
 //!
 //! The owner's manual prices (`settings.prices`, credits per million tokens; 1 credit = $0.001) win over both.
 //! Lookup order for a plaza model id such as `anthropic/claude-opus-5-5`: manual price, then the
-//! OpenRouter id as is, then LiteLLM by the full id, then LiteLLM by the part after the first
-//! `/`; ids compare case-insensitively.
+//! built-in vendor prices ([`VENDOR`], Meta's Muse models), then the OpenRouter id as is, then
+//! LiteLLM by the full id, then LiteLLM by the part after the first `/`; ids compare
+//! case-insensitively.
 //!
 //! GET  /v1/prices          → {fetched_at_ms, sources: [{name, url, models, ok, error?}], models: [{model, price}]}
 //! GET  /v1/prices/{model}  → {model, price} (404 when nothing prices it); `{model}` is percent-encoded
@@ -62,9 +63,115 @@ pub struct ModelPrice {
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     Manual,
+    /// A provider's own published price list, built into apid (see [`VENDOR`]).
+    Vendor,
     Openrouter,
     Litellm,
 }
+
+/// Providers' own published prices, for models the public lists do not carry yet. Keys are plaza
+/// ids (`provider/model`, no effort). Meta's Muse models (dev.meta.ai/docs/pricing-rate-limits):
+/// the contributor variants cost less because Meta trains on what they send and return.
+pub const VENDOR: &[(&str, ModelPrice)] = &[
+    ("meta/muse-wonder-1.0", ModelPrice { input: 4.0, output: 20.0, cache_read: Some(0.2), cache_write: None }),
+    ("meta/muse-spark-1.3", ModelPrice { input: 1.25, output: 4.25, cache_read: Some(0.15), cache_write: None }),
+    ("meta/muse-spark-1.2", ModelPrice { input: 1.25, output: 4.25, cache_read: Some(0.15), cache_write: None }),
+    ("meta/muse-spark-1.1", ModelPrice { input: 1.25, output: 4.25, cache_read: Some(0.15), cache_write: None }),
+    ("meta/muse-spark-1.3-contributor", ModelPrice { input: 0.10, output: 0.20, cache_read: Some(0.002), cache_write: None }),
+    ("meta/muse-spark-1.2-contributor", ModelPrice { input: 0.10, output: 0.20, cache_read: Some(0.002), cache_write: None }),
+    // OpenCode Zen (opencode.ai/v2/docs/console/models): pay-as-you-go list prices per 1M tokens,
+    // base tier only (the first tier of tiered models). Mistral Large 4 is the displayed 50%-off
+    // price ($0.68 / $2.09 / $0.07), not the struck-through list price.
+    ("opencode/big-pickle", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/space-bunny-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/cat-jam-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/longcat-2.5-preview-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/step-5-preview-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/exo-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/mimo-v2.6-flash-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/mimo-v2.5-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/ling-3.1-flash-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/ling-3.0-flash-fin-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/nemotron-3-ultra-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/nemotron-3.5-lightning-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/muse-spark-1.3-contributor-free", ModelPrice { input: 0.0, output: 0.0, cache_read: Some(0.0), cache_write: None }),
+    ("opencode/jev-1.13-free", ModelPrice { input: 0.0, output: 0.0, cache_read: None, cache_write: None }),
+    ("opencode/jev-1.13", ModelPrice { input: 0.042, output: 0.0, cache_read: None, cache_write: None }),
+    ("opencode/minimax-m3", ModelPrice { input: 0.30, output: 1.20, cache_read: Some(0.06), cache_write: None }),
+    ("opencode/minimax-m2.7", ModelPrice { input: 0.30, output: 1.20, cache_read: Some(0.06), cache_write: None }),
+    ("opencode/minimax-m2.5", ModelPrice { input: 0.30, output: 1.20, cache_read: Some(0.06), cache_write: None }),
+    ("opencode/glm-5.3-flash", ModelPrice { input: 0.15, output: 0.50, cache_read: Some(0.03), cache_write: None }),
+    ("opencode/glm-5.3", ModelPrice { input: 1.40, output: 4.40, cache_read: Some(0.26), cache_write: None }),
+    ("opencode/glm-5.2", ModelPrice { input: 1.40, output: 4.40, cache_read: Some(0.26), cache_write: None }),
+    ("opencode/glm-5.1", ModelPrice { input: 1.40, output: 4.40, cache_read: Some(0.26), cache_write: None }),
+    ("opencode/glm-5", ModelPrice { input: 1.00, output: 3.20, cache_read: Some(0.20), cache_write: None }),
+    ("opencode/kimi-k2.7-code", ModelPrice { input: 0.95, output: 4.00, cache_read: Some(0.19), cache_write: None }),
+    ("opencode/kimi-k3", ModelPrice { input: 3.00, output: 15.00, cache_read: Some(0.30), cache_write: None }),
+    ("opencode/kimi-k2.6", ModelPrice { input: 0.95, output: 4.00, cache_read: Some(0.16), cache_write: None }),
+    ("opencode/kimi-k2.5", ModelPrice { input: 0.60, output: 3.00, cache_read: Some(0.10), cache_write: None }),
+    ("opencode/mistral-large-4", ModelPrice { input: 0.68, output: 2.09, cache_read: Some(0.07), cache_write: None }),
+    ("opencode/qwen3.8-max", ModelPrice { input: 2.00, output: 6.00, cache_read: Some(0.25), cache_write: Some(2.50) }),
+    ("opencode/qwen3.8-flash", ModelPrice { input: 0.15, output: 0.47, cache_read: Some(0.016), cache_write: Some(0.20) }),
+    ("opencode/qwen3.7-max", ModelPrice { input: 2.50, output: 7.50, cache_read: Some(0.50), cache_write: Some(3.125) }),
+    ("opencode/qwen3.7-plus", ModelPrice { input: 0.40, output: 1.60, cache_read: Some(0.04), cache_write: Some(0.50) }),
+    ("opencode/qwen3.6-plus", ModelPrice { input: 0.50, output: 3.00, cache_read: Some(0.05), cache_write: Some(0.625) }),
+    ("opencode/qwen3.5-plus", ModelPrice { input: 0.20, output: 1.20, cache_read: Some(0.02), cache_write: Some(0.25) }),
+    ("opencode/deepseek-v4.1-flash", ModelPrice { input: 0.30, output: 1.20, cache_read: Some(0.006), cache_write: None }),
+    ("opencode/deepseek-v4-pro", ModelPrice { input: 1.74, output: 3.48, cache_read: Some(0.145), cache_write: None }),
+    ("opencode/deepseek-v4-flash", ModelPrice { input: 0.14, output: 0.28, cache_read: Some(0.028), cache_write: None }),
+    ("opencode/deepseek-v4-flash-vision-exp", ModelPrice { input: 0.14, output: 0.28, cache_read: Some(0.028), cache_write: None }),
+    ("opencode/claude-fable-5-1", ModelPrice { input: 10.0, output: 50.0, cache_read: Some(0.25), cache_write: Some(12.50) }),
+    ("opencode/claude-fable-5", ModelPrice { input: 10.0, output: 50.0, cache_read: Some(1.00), cache_write: Some(12.50) }),
+    ("opencode/claude-opus-5-5", ModelPrice { input: 4.0, output: 20.0, cache_read: Some(0.20), cache_write: Some(5.00) }),
+    ("opencode/claude-opus-5", ModelPrice { input: 5.0, output: 25.0, cache_read: Some(0.50), cache_write: Some(6.25) }),
+    ("opencode/claude-opus-4-8", ModelPrice { input: 5.0, output: 25.0, cache_read: Some(0.50), cache_write: Some(6.25) }),
+    ("opencode/claude-opus-4-7", ModelPrice { input: 5.0, output: 25.0, cache_read: Some(0.50), cache_write: Some(6.25) }),
+    ("opencode/claude-opus-4-6", ModelPrice { input: 5.0, output: 25.0, cache_read: Some(0.50), cache_write: Some(6.25) }),
+    ("opencode/claude-opus-4-5", ModelPrice { input: 5.0, output: 25.0, cache_read: Some(0.50), cache_write: Some(6.25) }),
+    ("opencode/claude-sonnet-5-5", ModelPrice { input: 2.00, output: 10.00, cache_read: Some(0.20), cache_write: Some(2.50) }),
+    ("opencode/claude-sonnet-5", ModelPrice { input: 2.00, output: 10.00, cache_read: Some(0.20), cache_write: Some(2.50) }),
+    ("opencode/claude-sonnet-4-6", ModelPrice { input: 3.00, output: 15.00, cache_read: Some(0.30), cache_write: Some(3.75) }),
+    ("opencode/claude-sonnet-4-5", ModelPrice { input: 3.00, output: 15.00, cache_read: Some(0.30), cache_write: Some(3.75) }),
+    ("opencode/claude-haiku-5-5", ModelPrice { input: 0.10, output: 0.50, cache_read: Some(0.01), cache_write: Some(0.125) }),
+    ("opencode/claude-haiku-4-5", ModelPrice { input: 1.00, output: 5.00, cache_read: Some(0.10), cache_write: Some(1.25) }),
+    ("opencode/gemini-3.8-flash", ModelPrice { input: 1.50, output: 7.50, cache_read: Some(0.15), cache_write: None }),
+    ("opencode/gemini-3.7-flash", ModelPrice { input: 1.50, output: 7.50, cache_read: Some(0.15), cache_write: None }),
+    ("opencode/gemini-3.6-flash", ModelPrice { input: 1.50, output: 7.50, cache_read: Some(0.15), cache_write: None }),
+    ("opencode/gemini-3.5-flash", ModelPrice { input: 1.50, output: 9.00, cache_read: Some(0.15), cache_write: None }),
+    ("opencode/gemini-3.5-flash-lite", ModelPrice { input: 0.30, output: 2.50, cache_read: Some(0.03), cache_write: None }),
+    ("opencode/gemini-3.1-pro", ModelPrice { input: 2.00, output: 12.00, cache_read: Some(0.20), cache_write: None }),
+    ("opencode/gemini-3-flash", ModelPrice { input: 0.50, output: 3.00, cache_read: Some(0.05), cache_write: None }),
+    ("opencode/grok-4.7", ModelPrice { input: 2.00, output: 6.00, cache_read: Some(0.50), cache_write: None }),
+    ("opencode/grok-4.6", ModelPrice { input: 2.00, output: 6.00, cache_read: Some(0.50), cache_write: None }),
+    ("opencode/grok-4.5", ModelPrice { input: 2.00, output: 6.00, cache_read: Some(0.30), cache_write: None }),
+    ("opencode/grok-build-0.1", ModelPrice { input: 1.00, output: 2.00, cache_read: Some(0.20), cache_write: None }),
+    ("opencode/muse-spark-1.3", ModelPrice { input: 1.25, output: 4.25, cache_read: Some(0.15), cache_write: None }),
+    ("opencode/muse-spark-1.2", ModelPrice { input: 1.25, output: 4.25, cache_read: Some(0.15), cache_write: None }),
+    ("opencode/gpt-6-astra", ModelPrice { input: 10.0, output: 50.0, cache_read: Some(1.00), cache_write: Some(12.50) }),
+    ("opencode/gpt-6-sol", ModelPrice { input: 2.00, output: 10.00, cache_read: Some(0.20), cache_write: Some(2.50) }),
+    ("opencode/gpt-6.1-sol", ModelPrice { input: 2.00, output: 10.00, cache_read: Some(0.20), cache_write: Some(2.50) }),
+    ("opencode/gpt-6-luna", ModelPrice { input: 0.10, output: 0.50, cache_read: Some(0.01), cache_write: Some(0.125) }),
+    ("opencode/gpt-5.6-sol", ModelPrice { input: 4.00, output: 20.00, cache_read: Some(0.40), cache_write: Some(5.00) }),
+    ("opencode/gpt-5.6-terra", ModelPrice { input: 2.00, output: 12.00, cache_read: Some(0.20), cache_write: Some(2.50) }),
+    ("opencode/gpt-5.6-luna", ModelPrice { input: 0.20, output: 1.20, cache_read: Some(0.02), cache_write: Some(0.25) }),
+    ("opencode/gpt-5.5", ModelPrice { input: 5.00, output: 30.00, cache_read: Some(0.50), cache_write: None }),
+    ("opencode/gpt-5.5-pro", ModelPrice { input: 30.00, output: 180.00, cache_read: Some(30.00), cache_write: None }),
+    ("opencode/gpt-5.4", ModelPrice { input: 2.50, output: 15.00, cache_read: Some(0.25), cache_write: None }),
+    ("opencode/gpt-5.4-pro", ModelPrice { input: 30.00, output: 180.00, cache_read: Some(30.00), cache_write: None }),
+    ("opencode/gpt-5.4-mini", ModelPrice { input: 0.75, output: 4.50, cache_read: Some(0.075), cache_write: None }),
+    ("opencode/gpt-5.4-nano", ModelPrice { input: 0.20, output: 1.25, cache_read: Some(0.02), cache_write: None }),
+    ("opencode/gpt-5.3-codex-spark", ModelPrice { input: 1.75, output: 14.00, cache_read: Some(0.175), cache_write: None }),
+    ("opencode/gpt-5.3-codex", ModelPrice { input: 1.75, output: 14.00, cache_read: Some(0.175), cache_write: None }),
+    ("opencode/gpt-5.2", ModelPrice { input: 1.75, output: 14.00, cache_read: Some(0.175), cache_write: None }),
+    ("opencode/gpt-5.2-codex", ModelPrice { input: 1.75, output: 14.00, cache_read: Some(0.175), cache_write: None }),
+    ("opencode/gpt-5.1", ModelPrice { input: 1.07, output: 8.50, cache_read: Some(0.107), cache_write: None }),
+    ("opencode/gpt-5.1-codex", ModelPrice { input: 1.07, output: 8.50, cache_read: Some(0.107), cache_write: None }),
+    ("opencode/gpt-5.1-codex-max", ModelPrice { input: 1.25, output: 10.00, cache_read: Some(0.125), cache_write: None }),
+    ("opencode/gpt-5.1-codex-mini", ModelPrice { input: 0.25, output: 2.00, cache_read: Some(0.025), cache_write: None }),
+    ("opencode/gpt-5", ModelPrice { input: 1.07, output: 8.50, cache_read: Some(0.107), cache_write: None }),
+    ("opencode/gpt-5-codex", ModelPrice { input: 1.07, output: 8.50, cache_read: Some(0.107), cache_write: None }),
+    ("opencode/gpt-5-nano", ModelPrice { input: 0.05, output: 0.40, cache_read: Some(0.005), cache_write: None }),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Priced {
@@ -127,7 +234,14 @@ impl Catalog {
                 source: Source::Manual,
             });
         }
+        if let Some((_, price)) = VENDOR.iter().find(|(key, _)| *key == id) {
+            return Some(Priced { price: *price, source: Source::Vendor });
+        }
         let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        // `openrouter/<vendor>/<model>`: the rest is OpenRouter's own id. Never falls through to LiteLLM.
+        if let Some(rest) = id.strip_prefix("openrouter/") {
+            return state.openrouter.get(rest).map(|price| Priced { price: *price, source: Source::Openrouter });
+        }
         if let Some(price) = state.openrouter.get(&id) {
             return Some(Priced { price: *price, source: Source::Openrouter });
         }
@@ -412,11 +526,15 @@ fn listing(state: CatalogState) -> Listing {
             price: Priced { price: *price, source: Source::Openrouter },
         })
         .collect();
+    models.extend(VENDOR.iter().map(|(model, price)| Entry {
+        model: model.to_string(),
+        price: Priced { price: *price, source: Source::Vendor },
+    }));
     models.extend(
         state
             .litellm
             .iter()
-            .filter(|(model, _)| !state.openrouter.contains_key(*model))
+            .filter(|(model, _)| !state.openrouter.contains_key(*model) && !VENDOR.iter().any(|(v, _)| *v == model.as_str()))
             .map(|(model, price)| Entry {
                 model: model.clone(),
                 price: Priced { price: *price, source: Source::Litellm },
@@ -536,6 +654,49 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_ids_resolve_from_the_openrouter_map() {
+        let catalog = catalog();
+        let none = BTreeMap::new();
+        let price = ModelPrice { input: 1.5, output: 3.0, cache_read: None, cache_write: None };
+        {
+            let mut state = catalog.state.write().unwrap();
+            state.openrouter.insert("anthropic/claude-x".into(), price);
+            state.openrouter.insert("vendor/model:free".into(), price);
+        }
+
+        let claude = catalog.lookup("openrouter/anthropic/claude-x", &none).unwrap();
+        assert_eq!(claude.source, Source::Openrouter);
+        assert!(close(claude.price.input, 1.5) && close(claude.price.output, 3.0));
+
+        let free = catalog.lookup("openrouter/vendor/model:free", &none).unwrap();
+        assert_eq!(free.source, Source::Openrouter);
+        assert!(close(free.price.input, 1.5));
+    }
+
+    #[test]
+    fn openrouter_ids_never_fall_through_to_litellm() {
+        let catalog = catalog();
+        let none = BTreeMap::new();
+        let price = ModelPrice { input: 9.0, output: 9.0, cache_read: None, cache_write: None };
+        catalog.state.write().unwrap().litellm.insert("unknown/x".into(), price);
+
+        assert!(catalog.lookup("unknown/x", &none).is_some());
+        assert_eq!(catalog.lookup("openrouter/unknown/x", &none), None);
+    }
+
+    #[test]
+    fn opencode_ids_resolve_from_the_vendor_table() {
+        let catalog = catalog();
+        let none = BTreeMap::new();
+
+        let sonnet = catalog.lookup("opencode/claude-sonnet-5-5", &none).unwrap();
+        assert_eq!(sonnet.source, Source::Vendor);
+        assert!(close(sonnet.price.input, 2.0) && close(sonnet.price.output, 10.0));
+
+        assert_eq!(catalog.lookup("opencode/no-such-model", &none), None);
+    }
+
+    #[test]
     fn bad_bodies_are_errors() {
         assert!(parse_openrouter("not json").is_err());
         assert!(parse_litellm("[1, 2]").is_err());
@@ -575,6 +736,28 @@ mod tests {
         assert!(close(priced.price.input, 1.0) && close(priced.price.output, 2.0));
         assert_eq!(priced.price.cache_read, None);
         assert_eq!(priced.price.cache_write, None);
+    }
+
+    #[test]
+    fn meta_muse_prices_are_built_in_and_contributor_variants_are_priced() {
+        let catalog = Catalog::default();
+        let none = BTreeMap::new();
+        let spark = catalog.lookup("meta/muse-spark-1.3@high", &none).unwrap();
+        assert_eq!(spark.source, Source::Vendor);
+        assert!(close(spark.price.input, 1.25) && close(spark.price.output, 4.25));
+        assert!(close(spark.price.cache_read.unwrap(), 0.15));
+        let wonder = catalog.lookup("meta/muse-wonder-1.0", &none).unwrap();
+        assert!(close(wonder.price.input, 4.0) && close(wonder.price.output, 20.0) && close(wonder.price.cache_read.unwrap(), 0.2));
+        let contributor = catalog.lookup("meta/muse-spark-1.3-contributor", &none).unwrap();
+        assert!(close(contributor.price.input, 0.10) && close(contributor.price.output, 0.20));
+        assert!(close(contributor.price.cache_read.unwrap(), 0.002));
+        // Manual prices still win over the built-in ones.
+        let mut manual = BTreeMap::new();
+        manual.insert("meta/muse-wonder-1.0".to_string(), crate::settings::Price { input: 1.0, output: 2.0 });
+        assert_eq!(catalog.lookup("meta/muse-wonder-1.0", &manual).unwrap().source, Source::Manual);
+        // Every built-in price is listed, as the vendor's.
+        let listed = listing(Catalog::default().state());
+        assert_eq!(listed.models.iter().filter(|e| e.price.source == Source::Vendor).count(), VENDOR.len());
     }
 
     #[test]

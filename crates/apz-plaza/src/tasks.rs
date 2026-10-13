@@ -15,8 +15,9 @@
 //! |---|---|---|
 //! | `open` | `draft` → `ready` | created and claimable (v0 creates tasks ready) |
 //! | `claimed` | `assigned` | bound to a live agent; `assignee_id` is set |
-//! | `done` | `accepted` | the claiming agent reports the work done |
-//! | `failed` | `failed` | the claiming agent reports it failed |
+//! | `awaiting_review` | `verifying` | the claiming agent reports the work done; it waits for a reviewer's verdict |
+//! | `done` | `accepted` | the work is accepted: a reviewer passes it, the owner approves it, or a claim is finished as done |
+//! | `failed` | `failed` | the claiming agent reports it failed, or a verdict fails it |
 //! | `withdrawn` | `cancelled` | given up before it finished |
 //!
 //! Every transition that is not one of those is refused with a
@@ -28,9 +29,11 @@
 //!
 //! What v0 does not do, and says so rather than pretending:
 //!
-//! * **No verify step.** The schema separates `assigned`/`running` (the worker)
-//!   from `verifying`/`accepted` (someone else, 0053). v0 has no verifier, so
-//!   `verifier_id` is always null and a claim's word is what finishes a task.
+//! * **A review, but no verifier record.** The schema separates
+//!   `assigned`/`running` (the worker) from `verifying`/`accepted` (someone
+//!   else, 0053). A claim the agent reports done moves to `awaiting_review`
+//!   and waits there for a reviewer's verdict; the scheduler holds that review,
+//!   so `verifier_id` is always null.
 //! * **No bids, dependencies, rework, change sets or tree.** The schema's
 //!   `parent_id`/`root_id`/`task_deps`/`change_sets` are a later slice; v0's
 //!   tasks are roots with no dependencies.
@@ -40,9 +43,10 @@
 //!   accepts the finish from anyone who can reach the loopback API. The
 //!   identity slice (device keys, agent certificates) is what turns that into
 //!   an enforced check.
-//! * **No durability.** v0 is in memory, like runs; the schema's tables,
-//!   its `updated_at` trigger and its append-only `task_events` are a later
-//!   slice. Every transition does publish to the event bus, so the console
+//! * **Persistence is apid's job.** The ledger is held in memory and apid
+//!   snapshots it (`snapshot` / `restore`) into Postgres or the state dir. The
+//!   schema's tables, its `updated_at` trigger and its append-only `task_events`
+//!   are a later slice. Every transition does publish to the event bus, so the console
 //!   sees the ledger live, and [`MAX_TASKS`] bounds what the process holds.
 //!
 //! # The task's escrow
@@ -51,9 +55,11 @@
 //! [`crate::treasury`]): a task created with a budget mints it into the task's
 //! escrow (a `mint` entry, the mint debited and the escrow credited), and a
 //! task that reaches a terminal state (`done`, `failed` or `withdrawn`)
-//! refunds what its escrow still holds (a `refund` entry). v0 meters no real
-//! spend, so a task that ends refunds its *whole* budget — the treasury view
-//! carries that fact in its own words (`spent: 0`, and the note).
+//! refunds what its escrow still holds (a `refund` entry). Model calls are
+//! metered as real spend (see [`crate::treasury`]), so what a task ends with is
+//! its budget less that spend, and the treasury view's `spent` totals it. A task in
+//! `awaiting_review` is not terminal: its escrow stays held until a verdict
+//! finishes it, so the reviewed worker is paid out of that escrow first.
 //!
 //! The two effects are ordered so the ledger is never left inconsistent:
 //! `create` mints **before** the task exists (a mint the treasury refuses
@@ -94,7 +100,10 @@ pub enum TaskState {
     Open,
     /// Bound to a live agent.
     Claimed,
-    /// Ended: the agent reports the work done.
+    /// The claiming agent reports the work done; it waits for a reviewer's
+    /// verdict, and its escrow stays held until the verdict ends the task.
+    AwaitingReview,
+    /// Ended: the work is accepted.
     Done,
     /// Ended: the agent reports the work failed.
     Failed,
@@ -104,9 +113,10 @@ pub enum TaskState {
 
 impl TaskState {
     /// Every state, in the order a task moves through them.
-    pub const ALL: [TaskState; 5] = [
+    pub const ALL: [TaskState; 6] = [
         TaskState::Open,
         TaskState::Claimed,
+        TaskState::AwaitingReview,
         TaskState::Done,
         TaskState::Failed,
         TaskState::Withdrawn,
@@ -117,6 +127,7 @@ impl TaskState {
         match self {
             TaskState::Open => "open",
             TaskState::Claimed => "claimed",
+            TaskState::AwaitingReview => "awaiting_review",
             TaskState::Done => "done",
             TaskState::Failed => "failed",
             TaskState::Withdrawn => "withdrawn",
@@ -124,16 +135,22 @@ impl TaskState {
     }
 
     /// Whether `self -> next` is one of the transitions v0 allows: a task is
-    /// claimed from `open`, finished from `claimed`, and withdrawn from either
-    /// state before it ends. Every other pair is refused.
+    /// claimed from `open`, a claim the agent reports done waits in
+    /// `awaiting_review`, a claim or a waiting task is finished (done or
+    /// failed), and a task is withdrawn from any state before it ends. Every
+    /// other pair is refused.
     pub fn can_transition_to(self, next: TaskState) -> bool {
         matches!(
             (self, next),
             (TaskState::Open, TaskState::Claimed)
+                | (TaskState::Claimed, TaskState::AwaitingReview)
                 | (TaskState::Claimed, TaskState::Done)
                 | (TaskState::Claimed, TaskState::Failed)
+                | (TaskState::AwaitingReview, TaskState::Done)
+                | (TaskState::AwaitingReview, TaskState::Failed)
                 | (TaskState::Open, TaskState::Withdrawn)
                 | (TaskState::Claimed, TaskState::Withdrawn)
+                | (TaskState::AwaitingReview, TaskState::Withdrawn)
         )
     }
 
@@ -151,7 +168,7 @@ impl TaskState {
     /// closes), in the schema's outcome enum. `None` while the task lives.
     fn outcome(self) -> Option<&'static str> {
         match self {
-            TaskState::Open | TaskState::Claimed => None,
+            TaskState::Open | TaskState::Claimed | TaskState::AwaitingReview => None,
             TaskState::Done => Some("accepted"),
             TaskState::Failed => Some("failed"),
             TaskState::Withdrawn => Some("cancelled"),
@@ -291,6 +308,30 @@ impl std::fmt::Display for EndError {
 
 impl std::error::Error for EndError {}
 
+/// The escrow a task gets when its poster names no budget. Every caller that
+/// creates a task on a poster's behalf (the HTTP route, the agents' tools and
+/// the CLI, which omits the field) gets this default through [`resolve_budget`].
+pub const DEFAULT_TASK_BUDGET: i64 = 2000;
+
+/// The smallest budget a poster may name, in credits: a budget is the escrow
+/// that pays the worker's model calls and tool steps, and a few credits stop
+/// the work at its first call.
+pub const MIN_TASK_BUDGET: i64 = 200;
+
+/// The budget a poster's request gets: the default when none is named, the
+/// named budget when it is at least [`MIN_TASK_BUDGET`], and otherwise a refusal
+/// that names the minimum (0 is below it, so it is refused too).
+pub fn resolve_budget(requested: Option<u64>) -> Result<u64, String> {
+    let minimum = MIN_TASK_BUDGET as u64;
+    match requested {
+        None => Ok(DEFAULT_TASK_BUDGET as u64),
+        Some(budget) if budget < minimum => Err(format!(
+            "a budget of {budget} credits is below the minimum of {MIN_TASK_BUDGET}: a task's budget is the escrow that pays the worker's model calls and tool steps (not a fee), so use at least {MIN_TASK_BUDGET} (the default is {DEFAULT_TASK_BUDGET}; typical work needs 1000-5000)"
+        )),
+        Some(budget) => Ok(budget),
+    }
+}
+
 /// The `POST /v1/tasks` body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateTask {
@@ -299,8 +340,9 @@ pub struct CreateTask {
     /// How the work will be judged complete (the schema's `spec_ref`).
     #[serde(default)]
     pub acceptance: Option<String>,
-    /// The task's budget, in credits (the schema's `budget_credits`, whose
-    /// default is 0).
+    /// The task's budget, in credits. Absent is 0 at the ledger, which posts no
+    /// escrow for it; the HTTP route and the agents' tools first apply
+    /// [`resolve_budget`], so a poster's task is never unfunded by accident.
     #[serde(default)]
     pub budget: Option<u64>,
     /// The role the task is for, when it names one. v0 records it; it does not
@@ -601,9 +643,35 @@ impl Task {
         Ok(())
     }
 
+    /// Moves a claimed task to `awaiting_review`: the claiming agent reports the
+    /// work done, and it waits for a reviewer's verdict. `note` is the agent's
+    /// report; the reviewer reads it from the task.
+    ///
+    /// Nothing is refunded. The escrow stays held while the task waits, so a
+    /// done claim that no reviewer rules on pays nothing back to the budget until
+    /// a verdict (or the owner's ruling) finishes it.
+    pub fn await_review(&self, note: Option<String>) -> Result<(), RefusedTransition> {
+        let to = TaskState::AwaitingReview;
+        let mut inner = self.lock();
+        let from = inner.state;
+        if !from.can_transition_to(to) {
+            return Err(RefusedTransition { from, to });
+        }
+        inner.state = to;
+        inner.note = note;
+        inner.updated_at = now_ms();
+        let assignee = inner.assignee_id.clone();
+        self.events.publish(Event::Task {
+            id: self.id.clone(),
+            state: to.as_str(),
+            assignee,
+        });
+        Ok(())
+    }
+
     /// Ends the task as `outcome`, with what the agent has to say about it.
     ///
-    /// Only a claimed task can be finished. The claiming agent's CID is
+    /// Only a claimed task, or one awaiting review, can be finished. The claiming agent's CID is
     /// recorded at claim time; nothing in a finish request identifies the
     /// caller, so v0 records who claimed the task rather than proving who
     /// finished it (see the module note on the identity slice).
@@ -978,13 +1046,18 @@ mod tests {
     }
 
 
-    /// `core.task_transitions`, restricted to the states noded v0 implements.
-    const ALLOWED: [(TaskState, TaskState); 5] = [
+    /// `core.task_transitions`, restricted to the states noded v0 implements
+    /// (`awaiting_review` is the schema's `verifying`).
+    const ALLOWED: [(TaskState, TaskState); 9] = [
         (TaskState::Open, TaskState::Claimed),
+        (TaskState::Claimed, TaskState::AwaitingReview),
         (TaskState::Claimed, TaskState::Done),
         (TaskState::Claimed, TaskState::Failed),
+        (TaskState::AwaitingReview, TaskState::Done),
+        (TaskState::AwaitingReview, TaskState::Failed),
         (TaskState::Open, TaskState::Withdrawn),
         (TaskState::Claimed, TaskState::Withdrawn),
+        (TaskState::AwaitingReview, TaskState::Withdrawn),
     ];
 
     #[test]
@@ -1380,6 +1453,56 @@ mod tests {
         assert!(ledger.treasury().verify_journal().is_ok());
     }
     #[test]
+    fn a_done_claim_waits_for_review_and_keeps_its_escrow_held() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = budgeted(&ledger, "reviewed work", 80);
+        task.claim(&agent(100, "builder")).expect("claim");
+
+        // The worker reports done: the task waits, and nothing is refunded.
+        task.await_review(Some("built it".to_string()))
+            .expect("claimed -> awaiting_review");
+        assert_eq!(task.state(), "awaiting_review");
+        assert_eq!(task.view().note.as_deref(), Some("built it"));
+        assert!(!task.is_open());
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 80, "the escrow is still held");
+        assert_eq!(ledger.treasury().view().totals.entries, 2, "no refund was posted");
+
+        // Only a verdict ends it, and the refund is what the escrow still holds.
+        task.finish(FinishOutcome::Done, Some("pass".to_string()))
+            .expect("awaiting_review -> done");
+        assert_eq!(task.state(), "done");
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+        assert_eq!(ledger.treasury().view().totals.entries, 3);
+    }
+
+    #[test]
+    fn a_waiting_task_cannot_be_claimed_again_and_only_a_claim_can_wait() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = budgeted(&ledger, "reviewed work", 10);
+        let refused = task
+            .await_review(None)
+            .expect_err("open -> awaiting_review is refused");
+        assert_eq!(refused.to_string(), "a task may not go from open to awaiting_review");
+
+        task.claim(&agent(100, "builder")).expect("claim");
+        task.await_review(None).expect("claimed -> awaiting_review");
+        assert!(task.claim(&agent(101, "builder")).is_err(), "waiting is not open");
+        assert_eq!(task.state(), "awaiting_review");
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 10);
+    }
+
+    #[test]
+    fn a_waiting_task_can_be_withdrawn_and_then_refunds() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let task = budgeted(&ledger, "given up", 25);
+        task.claim(&agent(100, "builder")).expect("claim");
+        task.await_review(None).expect("claimed -> awaiting_review");
+        task.withdraw().expect("awaiting_review -> withdrawn");
+        assert_eq!(task.state(), "withdrawn");
+        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+    }
+
+    #[test]
     fn every_terminal_state_refunds_the_whole_escrow() {
         let ledger = TaskLedger::new(EventBus::new());
 
@@ -1409,6 +1532,20 @@ mod tests {
         for task in ledger.list() {
             assert_eq!(ledger.treasury().escrow_balance(task.id()), 0);
         }
+    }
+
+    #[test]
+    fn a_poster_budget_defaults_and_refuses_below_the_minimum() {
+        assert_eq!(resolve_budget(None), Ok(2000));
+        assert_eq!(resolve_budget(Some(200)), Ok(200));
+        assert_eq!(resolve_budget(Some(5000)), Ok(5000));
+        for low in [0, 1, 199] {
+            let refusal = resolve_budget(Some(low)).expect_err("below the minimum");
+            assert!(refusal.contains("minimum of 200"), "names the minimum: {refusal}");
+            assert!(refusal.contains(&format!("{low} credits")), "names the budget: {refusal}");
+        }
+        assert_eq!(DEFAULT_TASK_BUDGET, 2000);
+        assert_eq!(MIN_TASK_BUDGET, 200);
     }
 
     #[test]

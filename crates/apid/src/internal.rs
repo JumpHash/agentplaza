@@ -2,6 +2,7 @@
 //!
 //! OWNER: slice "loop". `handle` is the agent loop's host half.
 
+use apz_gateway::Caller;
 use apz_http::{Request, Response, Router};
 use apz_proto::chat::{ChatRequest, Message, Role};
 use apz_proto::wire::{cap_output, Decision, GuestMessage, HostMessage};
@@ -309,9 +310,10 @@ fn model_call(
     );
 
     let gateway = app.providers.gateway();
-    let result = gateway.complete(&request, &mut |delta| {
+    let caller = Caller::Agent { cid, node: crate::vault::node_for_cid(&app.nodes.list(), cid) };
+    let result = gateway.complete_for(&request, &mut |delta| {
         app.bus.publish("delta", &json!({ "cid": cid, "work": work, "req": req, "delta": delta }));
-    });
+    }, &caller);
     match result {
         Ok(resp) => {
             let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
@@ -349,31 +351,27 @@ fn model_call(
     }
 }
 
-/// Charges `credits` of metered spend to the work's task escrow. Only hired work
-/// (a task) is charged: agents talking, reaching out, naming themselves or
-/// debating motions cost the plaza's budget nothing (their tokens are still
-/// counted in their usage). An exhausted escrow is recorded and the task's work
-/// is cancelled.
+/// Charges `credits` of a model call to the work's task, through the shared charge
+/// ([`crate::payments::charge_model_call`]), which honours `payments.charge_models`.
+/// Only hired work (a task) is charged: agents talking, reaching out, naming
+/// themselves or debating motions cost the plaza's budget nothing (their tokens are
+/// still counted in their usage). A shortfall is recorded and the task's work is
+/// cancelled.
 pub(crate) fn meter(app: &App, cid: u64, work: u64, credits: i64, memo: &str) -> Result<(), String> {
     let Some(task) = app.work.current(cid).and_then(|item| item.origin.task) else {
         return Ok(());
     };
-    let task = Some(task);
-    match app.plaza.treasury.charge_spend(task.as_deref(), credits, memo) {
-        Ok(_) => {
-            if let Some(task) = task.as_deref() {
-                app.work.add_spend(task, credits);
-            }
-            Ok(())
-        }
-        Err(_) => {
+    let charging = app.settings.get().payments.charge_models;
+    let spend = |task: &str, credits: i64| app.work.add_spend(task, credits);
+    let charge = crate::payments::charge_model_call(&app.plaza.treasury, charging, spend, cid, Some(&task), credits, memo);
+    match charge {
+        Some(settled) if settled.charged < settled.wanted => {
             let message = "budget exhausted";
             app.transcripts.record(&app.bus, cid, work, "error", json!({ "message": message }));
-            if task.is_some() {
-                app.work.cancel(app, cid, message);
-            }
+            app.work.cancel(app, cid, message);
             Err(message.to_string())
         }
+        _ => Ok(()),
     }
 }
 
@@ -417,7 +415,15 @@ fn tool_request(
             if name == "tool_package" {
                 crate::library::remember_package_call(cid, &call);
             }
-            (Decision::Allow, String::new(), false)
+            // The engine's model is checked against the tier before the VM runs it: a bad one is a
+            // tool error here, not a gateway refusal later.
+            match name {
+                "code_engine" => match crate::tools::code_engine_model(app, &agent.role, input) {
+                    Ok(_) => (Decision::Allow, String::new(), false),
+                    Err(reason) => (Decision::Deny, reason, true),
+                },
+                _ => (Decision::Allow, String::new(), false),
+            }
         }
         Ok(Runs::Host) => {
             let (is_error, output) = run_host(app, agent, work, name, input);

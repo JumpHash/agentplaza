@@ -31,7 +31,8 @@ pub fn tier_of(role: &str) -> Tier {
     if role == ORCHESTRATOR_ROLE { Tier::Orchestrator } else { Tier::Worker }
 }
 
-/// The models each tier may run (canonical `provider/model[@effort]`).
+/// The models each tier's list names (canonical `provider/model[@effort]`). The orchestrator may run
+/// only its list. Workers may run any model: their list is the presets offered first, plus the default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelPolicy {
     pub orchestrator: Vec<String>,
@@ -97,7 +98,17 @@ pub struct Settings {
     pub payments: Payments,
     /// The Lab's settings (`docs/design/foundry.md`, "Hugging Face").
     pub foundry: FoundrySettings,
+    /// The owner's explicit confirmation that a contributor model (one that trains its provider's
+    /// future models on what it is sent, `apz_gateway::trains_on_data`) may be a default, a role
+    /// model or a policy entry. Off: the save refuses those; a per-agent pick is never affected.
+    pub allow_training_models: bool,
+    /// Minutes a done task waits for a reviewer before the owner is asked to rule on it (an
+    /// approval of kind `review`). 0 asks at the scheduler's next tick. See `scheduler.rs`.
+    pub review_timeout_minutes: u32,
 }
+
+/// The default for `review_timeout_minutes`: half an hour.
+pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
 
 /// The Lab's settings. `hf_max_gb`: the most a Hugging Face import may download, in GiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +142,8 @@ impl Default for Settings {
             laws: LawsSettings::default(),
             payments: Payments::default(),
             foundry: FoundrySettings::default(),
+            allow_training_models: false,
+            review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
         }
     }
 }
@@ -276,17 +289,21 @@ impl Store {
     pub fn load(state_dir: &Path, dev_models: bool) -> std::io::Result<Self> {
         // contract
         let path = state_dir.join("settings.json");
-        let settings = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            Err(_) => {
-                let mut s = Settings::default();
-                if dev_models {
-                    s.default_model = "mock/agent".into();
-                    s.orchestrator_model = "mock/agent".into();
+        let loaded: Settings = match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    eprintln!("settings: {} is not valid settings JSON ({e}); using the defaults", path.display());
+                    fresh(dev_models)
                 }
-                s
-            }
+            },
+            Err(_) => fresh(dev_models),
         };
+        // A hand-edited file gets the same checks a save gets; what fails is repaired, and named.
+        let (settings, notes) = repair(loaded, dev_models);
+        for note in &notes {
+            eprintln!("settings: {} repaired on load: {note}", path.display());
+        }
         crate::laws::global().set_strict(settings.laws.strict_permits);
         Ok(Self { path, dev_models, inner: Mutex::new(settings) })
     }
@@ -301,35 +318,11 @@ impl Store {
         self.dev_models
     }
 
-    /// Whether `model` may run for `tier` (always in dev mode); the error
-    /// names the allowed list. Workers may run any well-formed model: their
-    /// list is the presets offered first, not a limit. The orchestrator tier
-    /// stays limited to its list.
+    /// Whether `model` may run for `tier` under the stored policy (always in dev mode); the error
+    /// names the tier's list. See [`allowed_under`].
     pub fn allowed(&self, tier: Tier, model: &str) -> Result<(), String> {
         // contract
-        if self.dev_models {
-            return Ok(());
-        }
-        let wanted = canonical(model)?;
-        if tier == Tier::Worker {
-            return Ok(());
-        }
-        let policy = self.get().model_policy;
-        let list = match tier {
-            Tier::Orchestrator => policy.orchestrator,
-            Tier::Worker => policy.worker,
-        };
-        let names: Vec<String> = list.iter().filter_map(|m| canonical(m).ok()).collect();
-        // An entry without an effort pin admits that model at any effort; a pinned entry only itself.
-        let base = ModelRef::parse(model).map(|r| r.base_name()).map_err(|e| e.to_string())?;
-        if names.contains(&wanted) || names.contains(&base) {
-            return Ok(());
-        }
-        Err(format!(
-            "{model} is not allowed for the {} tier; allowed: {}",
-            tier_name(tier),
-            names.join(", ")
-        ))
+        allowed_under(&self.get().model_policy, self.dev_models, tier, model)
     }
 
     /// Validates `new`, writes `settings.json` atomically and replaces the
@@ -341,53 +334,7 @@ impl Store {
 
     /// The checks every saved settings value passes (`put` and `restore`).
     fn check(&self, new: &Settings) -> Result<(), String> {
-        self.allowed(Tier::Worker, &new.default_model)?;
-        self.allowed(Tier::Orchestrator, &new.orchestrator_model)?;
-        for (role, model) in &new.role_models {
-            self.allowed(tier_of(role), model)?;
-        }
-        if !(1..=200).contains(&new.max_turns) {
-            return Err(format!("max_turns must be 1..=200, got {}", new.max_turns));
-        }
-        if let Some(effort) = &new.effort {
-            const LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-            if !LEVELS.contains(&effort.as_str()) {
-                return Err(format!("unknown effort {effort:?}; expected one of {}", LEVELS.join(", ")));
-            }
-        }
-        if !(1..=500).contains(&new.foundry.hf_max_gb) {
-            return Err(format!("foundry.hf_max_gb must be 1..=500, got {}", new.foundry.hf_max_gb));
-        }
-        if let Some(bad) = new.fetch_block.iter().find(|h| !is_bare_host(h) || h.trim_start_matches("*.").contains('*')) {
-            return Err(format!("fetch_block entry {bad:?} is not a bare hostname (or *.domain)"));
-        }
-        let retention = &new.retention;
-        for (name, max) in [
-            ("conversations_max", retention.conversations_max),
-            ("posts_max", retention.posts_max),
-            ("usage_calls_max", retention.usage_calls_max),
-        ] {
-            if !(RETENTION_MIN..=RETENTION_MAX).contains(&max) {
-                return Err(format!(
-                    "retention.{name} must be {RETENTION_MIN}..={RETENTION_MAX}, got {max}"
-                ));
-            }
-        }
-        for (name, days) in [
-            ("conversations_days", retention.conversations_days),
-            ("posts_days", retention.posts_days),
-            ("usage_days", retention.usage_days),
-        ] {
-            if days > RETENTION_DAYS_MAX {
-                return Err(format!(
-                    "retention.{name} must be 0..={RETENTION_DAYS_MAX} (0 keeps everything), got {days}"
-                ));
-            }
-        }
-        if new.sanctions.max_fine > FINES_PER_WEEK_MAX {
-            return Err(format!("sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}", new.sanctions.max_fine));
-        }
-        Ok(())
+        check_settings(new, self.dev_models)
     }
 
     /// Writes `settings.json` atomically and swaps the in-memory settings.
@@ -418,6 +365,234 @@ impl Store {
             Tier::Worker => s.default_model,
         }
     }
+}
+
+/// The reasoning efforts a settings `effort` may name. `None` (unset) is the provider's own default.
+const EFFORT_LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Whether `model` may run for `tier` under `policy` (always in dev mode). The error names the
+/// tier's list.
+///
+/// The orchestrator tier may run only its list, and an empty list admits nothing. Workers may run
+/// any well-formed model: their list is the presets offered first and the default, not a limit. An
+/// entry without an effort pin admits that model at any effort; a pinned entry only itself.
+fn allowed_under(policy: &ModelPolicy, dev_models: bool, tier: Tier, model: &str) -> Result<(), String> {
+    if dev_models {
+        return Ok(());
+    }
+    let wanted = canonical(model)?;
+    if tier == Tier::Worker {
+        return Ok(());
+    }
+    let list = &policy.orchestrator;
+    let names: Vec<String> = list.iter().filter_map(|m| canonical(m).ok()).collect();
+    let base = ModelRef::parse(model).map(|r| r.base_name()).map_err(|e| e.to_string())?;
+    if names.contains(&wanted) || names.contains(&base) {
+        return Ok(());
+    }
+    let shown = if names.is_empty() { "none".to_string() } else { names.join(", ") };
+    Err(format!("{model} is not allowed for the {} tier; allowed: {shown}", tier_name(tier)))
+}
+
+/// The checks every settings value passes: on save and restore (`Store::put`, `Store::restore`),
+/// and on load (`repair`'s last look). The model rules are those of [`allowed_under`] against the
+/// policy this value carries.
+fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
+    if !new.allow_training_models {
+        // A contributor model trains Meta's future models on what it is sent: never a default, a role
+        // model or a policy entry until the owner says so (`allow_training_models`).
+        let named = std::iter::once(&new.default_model)
+            .chain(std::iter::once(&new.orchestrator_model))
+            .chain(new.role_models.values())
+            .chain(new.model_policy.orchestrator.iter())
+            .chain(new.model_policy.worker.iter());
+        if let Some(model) = named.into_iter().find(|m| apz_gateway::trains_on_data(m)) {
+            return Err(format!(
+                "{model} is a contributor model: it trains the provider's future models on what it is sent. \
+                 It may be a default, a role model or a policy entry only with allow_training_models set"
+            ));
+        }
+    }
+    let policy = &new.model_policy;
+    allowed_under(policy, dev_models, Tier::Worker, &new.default_model)?;
+    allowed_under(policy, dev_models, Tier::Orchestrator, &new.orchestrator_model)?;
+    for (role, model) in &new.role_models {
+        allowed_under(policy, dev_models, tier_of(role), model)?;
+    }
+    if !(1..=200).contains(&new.max_turns) {
+        return Err(format!("max_turns must be 1..=200, got {}", new.max_turns));
+    }
+    if let Some(effort) = &new.effort {
+        if !EFFORT_LEVELS.contains(&effort.as_str()) {
+            return Err(format!("unknown effort {effort:?}; expected one of {}", EFFORT_LEVELS.join(", ")));
+        }
+    }
+    if !(1..=500).contains(&new.foundry.hf_max_gb) {
+        return Err(format!("foundry.hf_max_gb must be 1..=500, got {}", new.foundry.hf_max_gb));
+    }
+    if let Some(bad) = new.fetch_block.iter().find(|h| !is_bare_host(h) || h.trim_start_matches("*.").contains('*')) {
+        return Err(format!("fetch_block entry {bad:?} is not a bare hostname (or *.domain)"));
+    }
+    let retention = &new.retention;
+    for (name, max) in [
+        ("conversations_max", retention.conversations_max),
+        ("posts_max", retention.posts_max),
+        ("usage_calls_max", retention.usage_calls_max),
+    ] {
+        if !(RETENTION_MIN..=RETENTION_MAX).contains(&max) {
+            return Err(format!("retention.{name} must be {RETENTION_MIN}..={RETENTION_MAX}, got {max}"));
+        }
+    }
+    for (name, days) in [
+        ("conversations_days", retention.conversations_days),
+        ("posts_days", retention.posts_days),
+        ("usage_days", retention.usage_days),
+    ] {
+        if days > RETENTION_DAYS_MAX {
+            return Err(format!(
+                "retention.{name} must be 0..={RETENTION_DAYS_MAX} (0 keeps everything), got {days}"
+            ));
+        }
+    }
+    if new.sanctions.max_fine > FINES_PER_WEEK_MAX {
+        return Err(format!("sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}", new.sanctions.max_fine));
+    }
+    Ok(())
+}
+
+/// Settings as a first start has them (dev defaults in dev mode).
+fn fresh(dev_models: bool) -> Settings {
+    let mut s = Settings::default();
+    if dev_models {
+        s.default_model = "mock/agent".into();
+        s.orchestrator_model = "mock/agent".into();
+    }
+    s
+}
+
+/// The tier's default when its list admits it; otherwise the list's first entry (the owner's own
+/// choice). Used for the orchestrator, the only tier with a list that restricts.
+fn safe_model(policy: &ModelPolicy, dev_models: bool, tier: Tier, default: &str) -> String {
+    if allowed_under(policy, dev_models, tier, default).is_ok() {
+        return default.to_string();
+    }
+    let list = match tier {
+        Tier::Orchestrator => &policy.orchestrator,
+        Tier::Worker => &policy.worker,
+    };
+    list.iter().find(|m| canonical(m).is_ok()).cloned().unwrap_or_else(|| default.to_string())
+}
+
+/// `value` when `ok`, else `default`, naming the reset in `notes`.
+fn or_default<T: Copy + std::fmt::Display>(notes: &mut Vec<String>, name: &str, value: T, default: T, ok: bool) -> T {
+    if ok {
+        value
+    } else {
+        notes.push(format!("{name} {value} is not allowed; using {default}"));
+        default
+    }
+}
+
+/// Repairs a loaded settings value so that [`check_settings`] passes: an entry that fails is
+/// dropped, or reset to its default, and each change is named in the returned notes. Nothing
+/// fails here; the last resort is the defaults.
+fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
+    let d = Settings::default();
+    let mut notes = Vec::new();
+
+    if !s.allow_training_models {
+        let trains = apz_gateway::trains_on_data;
+        for (tier, list, default) in [
+            ("orchestrator", &mut s.model_policy.orchestrator, &d.model_policy.orchestrator),
+            ("worker", &mut s.model_policy.worker, &d.model_policy.worker),
+        ] {
+            let before = list.len();
+            list.retain(|m| {
+                let keep = !trains(m);
+                if !keep {
+                    notes.push(format!("dropped {m} from the {tier} policy: a contributor model needs allow_training_models"));
+                }
+                keep
+            });
+            if before > 0 && list.is_empty() {
+                notes.push(format!("the {tier} policy held only contributor models; it is reset to the default list"));
+                *list = default.clone();
+            }
+        }
+        s.role_models.retain(|role, model| {
+            let keep = !trains(model.as_str());
+            if !keep {
+                notes.push(format!("dropped the {role} role model {model}: a contributor model needs allow_training_models"));
+            }
+            keep
+        });
+        if trains(&s.default_model) {
+            notes.push(format!("default_model {} is a contributor model; using {}", s.default_model, d.default_model));
+            s.default_model = d.default_model.clone();
+        }
+        if trains(&s.orchestrator_model) {
+            notes.push(format!("orchestrator_model {} is a contributor model; using {}", s.orchestrator_model, d.orchestrator_model));
+            s.orchestrator_model = d.orchestrator_model.clone();
+        }
+    }
+
+    // Only the orchestrator is held to its list: workers may run any model, so no worker default or
+    // worker role model is dropped for being off a list.
+    let policy = s.model_policy.clone();
+    if allowed_under(&policy, dev_models, Tier::Orchestrator, &s.orchestrator_model).is_err() {
+        let fallback = safe_model(&policy, dev_models, Tier::Orchestrator, &d.orchestrator_model);
+        notes.push(format!("orchestrator_model {} is not on the orchestrator list; using {fallback}", s.orchestrator_model));
+        s.orchestrator_model = fallback;
+    }
+    s.role_models.retain(|role, model| {
+        let keep = allowed_under(&policy, dev_models, tier_of(role), model.as_str()).is_ok();
+        if !keep {
+            notes.push(format!("role model {model} for {role} is not on its tier's list; the role uses the tier default"));
+        }
+        keep
+    });
+
+    s.max_turns = or_default(&mut notes, "max_turns", s.max_turns, d.max_turns, (1..=200).contains(&s.max_turns));
+    s.effort = match s.effort.take() {
+        Some(level) if !EFFORT_LEVELS.contains(&level.as_str()) => {
+            notes.push(format!("effort {level:?} is not a known level; it is unset"));
+            None
+        }
+        kept => kept,
+    };
+    s.foundry.hf_max_gb =
+        or_default(&mut notes, "foundry.hf_max_gb", s.foundry.hf_max_gb, d.foundry.hf_max_gb, (1..=500).contains(&s.foundry.hf_max_gb));
+    s.fetch_block.retain(|host| {
+        let ok = is_bare_host(host) && !host.trim_start_matches("*.").contains('*');
+        if !ok {
+            notes.push(format!("dropped fetch_block entry {host:?}: not a bare hostname (or *.domain)"));
+        }
+        ok
+    });
+    let (r, rd) = (s.retention, Retention::default());
+    let count_ok = |v: u32| (RETENTION_MIN..=RETENTION_MAX).contains(&v);
+    let days_ok = |v: u32| v <= RETENTION_DAYS_MAX;
+    s.retention = Retention {
+        conversations_max: or_default(&mut notes, "retention.conversations_max", r.conversations_max, rd.conversations_max, count_ok(r.conversations_max)),
+        conversations_days: or_default(&mut notes, "retention.conversations_days", r.conversations_days, rd.conversations_days, days_ok(r.conversations_days)),
+        posts_max: or_default(&mut notes, "retention.posts_max", r.posts_max, rd.posts_max, count_ok(r.posts_max)),
+        posts_days: or_default(&mut notes, "retention.posts_days", r.posts_days, rd.posts_days, days_ok(r.posts_days)),
+        usage_calls_max: or_default(&mut notes, "retention.usage_calls_max", r.usage_calls_max, rd.usage_calls_max, count_ok(r.usage_calls_max)),
+        usage_days: or_default(&mut notes, "retention.usage_days", r.usage_days, rd.usage_days, days_ok(r.usage_days)),
+    };
+    s.sanctions.max_fine = or_default(
+        &mut notes,
+        "sanctions.max_fine",
+        s.sanctions.max_fine,
+        d.sanctions.max_fine,
+        s.sanctions.max_fine <= FINES_PER_WEEK_MAX,
+    );
+
+    if let Err(e) = check_settings(&s, dev_models) {
+        notes.push(format!("the settings still fail the checks ({e}); the defaults are used"));
+        s = fresh(dev_models);
+    }
+    (s, notes)
 }
 
 /// `GET/PUT /v1/settings`.
@@ -616,6 +791,147 @@ mod tests {
         assert_eq!(policy.posts_max, 1024);
         assert_eq!(policy.posts_older_than_ms, None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_contributor_model_is_refused_as_a_default_or_role_model_until_confirmed() {
+        let dir = temp_dir("training");
+        let store = Store::load(&dir, false).unwrap();
+        assert!(!Settings::default().allow_training_models);
+        // No default names a contributor model.
+        assert!(!Settings::default().default_model.contains("contributor"));
+
+        let mut as_default = Settings::default();
+        as_default.default_model = "meta/muse-spark-1.3-contributor".into();
+        let err = store.put(as_default.clone()).unwrap_err();
+        assert!(err.contains("contributor model") && err.contains("allow_training_models"), "{err}");
+
+        let mut as_role = Settings::default();
+        as_role.role_models.insert("scout".into(), "meta/muse-spark-1.2-contributor@low".into());
+        assert!(store.put(as_role.clone()).is_err());
+
+        let mut in_policy = Settings::default();
+        in_policy.model_policy.worker.push("meta/muse-spark-1.3-contributor".into());
+        assert!(store.put(in_policy.clone()).is_err());
+
+        // The owner's explicit confirmation lets the save through.
+        as_default.allow_training_models = true;
+        assert!(store.put(as_default.clone()).is_ok());
+        assert_eq!(Store::load(&dir, false).unwrap().get().default_model, "meta/muse-spark-1.3-contributor");
+
+        // Meta's own models are never contributor models: no confirmation needed.
+        let mut plain = Settings::default();
+        plain.default_model = "meta/muse-spark-1.3".into();
+        assert!(store.put(plain).is_ok());
+        // A per-agent pick is an explicit choice of one agent: the tier rules still allow it.
+        assert!(store.allowed(Tier::Worker, "meta/muse-spark-1.3-contributor@low").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_orchestrator_is_restricted_and_workers_may_run_any_model() {
+        let dir = temp_dir("tier-rules");
+        let store = Store::load(&dir, false).unwrap();
+        // The orchestrator is held to its list, and the error names it.
+        assert!(store.allowed(Tier::Orchestrator, "openai/gpt-6-astra@high").is_ok());
+        let err = store.allowed(Tier::Orchestrator, "deepseek/deepseek-flash").unwrap_err();
+        assert!(err.contains("not allowed for the orchestrator tier") && err.contains("allowed: anthropic/claude-opus-5-5"), "{err}");
+        // An orchestrator role model off its list is refused.
+        let mut orch_role = Settings::default();
+        orch_role.role_models.insert("orchestrator".into(), "deepseek/deepseek-flash".into());
+        assert!(store.put(orch_role).is_err());
+
+        // Workers are not restricted: a worker's model or role model may be anything, on or off the list.
+        assert!(store.allowed(Tier::Worker, "openai/gpt-6-astra").is_ok());
+        assert!(store.allowed(Tier::Worker, "anything/at-all").is_ok());
+        let mut worker_role = Settings::default();
+        worker_role.role_models.insert("scout".into(), "anthropic/claude-fable-5-1".into());
+        assert!(store.put(worker_role).is_ok());
+        let mut worker_default = Settings::default();
+        worker_default.default_model = "openai/gpt-6-astra".into();
+        assert!(store.put(worker_default).is_ok());
+
+        // An empty orchestrator list admits nothing and says so; an empty worker list changes nothing.
+        let mut closed = Settings::default();
+        closed.model_policy.orchestrator.clear();
+        let err = store.put(closed).unwrap_err();
+        assert!(err.contains("allowed: none"), "{err}");
+        let mut open = Settings::default();
+        open.model_policy.worker.clear();
+        assert!(store.put(open).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hand_edited_file_is_repaired_on_load_and_named() {
+        let dir = temp_dir("repair");
+        let mut edited = serde_json::to_value(Settings::default()).unwrap();
+        {
+            let obj = edited.as_object_mut().unwrap();
+            obj.insert("default_model".into(), json!("meta/muse-spark-1.3-contributor"));
+            obj.insert("orchestrator_model".into(), json!("deepseek/deepseek-flash"));
+            obj.insert(
+                "role_models".into(),
+                json!({"scout": "anthropic/claude-fable-5-1", "writer": "openai/gpt-6-luna", "orchestrator": "deepseek/deepseek-flash"}),
+            );
+            obj.insert("max_turns".into(), json!(0));
+            obj.insert("effort".into(), json!("bogus"));
+            obj.insert("fetch_block".into(), json!(["https://x.example", "ok.example"]));
+            obj.insert("retention".into(), json!({"conversations_max": 5, "posts_max": 1024, "usage_calls_max": 20000}));
+            obj.insert("sanctions".into(), json!({"enabled": true, "fines": true, "suspensions": true, "max_fine": 5000}));
+            obj["model_policy"]["worker"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("meta/muse-spark-1.3-contributor"));
+        }
+        std::fs::write(dir.join("settings.json"), serde_json::to_vec(&edited).unwrap()).unwrap();
+
+        let store = Store::load(&dir, false).unwrap();
+        let s = store.get();
+        assert_eq!(s.default_model, "deepseek/deepseek-flash", "a contributor default falls back to the default");
+        // Workers are not held to a list: their role models stay, on or off the presets.
+        assert_eq!(s.role_models.get("scout").map(String::as_str), Some("anthropic/claude-fable-5-1"));
+        assert_eq!(s.role_models.get("writer").map(String::as_str), Some("openai/gpt-6-luna"));
+        // The orchestrator is held to its list: an orchestrator role model off it is dropped, and the
+        // orchestrator model off it falls back to the default, which that list admits.
+        assert!(!s.role_models.contains_key("orchestrator"), "an orchestrator role model off its list is dropped");
+        assert_eq!(s.orchestrator_model, "anthropic/claude-opus-5-5");
+        assert!(!s.model_policy.worker.iter().any(|m| m.contains("contributor")), "the contributor entry is dropped");
+        assert_eq!(s.max_turns, 24);
+        assert_eq!(s.effort, None);
+        assert_eq!(s.fetch_block, vec!["ok.example".to_string()]);
+        assert_eq!(s.retention.conversations_max, Retention::default().conversations_max);
+        assert_eq!(s.sanctions.max_fine, 300);
+        assert!(check_settings(&s, false).is_ok(), "what loads passes the save checks");
+
+        // The notes name what changed.
+        let mut edited_again = serde_json::from_slice::<Settings>(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        edited_again.allow_training_models = false;
+        edited_again.model_policy.worker.push("meta/muse-spark-1.2-contributor".into());
+        let (_, notes) = repair(edited_again, false);
+        assert!(notes.iter().any(|n| n.contains("meta/muse-spark-1.2-contributor")), "{notes:?}");
+
+        // A file that is not settings JSON loads the defaults rather than failing.
+        std::fs::write(dir.join("settings.json"), b"{ not json").unwrap();
+        assert_eq!(Store::load(&dir, false).unwrap().get(), Settings::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn review_timeout_defaults_to_thirty_minutes_and_old_settings_load_it() {
+        assert_eq!(Settings::default().review_timeout_minutes, 30);
+        assert_eq!(DEFAULT_REVIEW_TIMEOUT_MINUTES, 30);
+
+        // Settings saved before the review timeout existed carry no such key: they load the default.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("review_timeout_minutes");
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.review_timeout_minutes, DEFAULT_REVIEW_TIMEOUT_MINUTES);
+
+        // A saved value is kept as it is.
+        let set: Settings =
+            serde_json::from_value(serde_json::json!({"review_timeout_minutes": 5})).unwrap();
+        assert_eq!(set.review_timeout_minutes, 5);
     }
 
     #[test]

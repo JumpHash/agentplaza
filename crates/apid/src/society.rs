@@ -255,7 +255,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         "plaza_hire" => (
             "Hire a contact for work you can't do or want done in parallel: posts a task assigned to them, verified by a reviewer. You may add a bonus from your own wallet, paid only if the work passes.",
             obj(
-                json!({"cid": {"type": "integer"}, "goal": {"type": "string"}, "acceptance": {"type": "string"}, "budget": {"type": "integer", "minimum": 0}, "bonus": {"type": "integer", "minimum": 0}}),
+                json!({"cid": {"type": "integer"}, "goal": {"type": "string"}, "acceptance": {"type": "string"}, "budget": {"type": "integer", "minimum": apz_plaza::tasks::MIN_TASK_BUDGET}, "bonus": {"type": "integer", "minimum": 0}}),
                 &["cid", "goal"],
             ),
         ),

@@ -9,8 +9,8 @@ use crate::ctx::{self, confirm, Ctx};
 
 /// The provider kinds whose models are decision models (as the console decides it).
 const DECISION_KINDS: [&str; 3] = ["openai-decisions", "systemone", "azure-decisions"];
-/// The effort levels the policy and the settings take.
-const EFFORTS: [&str; 6] = ["default", "low", "medium", "high", "xhigh", "max"];
+/// The effort levels the hub's settings accept, and `default`, which clears the setting (the provider's own default).
+const EFFORTS: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "default"];
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
@@ -125,7 +125,7 @@ pub enum PolicyCmd {
         /// The worker tier's models, comma-separated.
         #[arg(long)]
         worker: Option<String>,
-        /// The effort agents run at: default, low, medium, high, xhigh, max.
+        /// The effort agents run at: none, minimal, low, medium, high, xhigh, max. `default` clears it (the provider's own default).
         #[arg(long)]
         effort: Option<String>,
         /// The most turns an agent takes.
@@ -134,9 +134,12 @@ pub enum PolicyCmd {
         /// The most tokens an agent may spend per turn.
         #[arg(long)]
         max_tokens: Option<u64>,
-        /// The hosts an agent may fetch from, comma-separated (empty clears them).
-        #[arg(long)]
-        fetch_allow: Option<String>,
+        /// A host agents may not fetch from: example.com (and its subdomains), or *.example.com (subdomains only). Repeatable.
+        #[arg(long = "fetch-block", value_name = "HOST")]
+        fetch_block: Vec<String>,
+        /// A host to take off the fetch blocklist. Repeatable.
+        #[arg(long = "fetch-unblock", value_name = "HOST")]
+        fetch_unblock: Vec<String>,
         /// The worker default model, provider/model.
         #[arg(long)]
         default_model: Option<String>,
@@ -353,7 +356,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 effort,
                 max_turns,
                 max_tokens,
-                fetch_allow,
+                fetch_block,
+                fetch_unblock,
                 default_model,
                 orchestrator_model,
                 role_models,
@@ -368,10 +372,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     nested(root, "model_policy")?.insert("worker".into(), json!(entries(&list)?));
                 }
                 if let Some(level) = effort {
-                    if !EFFORTS.contains(&level.as_str()) {
-                        return Err(format!("effort is one of {}", EFFORTS.join(", ")));
-                    }
-                    root.insert("effort".into(), json!(level));
+                    set_effort(root, &level)?;
                 }
                 if let Some(n) = max_turns {
                     root.insert("max_turns".into(), json!(n));
@@ -379,8 +380,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 if let Some(n) = max_tokens {
                     root.insert("max_tokens".into(), json!(n));
                 }
-                if let Some(list) = fetch_allow {
-                    root.insert("fetch_allow".into(), json!(split_list(&list)));
+                if !fetch_block.is_empty() || !fetch_unblock.is_empty() {
+                    let add = fetch_block.iter().map(|h| bare_host(h)).collect::<Result<Vec<_>, _>>()?;
+                    let remove = fetch_unblock.iter().map(|h| bare_host(h)).collect::<Result<Vec<_>, _>>()?;
+                    edit_blocklist(root, &add, &remove);
                 }
                 if let Some(model) = default_model {
                     root.insert("default_model".into(), json!(checked_entry(&model)?));
@@ -577,6 +580,46 @@ fn entries(list: &str) -> Result<Vec<String>, String> {
     split_list(list).iter().map(|e| checked_entry(e)).collect()
 }
 
+/// A fetch-blocklist host as the hub takes it: `example.com`, or `*.example.com` for subdomains only.
+fn bare_host(text: &str) -> Result<String, String> {
+    let host = text.trim();
+    let bare = !host.is_empty()
+        && !host.contains("://")
+        && !host.contains(['/', ':'])
+        && !host.chars().any(char::is_whitespace)
+        && !host.trim_start_matches("*.").contains('*');
+    if bare {
+        Ok(host.to_string())
+    } else {
+        Err(format!("{text}: a host is example.com, or *.example.com for its subdomains only"))
+    }
+}
+
+/// Edits the hub's fetch blocklist in `root`: the hosts in `add` join it, the hosts in `remove` leave it.
+fn edit_blocklist(root: &mut serde_json::Map<String, Value>, add: &[String], remove: &[String]) {
+    let mut list: Vec<String> = root
+        .get("fetch_block")
+        .and_then(Value::as_array)
+        .map(|hosts| hosts.iter().filter_map(|h| h.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for host in add {
+        if !list.contains(host) {
+            list.push(host.clone());
+        }
+    }
+    list.retain(|host| !remove.contains(host));
+    root.insert("fetch_block".into(), json!(list));
+}
+
+/// Sets `effort` in `root` from a `--effort` value; `default` clears it (null, the provider's own default).
+fn set_effort(root: &mut serde_json::Map<String, Value>, level: &str) -> Result<(), String> {
+    if !EFFORTS.contains(&level) {
+        return Err(format!("effort is one of {}", EFFORTS.join(", ")));
+    }
+    root.insert("effort".into(), if level == "default" { Value::Null } else { json!(level) });
+    Ok(())
+}
+
 /// The object under `key` in `parent`, made when it is missing.
 fn nested<'a>(parent: &'a mut serde_json::Map<String, Value>, key: &str) -> Result<&'a mut serde_json::Map<String, Value>, String> {
     parent
@@ -597,7 +640,7 @@ fn print_policy(s: &Value) {
         ("effort", none_if_empty(ctx::text(s, "effort"))),
         ("max turns", ctx::text(s, "max_turns")),
         ("max tokens", ctx::text(s, "max_tokens")),
-        ("fetch allow", none_if_empty(joined(s.get("fetch_allow")))),
+        ("fetch block", none_if_empty(joined(s.get("fetch_block")))),
     ]);
     for (role, model) in s.get("role_models").and_then(Value::as_object).into_iter().flatten() {
         println!("role {role}: {}", model.as_str().unwrap_or(""));
@@ -613,4 +656,102 @@ fn print_decision(d: &Value) {
         ("provider", none_if_empty(ctx::text(d, "provider"))),
         ("model", none_if_empty(ctx::text(d, "model"))),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    /// Just the `models` command, so the policy subcommands parse the way the CLI parses them.
+    #[derive(Parser, Debug)]
+    struct Probe {
+        #[command(subcommand)]
+        cmd: Cmd,
+    }
+
+    /// `models policy set ARGS`, parsed.
+    fn policy_set(args: &[&str]) -> Result<PolicyCmd, clap::Error> {
+        let mut argv = vec!["models", "policy", "set"];
+        argv.extend_from_slice(args);
+        match Probe::try_parse_from(argv)?.cmd {
+            Cmd::Policy { action } => Ok(action),
+            other => panic!("not a policy command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fetch_block_and_unblock_repeat_and_the_old_fetch_allow_flag_is_gone() {
+        let PolicyCmd::Set { fetch_block, fetch_unblock, .. } =
+            policy_set(&["--fetch-block", "evil.example", "--fetch-block", "*.ads.net", "--fetch-unblock", "docs.example"])
+                .expect("repeatable flags parse")
+        else {
+            panic!("expected set");
+        };
+        assert_eq!(fetch_block, vec!["evil.example".to_string(), "*.ads.net".to_string()]);
+        assert_eq!(fetch_unblock, vec!["docs.example".to_string()]);
+        assert!(policy_set(&["--fetch-allow", "example.com"]).is_err(), "the flag the hub never read is gone");
+    }
+
+    #[test]
+    fn the_fetch_flags_name_themselves_in_help() {
+        let cmd = Probe::command();
+        let set = cmd.find_subcommand("policy").and_then(|p| p.find_subcommand("set")).expect("policy set");
+        let help = |id: &str| {
+            set.get_arguments()
+                .find(|a| a.get_id() == id)
+                .and_then(|a| a.get_help())
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        };
+        assert!(help("fetch_block").contains("*.example.com"), "{}", help("fetch_block"));
+        assert!(help("fetch_unblock").contains("Repeatable"), "{}", help("fetch_unblock"));
+    }
+
+    #[test]
+    fn bare_host_takes_example_com_and_wildcards_and_refuses_urls_and_paths() {
+        assert_eq!(bare_host("example.com").unwrap(), "example.com");
+        assert_eq!(bare_host(" *.example.net ").unwrap(), "*.example.net");
+        for bad in ["https://example.com", "example.com/path", "host:8080", "has space.com", "", "*", "a.*.com"] {
+            assert!(bare_host(bad).is_err(), "{bad:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn edit_blocklist_adds_once_and_removes_in_place() {
+        let mut root = serde_json::Map::new();
+        root.insert("fetch_block".into(), json!(["old.example"]));
+        edit_blocklist(&mut root, &["a.example".into(), "old.example".into()], &[]);
+        assert_eq!(root["fetch_block"], json!(["old.example", "a.example"]));
+        edit_blocklist(&mut root, &["*.b.example".into()], &["old.example".into()]);
+        assert_eq!(root["fetch_block"], json!(["a.example", "*.b.example"]));
+    }
+
+    #[test]
+    fn effort_takes_the_hubs_levels_and_default_clears_it() {
+        let mut root = serde_json::Map::new();
+        for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            set_effort(&mut root, level).unwrap();
+            assert_eq!(root["effort"], json!(level));
+        }
+        set_effort(&mut root, "default").unwrap();
+        assert_eq!(root["effort"], Value::Null, "default clears the setting to unset");
+        let err = set_effort(&mut root, "extreme").unwrap_err();
+        assert_eq!(err, "effort is one of none, minimal, low, medium, high, xhigh, max, default");
+    }
+
+    #[test]
+    fn the_effort_help_lists_exactly_the_accepted_values() {
+        let cmd = Probe::command();
+        let set = cmd.find_subcommand("policy").and_then(|p| p.find_subcommand("set")).expect("policy set");
+        let help = set
+            .get_arguments()
+            .find(|a| a.get_id() == "effort")
+            .and_then(|a| a.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(help.contains("none, minimal, low, medium, high, xhigh, max"), "{help}");
+        assert!(help.contains("`default` clears it"), "{help}");
+        assert!(!help.contains("default, low"), "the old list is gone: {help}");
+    }
 }

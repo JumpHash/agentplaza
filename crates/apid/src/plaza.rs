@@ -12,7 +12,7 @@ use apz_plaza::council::{self, Council, DecideRequest, ProposeRequest, VoteReque
 use apz_plaza::events::EventBus;
 use apz_plaza::social::{self, ContactRequest, Presence, PostRequest, ReadRequest, Social};
 use apz_plaza::tasks::{
-    ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView,
+    resolve_budget, ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView,
 };
 use apz_plaza::treasury::{self, Treasury};
 use apz_plaza::ConnectedAgent;
@@ -352,11 +352,20 @@ fn treasury_wallets(app: &App) -> Response {
     Response::json(200, &rows)
 }
 
+/// The request with its budget resolved: the default when none is named, and a
+/// 400 (naming the minimum) when the named budget is below it.
+fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
+    let budget = resolve_budget(request.budget).map_err(|refusal| Response::error(400, &refusal))?;
+    request.budget = Some(budget);
+    Ok(request)
+}
+
 /// `POST /v1/tasks`: creates a task in `open`. With an `assignee`, the
 /// assignee is checked first (so a refusal leaves the ledger untouched), the
-/// task is claimed for it, and the assignee's work queue gets the task.
+/// task is claimed for it, and the assignee's work queue gets the task. An
+/// absent `budget` gets `DEFAULT_TASK_BUDGET`; one under `MIN_TASK_BUDGET` is a 400.
 fn create_task(app: &App, body: &[u8]) -> Response {
-    let request: CreateTask = match parse(body, "create") {
+    let request: CreateTask = match parse(body, "create").and_then(with_budget) {
         Ok(request) => request,
         Err(refused) => return refused,
     };
@@ -748,21 +757,45 @@ pub(crate) fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The seats a live agent holds right now: a seat is filled when some agent that
+/// is not offline holds its role. The council's quorum is a majority of these.
+pub fn filled_seats(agents: &[agents::Agent]) -> usize {
+    council::SEATS
+        .iter()
+        .filter(|seat| {
+            agents
+                .iter()
+                .any(|agent| agent.status != Status::Offline && agent.role == **seat)
+        })
+        .count()
+}
+
+/// The council, read against the seats the roster fills right now. Every council
+/// route goes through this before it reads or acts on the council, so no count
+/// waits for a seat that no live agent holds.
+pub fn council_now(app: &App) -> &Council {
+    app.plaza.council.set_filled(filled_seats(&app.agents.list()));
+    &app.plaza.council
+}
+
 /// Applies the owner's retention to the conversations and the board: the count
 /// caps, then the age limits. Runs on the scheduler's tick, so a change to the
-/// retention takes effect within a tick.
+/// retention takes effect within a tick. It also reads the seats for the council,
+/// so the scheduler's motion offers (made before this runs on each tick) see a
+/// roster at most one tick old.
 pub fn retain(app: &App) {
     app.plaza.social.prune(app.settings.get().retention.policy());
+    council_now(app);
 }
 
 /// `GET /v1/motions`: the council's motions.
 fn motions_view(app: &App) -> Response {
-    Response::json(200, &app.plaza.council.motions(council::MOTIONS_LIMIT))
+    Response::json(200, &council_now(app).motions(council::MOTIONS_LIMIT))
 }
 
 /// `GET /v1/motions/{id}`: one motion.
 fn motion_get(app: &App, id: &str) -> Response {
-    match app.plaza.council.motion(id) {
+    match council_now(app).motion(id) {
         Some(motion) => Response::json(200, &motion),
         None => Response::error(404, &format!("no motion with id {id}")),
     }
@@ -784,7 +817,7 @@ fn motion_propose(app: &App, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
-    match app.plaza.council.propose(&proposer, proposal) {
+    match council_now(app).propose(&proposer, proposal) {
         Ok(motion) => Response::json(201, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
@@ -804,7 +837,7 @@ fn motion_vote(app: &App, id: &str, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
-    match app.plaza.council.vote(id, &voter, cast) {
+    match council_now(app).vote(id, &voter, cast) {
         Ok(motion) => Response::json(200, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
@@ -820,7 +853,7 @@ fn motion_decide(app: &App, id: &str, body: &[u8]) -> Response {
         Ok(decision) => decision,
         Err(reason) => return Response::error(400, &reason),
     };
-    match app.plaza.council.decide(id, decision) {
+    match council_now(app).decide(id, decision) {
         Ok(motion) => Response::json(200, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
@@ -870,6 +903,51 @@ fn agent_contact_add(app: &App, segment: &str, body: &[u8]) -> Response {
 mod tests {
     use super::*;
 
+    /// A roster entry for `role` in `status`, as the register would hold it.
+    fn seated(cid: u64, role: &str, status: Status) -> agents::Agent {
+        agents::Agent {
+            cid,
+            name: String::new(),
+            role: role.to_owned(),
+            model_override: None,
+            status,
+            connected_at_ms: 0,
+            last_seen_ms: 0,
+            run: None,
+            vm: None,
+            usage: apz_proto::chat::Usage::default(),
+            species: String::new(),
+            kind: "llm".into(),
+        }
+    }
+
+    #[test]
+    fn a_seat_is_filled_by_a_live_agent_holding_its_role() {
+        use apz_plaza::council::{FINANCE, INCIDENT, LEGAL_AGENTS_COUNSEL, MAYOR_OFFICE};
+        assert_eq!(filled_seats(&[]), 0);
+        // The legal-counsel seat has no live holder, so three of four are filled:
+        // an offline holder does not fill its seat, a role with no seat fills none,
+        // and a judge (excluded from every seat) fills none.
+        let roster = [
+            seated(1, FINANCE, Status::Idle),
+            seated(2, INCIDENT, Status::Working),
+            seated(3, MAYOR_OFFICE, Status::Offline),
+            seated(4, "legal-gov-judge", Status::Idle),
+            seated(5, "engineer", Status::Idle),
+        ];
+        assert_eq!(filled_seats(&roster), 2);
+        let roster = [
+            seated(1, FINANCE, Status::Idle),
+            seated(2, INCIDENT, Status::Working),
+            seated(3, MAYOR_OFFICE, Status::Idle),
+            seated(4, LEGAL_AGENTS_COUNSEL, Status::Idle),
+        ];
+        assert_eq!(filled_seats(&roster), 4);
+        // Two live agents holding one seat fill it once.
+        let roster = [seated(6, FINANCE, Status::Idle), seated(7, FINANCE, Status::Working)];
+        assert_eq!(filled_seats(&roster), 1);
+    }
+
     #[test]
     fn prompt_carries_acceptance_only_when_stated() {
         assert_eq!(task_prompt("write the note", None), "write the note");
@@ -888,6 +966,22 @@ mod tests {
             Some(7)
         );
         assert!(parse::<Assignee>(br#"{"assignee": "seven"}"#, "create").is_err());
+    }
+
+    #[test]
+    fn an_absent_task_budget_gets_the_default_and_a_low_one_is_a_400() {
+        use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
+        let resolve = |body: &str| {
+            let request: CreateTask = parse(body.as_bytes(), "create").expect("a valid create body");
+            with_budget(request)
+        };
+        assert_eq!(resolve(r#"{"goal": "work"}"#).ok().and_then(|r| r.budget), Some(DEFAULT_TASK_BUDGET as u64));
+        assert_eq!(resolve(r#"{"goal": "work", "budget": 200}"#).ok().and_then(|r| r.budget), Some(MIN_TASK_BUDGET as u64));
+        for body in [r#"{"goal": "work", "budget": 100}"#, r#"{"goal": "work", "budget": 0}"#] {
+            let refusal = resolve(body).err().expect("below the minimum is refused");
+            assert_eq!(refusal.status, 400);
+            assert!(String::from_utf8_lossy(refusal.bytes()).contains("minimum of 200"));
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! `autonomous` (the default) lets them run, `ask` holds each call until the
 //! owner approves that exact call, and `read_only` refuses them. Read-class
 //! tools pass in every mode. Modes persist in `permissions.json`; the queue is
-//! kept in memory, newest last, capped at `QUEUE_CAP`.
+//! kept in memory (snapshotted to Postgres or the state dir with the other components), newest last, capped at `QUEUE_CAP`.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -38,6 +38,8 @@ pub enum State {
     Approved,
     Denied,
     Used,
+    /// No longer needed: the plaza settled what it was about before the owner decided.
+    Withdrawn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +51,8 @@ pub struct Approval {
     pub created_ms: u64,
     pub state: State,
     pub reason: Option<String>,
-    /// What the decision is: `tool` (a held tool call), `sanction` or `payment`.
+    /// What the decision is: `tool` (a held tool call), `sanction`, `payment` or `review` (a done
+    /// task no reviewer took in time; the approval passes it and the denial fails it).
     #[serde(default = "tool_kind")]
     pub kind: String,
     /// What the decision is about, in words. For a tool approval, the tool.
@@ -203,6 +206,16 @@ impl Store {
         Ok(item.clone())
     }
 
+    /// Withdraws the pending approval `id` with `reason`, so the owner is no longer asked. Only a
+    /// pending approval can be withdrawn; anything else is left as it is and None is returned.
+    pub fn withdraw(&self, id: &str, reason: &str) -> Option<Approval> {
+        let mut inner = self.lock();
+        let item = inner.queue.iter_mut().find(|a| a.id == id && a.state == State::Pending)?;
+        item.state = State::Withdrawn;
+        item.reason = Some(reason.to_string());
+        Some(item.clone())
+    }
+
     /// The queue, newest first.
     pub fn list(&self) -> Vec<Approval> {
         self.lock().queue.iter().rev().cloned().collect()
@@ -320,6 +333,7 @@ fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let applied = match item.kind.as_str() {
         "sanction" => crate::sanctions::decided(app, &item, approve, body.action.as_deref()),
         "payment" => crate::payments::decided(app, &item, approve),
+        "review" => crate::scheduler::review_decided(app, &item, approve),
         _ => {
             tell_agent(app, &item);
             Ok(())

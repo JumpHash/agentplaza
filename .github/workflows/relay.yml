@@ -1,0 +1,25 @@
+name: relay
+
+# The MCP relay container's binary (docs/design/mcp.md): static musl builds for x86_64 and aarch64, uploaded as
+# one artifact that every package that can run container servers takes.
+on:
+  workflow_call:
+
+jobs:
+  relay:
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: Build the relays (static musl, both architectures)
+        run: |
+          .github/ci/in-image.sh "rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl &&
+            cargo build --release --locked --target x86_64-unknown-linux-musl -p mcp-relay &&
+            cargo build --release --locked --target aarch64-unknown-linux-musl -p mcp-relay &&
+            mkdir -p relay-out &&
+            cp \${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/release/mcp_relay relay-out/mcp_relay-x86_64 &&
+            cp \${CARGO_TARGET_DIR:-target}/aarch64-unknown-linux-musl/release/mcp_relay relay-out/mcp_relay-aarch64"
+      - uses: actions/upload-artifact@v4
+        with: { name: mcp-relay, path: relay-out/, retention-days: 1, if-no-files-found: error }

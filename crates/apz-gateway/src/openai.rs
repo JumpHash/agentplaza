@@ -490,6 +490,24 @@ mod tests {
     }
 
     #[test]
+    fn meta_preset_shapes_the_request_and_flags_its_contributor_models() {
+        let stream = sse_data(&[r#"{"model":"muse-spark-1.3","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let server = FakeServer::start(vec![Reply::sse(stream)]);
+        let preset = crate::presets().into_iter().find(|p| p.id == "meta").unwrap();
+        let p = ProviderConfig { base_url: Some(server.url()), ..preset.config() };
+        let gw = gateway(vec![p]);
+        let req = ChatRequest { model: "meta/muse-spark-1.3@high".into(), max_tokens: 2000, effort: Some("low".into()), ..request("hi") };
+        assert_eq!(gw.complete(&req, &mut |_| {}).unwrap().model, "meta/muse-spark-1.3");
+        let sent = &server.requests()[0];
+        assert_eq!(sent.header("authorization"), Some("Bearer env-MODEL_API_KEY"));
+        let b = sent.json();
+        assert_eq!((b["model"].clone(), b["reasoning_effort"].clone(), b["max_tokens"].clone()), (json!("muse-spark-1.3"), json!("high"), json!(2000)));
+        assert!(crate::trains_on_data("meta/muse-spark-1.3-contributor@low"));
+        assert!(!crate::trains_on_data("meta/muse-spark-1.3"));
+        assert!(!crate::trains_on_data("deepseek/muse-spark-1.3-contributor"));
+    }
+
+    #[test]
     fn xai_preset_sends_the_pinned_reasoning_effort() {
         let stream = sse_data(&[r#"{"model":"grok-4.7","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#, "[DONE]"]);
         let server = FakeServer::start(vec![Reply::sse(stream)]);
@@ -618,7 +636,7 @@ mod tests {
     #[ignore]
     fn live_ollama_tool_call() {
         let p = crate::presets().into_iter().find(|p| p.id == "ollama").unwrap().config();
-        let gw = crate::Gateway::new(vec![p], |_: &str| None);
+        let gw = crate::Gateway::new(vec![p], |_: &str, _: &crate::SecretRead<'_>| None);
         let req = ChatRequest {
             model: "ollama/qwen3:8b".into(),
             tools: vec![ToolSpec {

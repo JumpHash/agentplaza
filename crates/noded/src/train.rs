@@ -457,6 +457,19 @@ fn runtime_env(runtime: &str, devices: &[u32]) -> BTreeMap<String, String> {
     env
 }
 
+/// The `--user` of a container on Unix: this process's uid and gid, so the trainer writes its files
+/// into the job directory as the node's user and not as root. The crate forbids unsafe code, so the
+/// ids come from `id`; None when it cannot say, and then the image's own user stays.
+#[cfg(unix)]
+fn run_user() -> Option<String> {
+    let id = |flag: &str| {
+        let out = std::process::Command::new("id").arg(flag).output().ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        (out.status.success() && !text.trim().is_empty()).then(|| text.trim().to_string())
+    };
+    Some(format!("{}:{}", id("-u")?, id("-g")?))
+}
+
 /// The `docker run` arguments of a launch: detached, labelled, with the runtime's device flags, the
 /// mounts, the network (none unless asked) and the image's pull disabled, so an unknown image fails
 /// instead of being fetched. The container stays after it exits, until `DELETE`.
@@ -482,7 +495,11 @@ fn run_args(launch: &Launch, name: &str) -> Vec<String> {
         "docker-xpu" => args.extend(["--device", "/dev/dri"].map(String::from)),
         _ => {}
     }
+    #[cfg(unix)]
+    args.extend(run_user().into_iter().flat_map(|user| ["--user".to_string(), user]));
+    // The trainer runs as the node's user, which has no home: /tmp is writable and holds its caches.
     let mut env = runtime_env(launch.runtime, &launch.devices);
+    env.insert("HOME".to_string(), "/tmp".to_string());
     env.extend(launch.env.clone());
     for (key, value) in env {
         args.push("-e".to_string());
@@ -899,6 +916,27 @@ mod tests {
         assert!(!args.contains(&"/dev/kfd".to_string()));
         let tail: Vec<&str> = args.iter().rev().take(3).rev().map(String::as_str).collect();
         assert_eq!(tail, ["apz-trainer:cuda", "--job", "job.json"], "the image, then the args");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_container_runs_as_the_node_user_with_a_writable_home() {
+        let root = std::env::temp_dir().join(format!("apz-train-user-{}", std::process::id()));
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).expect("state");
+        let mut job = request("job-3", "apz-trainer:cuda");
+        job.devices = vec![0];
+        let launch = validate(job, "docker-nvidia", &[0], &state).expect("valid");
+        let args = run_args(&launch, "apz-train-job-3-1");
+        let ids = |flag: &str| String::from_utf8(std::process::Command::new("id").arg(flag).output().expect("id").stdout).expect("utf8").trim().to_string();
+        let expected = format!("{}:{}", ids("-u"), ids("-g"));
+        assert!(args.windows(2).any(|pair| pair[0] == "--user" && pair[1] == expected), "{args:?}");
+        assert!(args.windows(2).any(|pair| pair == ["-e", "HOME=/tmp"]), "{args:?}");
+        let user = args.iter().position(|arg| arg == "--user").expect("--user");
+        let image = args.iter().position(|arg| arg == "apz-trainer:cuda").expect("image");
+        assert!(user < image, "--user comes before the image");
+        assert_eq!(args.last().map(String::as_str), Some("apz-trainer:cuda"), "the image is last");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -46,6 +46,11 @@
     "led-signal":    { "color": "#ff7a1a", "emissive": "#ff7a1a", "glow": 2.0, "flat": true },
     "led-info":      { "color": "#6cc8ff", "emissive": "#6cc8ff", "glow": 2.0, "flat": true },
     "rack":          { "color": "#1f2328" },
-    "rack-rail":     { "color": "#5a6168" }
+    "rack-rail":     { "color": "#5a6168" },
+    "mask-green": { "color": "#23803f" },
+    "mask-black": { "color": "#15181a" },
+    "nickel": { "color": "#c4c1b8" },
+    "plastic-matte": { "color": "#24272b" },
+    "rgb": { "color": "#ffffff", "emissive": "#ff5fd2", "glow": 1.8, "flat": true }
   }
 }

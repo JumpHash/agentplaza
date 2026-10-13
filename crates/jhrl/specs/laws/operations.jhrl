@@ -39,3 +39,4 @@ operation training.submit(principal: Agent, resource: Town, context: {gpu_hours:
 operation model.invoke(principal: Agent, resource: Model, context: {role_allowed: Bool})
 operation device.actuate(principal: Agent, resource: Device, context: {within_envelope: Bool, on_node: String, owner_approval: Approval optional})
 operation payment.send(principal: Agent, resource: Town, context: {amount: Long})
+operation mcp.call(principal: Agent, resource: McpServer, context: {server: String, tool: String, risk: String})

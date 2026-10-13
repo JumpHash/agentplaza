@@ -178,6 +178,9 @@ pub struct Preset {
     pub models: Vec<&'static str>,
     #[serde(skip_serializing_if = "Value::is_null")]
     pub options: Value,
+    /// Headers sent on every request (see `ProviderConfig::extra_headers`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_headers: BTreeMap<&'static str, &'static str>,
 }
 
 impl Preset {
@@ -186,6 +189,7 @@ impl Preset {
         ProviderConfig {
             base_url: self.base_url.map(str::to_string),
             auth: self.auth.clone(),
+            extra_headers: self.extra_headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             models: self.models.iter().map(|m| m.to_string()).collect(),
             options: self.options.clone(),
             ..ProviderConfig::new(self.id, self.kind)
@@ -195,6 +199,11 @@ impl Preset {
     fn with(mut self, models: &[&'static str], options: Value) -> Self {
         self.models = models.to_vec();
         self.options = options;
+        self
+    }
+
+    fn headers(mut self, headers: &[(&'static str, &'static str)]) -> Self {
+        self.extra_headers = headers.iter().copied().collect();
         self
     }
 }
@@ -214,13 +223,18 @@ pub fn presets() -> Vec<Preset> {
         notes,
         models: Vec::new(),
         options: Value::Null,
+        extra_headers: BTreeMap::new(),
     };
     const OPENAI_MODELS: &[&str] = &["gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"];
+    const OPENCODE_MODELS: &[&str] = &[
+        "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+        "kimi-k3", "deepseek-v4-pro", "glm-5.3", "minimax-m3",
+    ];
     vec![
         p("anthropic", Anthropic, "Anthropic", "anthropic", Some("https://api.anthropic.com"), env("ANTHROPIC_API_KEY"),
           "Claude via the Messages API. Use {\"env\": \"ANTHROPIC_AUTH_TOKEN\"} or a command for a bearer token. \
            options.refusal_fallbacks: true enables server-side refusal fallbacks.")
-            .with(&["claude-opus-5-5", "claude-haiku-5-5"], Value::Null),
+            .with(&["claude-opus-5-5", "claude-fable-5-1", "claude-haiku-5-5"], Value::Null),
         p("openai", OpenAiResponses, "OpenAI", "openai", Some("https://api.openai.com/v1"), env("OPENAI_API_KEY"), "Responses API (current models need it for tools with reasoning).")
             .with(OPENAI_MODELS, Value::Null),
         p("openai-responses", OpenAiResponses, "OpenAI (Responses API)", "openai", Some("https://api.openai.com/v1"),
@@ -231,7 +245,7 @@ pub fn presets() -> Vec<Preset> {
         p("gemini", Gemini, "Google Gemini", "google", Some("https://generativelanguage.googleapis.com"), env("GEMINI_API_KEY"),
           "Gemini API (AI Studio key)."),
         p("bedrock", Bedrock, "Amazon Bedrock", "aws", None, Auth::None,
-          "Converse API. options.region (else AWS_REGION); AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."),
+          "Converse API. options.region (else AWS_REGION). Keys: a Bedrock API key as this provider's key (bearer), or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and optionally AWS_SESSION_TOKEN in the vault, bound to this provider's id: `apz vault set NAME --bind provider:<id>` (for the preset, provider:bedrock). Each Bedrock provider has its own pair."),
         p("vertex-anthropic", VertexAnthropic, "Claude on Vertex AI", "anthropic", None, gcloud(),
           "options.project (else GOOGLE_CLOUD_PROJECT) and options.location (default global); list models in `models`."),
         p("vertex-gemini", VertexGemini, "Gemini on Vertex AI", "google", None, gcloud(),
@@ -256,7 +270,24 @@ pub fn presets() -> Vec<Preset> {
         p("xai", OpenAiCompatible, "xAI", "xai", Some("https://api.x.ai/v1"), env("XAI_API_KEY"),
           "Effort goes out as reasoning_effort (low, medium, high, xhigh).")
             .with(&["grok-4.7"], serde_json::json!({"reasoning_effort": true})),
-        p("openrouter", OpenAiCompatible, "OpenRouter", "openrouter", Some("https://openrouter.ai/api/v1"), env("OPENROUTER_API_KEY"), ""),
+        p("meta", OpenAiCompatible, "Meta", "meta", Some("https://api.meta.ai/v1"), env("MODEL_API_KEY"),
+          "Muse models over Meta's Model API (OpenAI-compatible). The contributor models train Meta's future models on \
+           everything sent to and received from them: they are never defaults and need allow_training_models in the \
+           settings. Effort goes out as reasoning_effort.")
+            .with(
+                &["muse-wonder-1.0", "muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1",
+                  "muse-spark-1.3-contributor", "muse-spark-1.2-contributor"],
+                serde_json::json!({"reasoning_effort": true, "trains_on_data": ["muse-spark-1.3-contributor", "muse-spark-1.2-contributor"]}),
+            ),
+        p("openrouter", OpenAiCompatible, "OpenRouter", "openrouter", Some("https://openrouter.ai/api/v1"), env("OPENROUTER_API_KEY"), "")
+            .headers(&[("HTTP-Referer", "https://agentplaza.io"), ("X-OpenRouter-Title", "AgentPlaza")])
+            .with(&[], serde_json::json!({"models_cache_secs": 3600})),
+        p("opencode", OpenAiCompatible, "OpenCode Zen", "opencode", Some("https://opencode.ai/inference/v1"), env("OPENCODE_API_KEY"),
+          "The model list is live from /models; the static list is the fallback. The models are pay-as-you-go. \
+           The free models in options.trains_on_data train on what they are sent and return.")
+            .with(OPENCODE_MODELS, serde_json::json!({"trains_on_data": ["big-pickle", "cat-jam-free", "exo-free",
+                  "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.1-flash-free", "ling-3.0-flash-fin-free",
+                  "muse-spark-1.3-contributor-free"]})),
         p("together", OpenAiCompatible, "Together AI", "together", Some("https://api.together.xyz/v1"), env("TOGETHER_API_KEY"), ""),
         p("fireworks", OpenAiCompatible, "Fireworks AI", "fireworks", Some("https://api.fireworks.ai/inference/v1"),
           env("FIREWORKS_API_KEY"), ""),
@@ -284,6 +315,16 @@ pub fn presets() -> Vec<Preset> {
     ]
 }
 
+/// Whether `model` (a bare model id, no provider) is one of the contributor models a provider's
+/// `options.trains_on_data` lists: models that train the provider's future models on what they are
+/// sent and return.
+pub fn lists_training_model(options: &Value, model: &str) -> bool {
+    options
+        .get("trains_on_data")
+        .and_then(Value::as_array)
+        .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(model)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,7 +347,7 @@ mod tests {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.as_str()));
         }
         let ids: Vec<_> = presets().iter().map(|p| p.id).collect();
-        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.len() == 28, "{ids:?}");
+        assert!(ids.contains(&"ollama") && ids.contains(&"mock") && ids.contains(&"meta") && ids.len() == 30, "{ids:?}");
         assert_eq!(ProviderKind::SystemOne.group(), "decisions");
         assert_eq!(ProviderKind::Mock.group(), "chat");
     }
@@ -315,8 +356,8 @@ mod tests {
     fn presets_have_unique_ids_and_a_known_brand() {
         const BRANDS: &[&str] = &[
             "anthropic", "openai", "google", "aws", "azure", "xai", "deepseek", "zai", "moonshot", "mistral", "groq",
-            "openrouter", "together", "fireworks", "perplexity", "cerebras", "nvidia", "ollama", "lmstudio", "vllm",
-            "llamacpp", "mock", "microsoft", "typesafe",
+            "openrouter", "opencode", "together", "fireworks", "perplexity", "cerebras", "nvidia", "ollama", "lmstudio",
+            "vllm", "llamacpp", "mock", "microsoft", "typesafe", "meta",
         ];
         let presets = presets();
         let mut ids: Vec<_> = presets.iter().map(|p| p.id).collect();
@@ -338,5 +379,42 @@ mod tests {
         assert_eq!(by_id("zai").base_url, Some("https://api.z.ai/api/paas/v4"));
         let kimi = by_id("moonshot");
         assert_eq!((kimi.base_url, kimi.auth), (Some("https://api.moonshot.ai/v1"), Auth::Env("MOONSHOT_API_KEY".into())));
+    }
+
+    #[test]
+    fn meta_preset_flags_its_contributor_models() {
+        let meta = presets().into_iter().find(|p| p.id == "meta").unwrap();
+        assert_eq!((meta.kind, meta.base_url, meta.brand), (ProviderKind::OpenAiCompatible, Some("https://api.meta.ai/v1"), "meta"));
+        assert_eq!(meta.auth, Auth::Env("MODEL_API_KEY".into()));
+        assert!(meta.models.contains(&"muse-wonder-1.0") && !meta.models.contains(&"muse-wonder-1.0-contributor"));
+        assert!(lists_training_model(&meta.options, "muse-spark-1.3-contributor"));
+        assert!(lists_training_model(&meta.options, "muse-spark-1.2-contributor"));
+        assert!(!lists_training_model(&meta.options, "muse-spark-1.3"));
+        assert!(!lists_training_model(&meta.options, "muse-wonder-1.0"));
+        assert!(!lists_training_model(&Value::Null, "muse-spark-1.3-contributor"));
+    }
+
+    #[test]
+    fn openrouter_and_opencode_presets() {
+        let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
+        let or = by_id("openrouter");
+        assert_eq!((or.kind, or.base_url, or.brand), (ProviderKind::OpenAiCompatible, Some("https://openrouter.ai/api/v1"), "openrouter"));
+        assert_eq!(or.auth, Auth::Env("OPENROUTER_API_KEY".into()));
+        assert!(or.models.is_empty());
+        assert_eq!(or.options, json!({"models_cache_secs": 3600}));
+        let or_cfg = or.config();
+        assert_eq!(or_cfg.extra_headers.len(), 2);
+        assert_eq!(or_cfg.extra_headers.get("HTTP-Referer").map(String::as_str), Some("https://agentplaza.io"));
+        assert_eq!(or_cfg.extra_headers.get("X-OpenRouter-Title").map(String::as_str), Some("AgentPlaza"));
+        let oc = by_id("opencode");
+        assert_eq!((oc.kind, oc.base_url, oc.brand), (ProviderKind::OpenAiCompatible, Some("https://opencode.ai/inference/v1"), "opencode"));
+        assert_eq!(oc.auth, Auth::Env("OPENCODE_API_KEY".into()));
+        assert_eq!(oc.models.len(), 10);
+        assert!(oc.models.contains(&"claude-opus-5-5") && oc.models.contains(&"minimax-m3"));
+        assert!(lists_training_model(&oc.options, "big-pickle"));
+        assert!(!lists_training_model(&oc.options, "gpt-5.6-sol"));
+        assert!(oc.config().extra_headers.is_empty());
+        let oc_json = serde_json::to_value(&oc).unwrap();
+        assert!(oc_json.get("extra_headers").is_none(), "{oc_json}");
     }
 }

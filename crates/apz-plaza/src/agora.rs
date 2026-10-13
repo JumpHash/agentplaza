@@ -105,9 +105,10 @@
 //!
 //! # Memory, caps, and the stream
 //!
-//! Like the ledger and the treasury, v0 is in memory: bids and awards live in
-//! this process and are lost with it (the schema's tables, triggers and
-//! append-only journal are a later slice). What bounds it: [`MAX_BIDS_PER_TASK`]
+//! Like the ledger and the treasury, the agora holds its bids and awards in
+//! memory, and apid snapshots them (`snapshot` / `restore`) into Postgres or the
+//! state dir, so they outlive the process. The schema's tables, triggers and
+//! append-only journal are a later slice. What bounds it: [`MAX_BIDS_PER_TASK`]
 //! bids per call (a fresh bid over the cap is refused while a re-bid still
 //! fits, since it replaces), and through the ledger's own `MAX_TASKS` at most
 //! that many calls. [`AGORA_LIMIT`] bounds the board's *response*, exactly as

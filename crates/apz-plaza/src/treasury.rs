@@ -22,9 +22,8 @@
 //!   all credits and every mint and refund names it, so it always exists.
 //! * `task_escrow` is opened lazily, one per task, by the first entry that
 //!   names it (a task's budget mint).
-//! * `external_spend` is opened lazily, by the first `spend` entry. v0 meters
-//!   no real spend, so a running v0 daemon has no `external_spend` account
-//!   until one is posted (a test posts one; the lifecycle does not).
+//! * `external_spend` is opened lazily, by the first `spend` or `model` entry:
+//!   the provider's account is the one every metered real cost is credited to.
 //! * `treasury`, `town_budget` and `agent_earnings` are likewise opened lazily
 //!   by the first entry that names them. v0's task lifecycle posts none of
 //!   them, so they are reachable only through [`Treasury::post`] and
@@ -62,18 +61,19 @@
 //!
 //! The journal is **append-only**: an id is assigned once, in order, and no
 //! method updates or deletes an entry. The schema enforces this with its
-//! `forbid_change` triggers; v0 has no database, so the guard is the type-level
-//! absence of any mutator (entries are handed out as owned snapshots) plus
+//! `forbid_change` triggers; this crate has no database of its own, so the guard
+//! is the type-level absence of any mutator (entries are handed out as owned snapshots) plus
 //! [`Treasury::verify_journal`], which re-checks that the ids are exactly
 //! `1..=n` and every posting names a live account. A correction is a new
 //! entry, never an edit.
 //!
 //! # What v0 does not do (stated, not faked)
 //!
-//! * **No metered real spend.** Nothing yet posts `spend`: the real cost of a
-//!   task (model providers, tools, compute) is not metered, so a task that ends
-//!   refunds its *whole* escrow. The API says so: the treasury view carries
-//!   `spent: 0` and [`SPEND_NOTE`].
+//! * **Real spend is metered for model calls and `spend` entries only.** A
+//!   task's real cost is what its `model` and `spend` entries credit to
+//!   `external_spend`; tools and compute are not metered yet, so a task that
+//!   ends refunds what its escrow still holds, not a figure net of them. The
+//!   treasury view's `spent` is the sum of those credits.
 //! * **No subcontracts, payments, clawbacks, fines, fees or budget moves.**
 //!   Their kinds, accounts and posting rules are all present and enforced, but
 //!   nothing posts them at v0 — they belong to the Agora and sanction slices.
@@ -81,8 +81,10 @@
 //!   `-credit_limit`, and the rule is enforced, but v0 has no reputation slice
 //!   to set a limit, so every lazily opened account keeps the schema's default
 //!   of 0 (an account's limit can be set through [`Treasury::open_account`]).
-//! * **No database.** Accounts and the journal live in memory, like the task
-//!   ledger. The schema's `treasury.balances` and `treasury.chain_margin`
+//! * **Persistence is apid's job.** Accounts and the journal are held in memory
+//!   by this crate, and apid snapshots them (`snapshot` / `restore`): into
+//!   Postgres (`plaza_state`) when it is configured, else `treasury.json` in the
+//!   state dir. The schema's `treasury.balances` and `treasury.chain_margin`
 //!   views are the derivations [`Treasury::view`] and [`Treasury::post`]'s
 //!   margin check perform.
 //!
@@ -123,9 +125,6 @@ pub const POSTED_BY: &str = "treasury-service";
 /// The chain margin cap, as a percentage of the chain's real cost (0111). The
 /// schema's `treasury.margin_cap_pct()` returns this value.
 pub const MARGIN_CAP_PCT: i64 = 20;
-
-/// v0's honest note on real spend: it meters none.
-pub const SPEND_NOTE: &str = "v0 meters no real spend; a done task refunds its whole escrow";
 
 /// The most entries the journal holds. v0 never removes an entry (the journal
 /// is append-only), so the cap is absolute: past it [`Treasury::post`] refuses
@@ -280,6 +279,14 @@ impl EntryKind {
             self,
             EntryKind::Fine | EntryKind::Fee | EntryKind::Transfer | EntryKind::Model
         )
+    }
+
+    /// Whether an entry of this kind is metered real cost: its credits to `external_spend`
+    /// are what the plaza has paid providers. Both the agent loop's and the gateway's model
+    /// charges post `model`, and a `spend` is the other metered cost; the Spent total, a
+    /// chain's margin cap and a task's spent figure all count these two kinds and no others.
+    pub fn is_real_cost(self) -> bool {
+        matches!(self, EntryKind::Spend | EntryKind::Model)
     }
 }
 
@@ -740,7 +747,7 @@ impl Inner {
                 let Some(kind) = self.account_kind(posting.account_id) else {
                     continue;
                 };
-                if entry.kind == EntryKind::Spend
+                if entry.kind.is_real_cost()
                     && kind == AccountKind::ExternalSpend
                     && posting.amount > 0
                 {
@@ -754,7 +761,7 @@ impl Inner {
             }
         }
         for posting in &spec.postings {
-            if spec.kind == EntryKind::Spend
+            if spec.kind.is_real_cost()
                 && posting.kind == AccountKind::ExternalSpend
                 && posting.amount > 0
             {
@@ -908,7 +915,7 @@ fn check_snapshot(inner: &Inner) -> Result<(), String> {
             }
             if let Some(root) = entry.root_task.as_deref() {
                 let (cost, paid) = margins.entry(root.to_string()).or_insert((0, 0));
-                if entry.kind == EntryKind::Spend
+                if entry.kind.is_real_cost()
                     && account.kind == AccountKind::ExternalSpend
                     && posting.amount > 0
                 {
@@ -1371,7 +1378,7 @@ impl Treasury {
                     // A task's budget arrives in its escrow by a fund entry (a subcontract from the plaza's budget).
                     (EntryKind::Mint | EntryKind::Subcontract, AccountKind::TaskEscrow, true) => money.minted += amount,
                     // A spend debits the escrow; a negative posting adds to the spend.
-                    (EntryKind::Spend, AccountKind::TaskEscrow, false) => money.spent -= amount,
+                    (kind, AccountKind::TaskEscrow, false) if kind.is_real_cost() => money.spent -= amount,
                     (EntryKind::Refund, AccountKind::TownBudget, true) => money.refunded += amount,
                     (EntryKind::Payment, AccountKind::AgentEarnings, true) => {
                         let cid = account
@@ -1427,12 +1434,19 @@ impl Treasury {
         let accounts = account_views(&inner);
         let mut credits = 0i128;
         let mut debits = 0i128;
+        let mut spent = 0i128;
         for entry in &inner.entries {
             for posting in &entry.postings {
                 if posting.amount > 0 {
                     credits += i128::from(posting.amount);
                 } else {
                     debits += i128::from(-posting.amount);
+                }
+                if entry.kind.is_real_cost()
+                    && posting.amount > 0
+                    && inner.account_kind(posting.account_id) == Some(AccountKind::ExternalSpend)
+                {
+                    spent += i128::from(posting.amount);
                 }
             }
         }
@@ -1445,8 +1459,7 @@ impl Treasury {
                 debits,
                 balance: credits - debits,
             },
-            spent: 0,
-            note: SPEND_NOTE,
+            spent,
         }
     }
 
@@ -1605,7 +1618,7 @@ impl Treasury {
                 EntryKind::Payment => point.paid += size,
                 EntryKind::Refund => point.refunded += size,
                 EntryKind::Fine => point.fined += size,
-                EntryKind::Spend => point.spent += size,
+                kind if kind.is_real_cost() => point.spent += size,
                 _ => {}
             }
             for (total, amount) in moves[index].iter_mut().zip(moved) {
@@ -2000,10 +2013,9 @@ pub struct TreasuryView {
     pub accounts: Vec<AccountView>,
     /// The totals line.
     pub totals: TotalsView,
-    /// Real money spent (0 at v0: nothing meters spend yet).
+    /// Real money the plaza has paid providers: every metered `spend` and `model` entry's
+    /// credits to `external_spend`.
     pub spent: i128,
-    /// The note on why `spent` is zero.
-    pub note: &'static str,
 }
 
 /// What a journal page asks for (see [`Treasury::journal_page`]).
@@ -2368,8 +2380,7 @@ mod tests {
 
         let view = treasury.view();
         assert_eq!(view.totals.entries, 3);
-        assert_eq!(view.spent, 0);
-        assert_eq!(view.note, SPEND_NOTE);
+        assert_eq!(view.spent, 0, "a funding and a refund are not spend");
         // Every entry balances, and the refund brought the budget home.
         assert_eq!(view.totals.balance, 0);
         let budget = view

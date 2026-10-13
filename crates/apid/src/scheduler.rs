@@ -1,6 +1,6 @@
 //! Work items: per-agent FIFO queues (one item in flight per agent), sending
 //! them through the hub, closing them, and the scheduler that turns open
-//! tasks and open motions into work.
+//! tasks, done tasks awaiting review and open motions into work.
 //!
 //! OWNER: slice "scheduler". Signatures used by other modules are marked
 //! `// contract` — keep them.
@@ -12,13 +12,14 @@ use std::thread;
 use std::time::Duration;
 
 use apz_plaza::council::is_seated;
-use apz_plaza::tasks::FinishOutcome;
+use apz_plaza::tasks::{FinishOutcome, TaskState};
 use apz_plaza::treasury::{PostError, MARGIN_CAP_PCT};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::agents::{connected_agent, Status};
+use crate::agents::{connected_agent, Agent, Status};
+use crate::approvals::{Approval, State as ApprovalState, Store as ApprovalStore};
 use crate::settings::{tier_of, Tier};
 use crate::state::App;
 
@@ -144,6 +145,9 @@ pub struct Queues {
     posters: Mutex<std::collections::HashMap<String, u64>>,
     /// task id → the review awaiting a verdict.
     reviews: Mutex<std::collections::HashMap<String, Review>>,
+    /// Held while a task is reviewed or ruled on, so a task is paid at most once and no review
+    /// starts on a task that a ruling has already ended.
+    rulings: Mutex<()>,
     /// task id → credits metered against it so far (its real cost).
     spend: Mutex<std::collections::HashMap<String, i64>>,
 }
@@ -155,6 +159,7 @@ impl Default for Queues {
             next_id: AtomicU64::new(1),
             posters: Mutex::default(),
             reviews: Mutex::default(),
+            rulings: Mutex::default(),
             spend: Mutex::default(),
         }
     }
@@ -208,11 +213,12 @@ impl Queues {
         app.transcripts.record(&app.bus, cid, work, "work_end", json!({ "status": state, "summary": summary }));
         app.bus.publish("work", &json!({ "cid": cid, "work": work, "state": "ended", "status": state }));
         if let Some(task) = item.origin.task.as_deref() {
-            // A worker's done is a claim: an idle reviewer rules on it first.
-            let reviewed = matches!(status, WorkStatus::Done)
+            // A worker's done is a claim: the task waits for a reviewer's verdict, and its
+            // escrow stays held until then (see `assign_reviews`).
+            let waiting = matches!(status, WorkStatus::Done)
                 && matches!(item.kind, WorkKind::Task)
-                && self.start_review(app, task, cid, summary);
-            if !reviewed {
+                && self.await_review(app, task, summary);
+            if !waiting {
                 settle_task(app, task, status, summary);
                 self.tell_poster(app, task, cid, state, summary);
             }
@@ -220,6 +226,8 @@ impl Queues {
         self.review_lost(app, item.id, "reviewer ended without a verdict");
         app.agents.update(cid, |a| a.status = Status::Idle);
         self.dispatch(app, cid);
+        // This agent is free now: it may be the reviewer a waiting task was waiting for.
+        self.assign_reviews(app);
     }
 
     /// Records that `cid` posted `task`, so it hears when the task ends.
@@ -298,17 +306,58 @@ impl Queues {
         self.spend.lock().unwrap_or_else(|p| p.into_inner()).get(task).copied().unwrap_or(0)
     }
 
-    /// Hands a done task to an idle reviewer; false when none is connected.
+    /// The worker reported `task` done: it waits for a reviewer's verdict, and its escrow stays
+    /// held. False when the task cannot wait (it already ended), and the caller settles it as before.
+    fn await_review(&self, app: &App, task: &str, summary: &str) -> bool {
+        app.plaza
+            .tasks
+            .find(task)
+            .is_some_and(|record| record.await_review(Some(summary.to_string())).is_ok())
+    }
+
+    /// Gives each task awaiting review, with no reviewer on it yet, to the next idle reviewer. A task
+    /// that has waited past the review timeout with none gets one owner approval (kind `review`).
+    pub fn assign_reviews(&self, app: &App) {
+        let timeout_ms = u64::from(app.settings.get().review_timeout_minutes) * 60_000;
+        let now = apz_plaza::now_ms();
+        for task in app.plaza.tasks.list() {
+            let view = task.view();
+            if view.state != TaskState::AwaitingReview.as_str() {
+                continue;
+            }
+            let Some(worker) = view.agent_cid else {
+                continue;
+            };
+            let id = view.id.to_string();
+            let summary = view.note.clone().unwrap_or_default();
+            let reviewed = self.reviews.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&id);
+            if reviewed || self.start_review(app, &id, worker, &summary) {
+                continue;
+            }
+            let waited = now.saturating_sub(view.updated_at);
+            if review_overdue(waited, timeout_ms) {
+                let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
+                let escalation =
+                    escalate_review(&app.approvals, &id, worker, &worker_name, view.goal, &summary, waited);
+                if let Some(item) = escalation {
+                    app.bus.publish("approval", &item);
+                }
+            }
+        }
+    }
+
+    /// Hands a done task to the next idle reviewer; false when none is connected or the task is no
+    /// longer awaiting review. Runs under `rulings`, so a ruling cannot land between the check and the
+    /// review's start.
     fn start_review(&self, app: &App, task: &str, worker: u64, summary: &str) -> bool {
+        let _rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
         let Some(record) = app.plaza.tasks.find(task) else {
             return false;
         };
-        let Some(reviewer) = app
-            .agents
-            .list()
-            .into_iter()
-            .find(|a| a.cid != worker && a.role == REVIEWER_ROLE && a.status == Status::Idle)
-        else {
+        if record.state() != TaskState::AwaitingReview.as_str() {
+            return false;
+        }
+        let Some(reviewer) = next_reviewer(&app.agents.list(), worker) else {
             return false;
         };
         let worker_name = app.agents.get(worker).map_or_else(|| format!("agent {worker}"), |a| a.name);
@@ -318,7 +367,7 @@ impl Queues {
              Check it (use plaza_get_file for shared files) and call plaza_verdict with pass true/false and short notes.",
             goal = record.goal(),
         );
-        let work = self.enqueue(app, reviewer.cid, WorkKind::Task, format!("review-{task}"), prompt, Origin::default());
+        let work = self.enqueue(app, reviewer, WorkKind::Task, format!("review-{task}"), prompt, Origin::default());
         self.reviews.lock().unwrap_or_else(|p| p.into_inner()).insert(task.to_string(), Review { worker, work });
         true
     }
@@ -328,21 +377,51 @@ impl Queues {
     /// escrow goes back to the plaza's budget).
     pub fn verdict(&self, app: &App, task: &str, work: u64, pass: bool, notes: &str) -> Result<String, String> {
         // contract
+        let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
         let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
         if !reviews.get(task).is_some_and(|r| r.work == work) {
             return Err(format!("no verdict is pending on task {task} from this review"));
         }
         let review = reviews.remove(task).ok_or_else(|| format!("no verdict is pending on task {task}"))?;
         drop(reviews);
-        let paid = if pass { self.pay_worker(app, task, review.worker, work) } else { 0 };
+        let summary = self.settle_ruling(app, task, review.worker, work, pass, notes);
+        // The owner's card for this task, if one was raised, is no longer needed.
+        publish_withdrawn(app, &withdraw_pending_review(&app.approvals, task, RULED_FIRST));
+        drop(rulings);
+        self.tell_poster(app, task, review.worker, if pass { "done" } else { "failed" }, notes);
+        Ok(summary)
+    }
+
+    /// The owner's ruling on `task`, which is awaiting review: a pass pays the worker and completes the
+    /// task, a fail fails it. A reviewer still working on it is no longer awaited.
+    pub fn owner_verdict(&self, app: &App, task: &str, pass: bool, notes: &str) -> Result<String, String> {
+        let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
+        let record = app.plaza.tasks.find(task).ok_or_else(|| format!("no task {task}"))?;
+        let view = record.view();
+        if view.state != TaskState::AwaitingReview.as_str() {
+            return Err(format!("task {task} is {}; it is not awaiting review", view.state));
+        }
+        let worker = view.agent_cid.ok_or_else(|| format!("task {task} names no worker"))?;
+        let reviewer = self.reviews.lock().unwrap_or_else(|p| p.into_inner()).remove(task);
+        let work = reviewer.map_or(0, |r| r.work);
+        let summary = self.settle_ruling(app, task, worker, work, pass, notes);
+        drop(rulings);
+        self.tell_poster(app, task, worker, if pass { "done" } else { "failed" }, notes);
+        Ok(summary)
+    }
+
+    /// Pays the worker for a pass and ends the task, which releases the rest of its escrow. The caller
+    /// holds `rulings`, so the task is paid at most once.
+    fn settle_ruling(&self, app: &App, task: &str, worker: u64, work: u64, pass: bool, notes: &str) -> String {
+        let paid = if pass { self.pay_worker(app, task, worker, work) } else { 0 };
         let status = if pass { WorkStatus::Done } else { WorkStatus::Failed };
         settle_task(app, task, status, notes);
-        self.tell_poster(app, task, review.worker, if pass { "done" } else { "failed" }, notes);
-        Ok(format!("verdict {}: paid {paid}", if pass { "pass" } else { "fail" }))
+        format!("verdict {}: paid {paid}", if pass { "pass" } else { "fail" })
     }
 
     /// Ends a review whose reviewer ended, or went offline, without a verdict: the task fails.
     fn review_lost(&self, app: &App, work: u64, reason: &str) {
+        let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
         let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
         let found = reviews.iter().find(|(_, r)| r.work == work).map(|(task, _)| task.clone());
         let Some(task) = found else {
@@ -353,6 +432,7 @@ impl Queues {
         };
         drop(reviews);
         settle_task(app, &task, WorkStatus::Failed, reason);
+        drop(rulings);
         self.tell_poster(app, &task, review.worker, "failed", reason);
     }
 
@@ -460,6 +540,124 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     let _ = task.finish(outcome, Some(summary.to_string()));
 }
 
+/// The kind of owner approval that rules on a done task no reviewer took in time.
+pub const REVIEW_KIND: &str = "review";
+
+/// The idle reviewer a done task goes to next: the first idle agent of the reviewer role that is not
+/// the worker.
+fn next_reviewer(agents: &[Agent], worker: u64) -> Option<u64> {
+    agents
+        .iter()
+        .find(|a| a.cid != worker && a.role == REVIEWER_ROLE && a.status == Status::Idle)
+        .map(|a| a.cid)
+}
+
+/// Whether a task that has waited `waited_ms` for a reviewer has waited past `timeout_ms`.
+fn review_overdue(waited_ms: u64, timeout_ms: u64) -> bool {
+    waited_ms >= timeout_ms
+}
+
+/// What a review approval's subject says about the task it rules on.
+fn review_subject(task: &str) -> String {
+    format!("review of task {task}")
+}
+
+/// The owner approval that asks for a ruling on `task`, or None while one is already pending for it.
+/// The caller publishes what it returns.
+fn escalate_review(
+    approvals: &ApprovalStore,
+    task: &str,
+    worker: u64,
+    worker_name: &str,
+    goal: &str,
+    summary: &str,
+    waited_ms: u64,
+) -> Option<Approval> {
+    let subject = review_subject(task);
+    let pending = approvals
+        .list()
+        .iter()
+        .any(|a| a.kind == REVIEW_KIND && a.subject == subject && a.state == ApprovalState::Pending);
+    if pending {
+        return None;
+    }
+    let detail = json!({
+        "task": task,
+        "cid": worker,
+        "worker": worker_name,
+        "goal": goal,
+        "summary": summary,
+        "waited_ms": waited_ms,
+    });
+    Some(approvals.submit(worker, REVIEW_KIND, &subject, detail))
+}
+
+/// The reason a reviewer's ruling gives for withdrawing the owner's pending review card.
+const RULED_FIRST: &str = "a reviewer ruled first";
+
+/// The reason a card gets when its task ended by another path before the owner ruled.
+const ENDED_FIRST: &str = "the task ended before the owner ruled";
+
+/// Withdraws the pending review approvals for `task` with `reason`, and returns them.
+fn withdraw_pending_review(approvals: &ApprovalStore, task: &str, reason: &str) -> Vec<Approval> {
+    let subject = review_subject(task);
+    approvals
+        .list()
+        .into_iter()
+        .filter(|a| a.kind == REVIEW_KIND && a.subject == subject && a.state == ApprovalState::Pending)
+        .filter_map(|a| approvals.withdraw(&a.id, reason))
+        .collect()
+}
+
+/// Withdraws every pending review approval whose task `awaiting` says is no longer awaiting review, so
+/// the owner is never left with a card that would be refused. Returns what it withdrew.
+fn withdraw_orphaned_reviews(approvals: &ApprovalStore, awaiting: &dyn Fn(&str) -> bool) -> Vec<Approval> {
+    let orphaned: Vec<(String, String)> = approvals
+        .list()
+        .into_iter()
+        .filter(|a| a.kind == REVIEW_KIND && a.state == ApprovalState::Pending)
+        .filter_map(|a| {
+            let task = a.detail.get("task")?.as_str()?.to_string();
+            Some((a.id, task))
+        })
+        .filter(|(_, task)| !awaiting(task))
+        .collect();
+    orphaned
+        .into_iter()
+        .filter_map(|(id, _)| approvals.withdraw(&id, ENDED_FIRST))
+        .collect()
+}
+
+/// Publishes the approvals that were withdrawn, so the owner's view drops them.
+fn publish_withdrawn(app: &App, withdrawn: &[Approval]) {
+    for item in withdrawn {
+        app.bus.publish("approval", item);
+    }
+}
+
+/// Withdraws the pending review cards whose task no longer awaits review, whichever path ended it.
+fn withdraw_stale_reviews(app: &App) {
+    let awaiting = |task: &str| {
+        app.plaza
+            .tasks
+            .find(task)
+            .is_some_and(|record| record.state() == TaskState::AwaitingReview.as_str())
+    };
+    publish_withdrawn(app, &withdraw_orphaned_reviews(&app.approvals, &awaiting));
+}
+
+/// The owner's decision on a review approval (see `approvals::decide`): approve passes the task, deny
+/// fails it. A task that is no longer awaiting review is refused.
+pub fn review_decided(app: &App, item: &Approval, approve: bool) -> Result<(), String> {
+    let task = item
+        .detail
+        .get("task")
+        .and_then(Value::as_str)
+        .ok_or("this review approval names no task")?;
+    let notes = item.reason.clone().unwrap_or_else(|| "the owner ruled on the review".to_string());
+    app.work.owner_verdict(app, task, approve, &notes).map(|_| ())
+}
+
 /// The scheduler thread (every 2 s).
 pub fn spawn(app: Arc<App>) {
     // contract
@@ -471,6 +669,8 @@ pub fn spawn(app: Arc<App>) {
                 ask_names(&app);
                 crate::society::outreach(&app);
                 assign_tasks(&app);
+                app.work.assign_reviews(&app);
+                withdraw_stale_reviews(&app);
                 offer_motions(&app, &mut motions_seen);
             }
             crate::llm_proxy::drain_usage(&app);
@@ -613,6 +813,119 @@ mod tests {
             created_ms: 0,
             started_ms: None,
         }
+    }
+
+    fn agent(cid: u64, role: &str, status: Status) -> Agent {
+        Agent {
+            cid,
+            name: format!("agent{cid}"),
+            role: role.to_string(),
+            model_override: None,
+            status,
+            connected_at_ms: 0,
+            last_seen_ms: 0,
+            run: None,
+            vm: None,
+            usage: Default::default(),
+            species: String::new(),
+            kind: "llm".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_done_task_goes_to_the_next_idle_reviewer_that_is_not_its_worker() {
+        let agents = vec![
+            agent(1, "builder", Status::Idle),
+            agent(2, REVIEWER_ROLE, Status::Working),
+            agent(3, REVIEWER_ROLE, Status::Idle),
+            agent(4, REVIEWER_ROLE, Status::Idle),
+        ];
+        // The busy reviewer is skipped; the first free one takes it.
+        assert_eq!(next_reviewer(&agents, 1), Some(3));
+        // A reviewer does not review its own work.
+        let own = vec![agent(5, REVIEWER_ROLE, Status::Idle)];
+        assert_eq!(next_reviewer(&own, 5), None);
+        // With no free reviewer the task keeps waiting.
+        let busy = vec![agent(2, REVIEWER_ROLE, Status::Working), agent(6, "builder", Status::Idle)];
+        assert_eq!(next_reviewer(&busy, 1), None);
+    }
+
+    #[test]
+    fn a_task_no_reviewer_takes_in_time_asks_the_owner_once() {
+        let dir = std::env::temp_dir().join(format!("apid-review-escalation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ApprovalStore::load(&dir);
+
+        // Nothing is asked before the timeout; at it, the owner is.
+        assert!(!review_overdue(29 * 60_000, 30 * 60_000));
+        assert!(review_overdue(30 * 60_000, 30 * 60_000));
+
+        let asked = escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 30 * 60_000)
+            .expect("the first escalation asks the owner");
+        assert_eq!(asked.kind, "review");
+        assert_eq!(asked.state, ApprovalState::Pending);
+        assert_eq!(asked.cid, 4);
+        assert_eq!(asked.subject, "review of task t7");
+        assert_eq!(asked.detail["task"], "t7");
+        assert_eq!(asked.detail["summary"], "done");
+        assert_eq!(asked.detail["waited_ms"], 30 * 60_000);
+
+        // While it is pending, later ticks do not ask again for the same task.
+        assert!(escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 40 * 60_000).is_none());
+        // Another task gets its own approval.
+        assert!(escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000).is_some());
+        assert_eq!(store.list().iter().filter(|a| a.kind == REVIEW_KIND).count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reviewers_ruling_withdraws_the_owners_pending_card_and_only_that_one() {
+        let dir = std::env::temp_dir().join(format!("apid-review-withdraw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ApprovalStore::load(&dir);
+        let asked = escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 30 * 60_000).expect("asked");
+        let other = escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000).expect("asked");
+
+        // A reviewer rules on t7 after the escalation: its card is withdrawn with the reason.
+        let withdrawn = withdraw_pending_review(&store, "t7", RULED_FIRST);
+        assert_eq!(withdrawn.len(), 1);
+        let card = store.list().into_iter().find(|a| a.id == asked.id).expect("the card is kept");
+        assert_eq!(card.state, ApprovalState::Withdrawn);
+        assert_eq!(card.reason.as_deref(), Some("a reviewer ruled first"));
+
+        // The owner can no longer decide it, and a second ruling withdraws nothing more.
+        assert!(matches!(
+            store.decide(&asked.id, true, None),
+            Err(crate::approvals::DecideError::NotPending)
+        ));
+        assert!(withdraw_pending_review(&store, "t7", RULED_FIRST).is_empty());
+
+        // t8's card is untouched and still pending.
+        let still = store.list().into_iter().find(|a| a.id == other.id).expect("kept");
+        assert_eq!(still.state, ApprovalState::Pending);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_card_whose_task_ended_by_another_path_is_withdrawn_too() {
+        let dir = std::env::temp_dir().join(format!("apid-review-orphan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ApprovalStore::load(&dir);
+        escalate_review(&store, "t7", 4, "agent4", "a", "done", 30 * 60_000).expect("asked");
+        let live = escalate_review(&store, "t8", 4, "agent4", "b", "done", 30 * 60_000).expect("asked");
+
+        // Only t8 still awaits review (say t7 failed when its reviewer went offline).
+        let awaiting = |task: &str| task == "t8";
+        let withdrawn = withdraw_orphaned_reviews(&store, &awaiting);
+        assert_eq!(withdrawn.len(), 1);
+        assert_eq!(withdrawn[0].detail["task"], "t7");
+        assert_eq!(withdrawn[0].reason.as_deref(), Some("the task ended before the owner ruled"));
+        let kept = store.list().into_iter().find(|a| a.id == live.id).expect("kept");
+        assert_eq!(kept.state, ApprovalState::Pending);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

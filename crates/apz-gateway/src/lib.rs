@@ -43,11 +43,11 @@ use apz_proto::chat::{Block, ChatRequest, ChatResponse, Delta, Message};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use config::{Auth, Preset, ProviderConfig, ProviderKind, presets};
+pub use config::{Auth, Preset, ProviderConfig, ProviderKind, lists_training_model, presets};
 pub use decisions::{
     Answer, ChoiceOption, ChoiceProbability, DecisionRequest, DecisionResponse, Level, LevelProbability, Question, Usage,
 };
-pub use error::GatewayError;
+pub use error::{GatewayError, SecretReason};
 
 use crate::error::truncate;
 use crate::http::Http;
@@ -66,26 +66,54 @@ pub fn tool_input_error(meta: Option<&Value>) -> Option<&str> {
     (meta.get("kind")?.as_str()? == "gateway").then(|| meta.get("error")?.as_str())?
 }
 
-/// Named secrets (`apid`'s `secrets.json`).
+/// Whose call a credential is read for. The hub passes it to the [`SecretSource`], which decides
+/// what the caller may read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caller {
+    /// The hub's own background work.
+    Hub,
+    /// The owner, from the console (a provider test or a model list). `node` is the node the owner chose
+    /// (`None`: the hub's own machine).
+    Owner { node: Option<String> },
+    /// An agent's model call. `node` is the node whose CID range holds the agent, computed by the
+    /// hub (`None` when a revoked node's range holds it: nothing may be read).
+    Agent { cid: u64, node: Option<String> },
+}
+
+/// A credential read: the provider it belongs to, and whose call it is.
+pub struct SecretRead<'a> {
+    pub provider: &'a str,
+    pub caller: &'a Caller,
+}
+
+/// Named credentials. `name` is the provider's secret name (`Auth::Secret`, or the env-style name
+/// of `Auth::Env`); `read` says which provider and whose call it is. `apid` reads the vault.
 pub trait SecretSource: Send + Sync {
-    fn get(&self, name: &str) -> Option<String>;
+    fn get(&self, name: &str, read: &SecretRead<'_>) -> Option<String>;
+
+    /// The secret, or why there is none. The default answers [`SecretSource::get`] and says `Missing`. A
+    /// source that can say more (the vault: sealed, tampered, held elsewhere) overrides this instead, so
+    /// the gateway makes one lookup per call, and that lookup is the only one audited.
+    fn fetch(&self, name: &str, read: &SecretRead<'_>) -> Result<String, SecretReason> {
+        self.get(name, read).filter(|s| !s.is_empty()).ok_or(SecretReason::Missing)
+    }
 }
 
 impl SecretSource for BTreeMap<String, String> {
-    fn get(&self, name: &str) -> Option<String> {
+    fn get(&self, name: &str, _read: &SecretRead<'_>) -> Option<String> {
         BTreeMap::get(self, name).cloned()
     }
 }
 
 impl SecretSource for HashMap<String, String> {
-    fn get(&self, name: &str) -> Option<String> {
+    fn get(&self, name: &str, _read: &SecretRead<'_>) -> Option<String> {
         HashMap::get(self, name).cloned()
     }
 }
 
-impl<F: Fn(&str) -> Option<String> + Send + Sync> SecretSource for F {
-    fn get(&self, name: &str) -> Option<String> {
-        self(name)
+impl<F: Fn(&str, &SecretRead<'_>) -> Option<String> + Send + Sync> SecretSource for F {
+    fn get(&self, name: &str, read: &SecretRead<'_>) -> Option<String> {
+        self(name, read)
     }
 }
 
@@ -167,6 +195,7 @@ impl GatewayBuilder {
                 http: Http::new(self.retries, self.retry_delay),
                 tokens: Mutex::new(HashMap::new()),
                 no_stream_options: Mutex::new(HashSet::new()),
+                models_cache: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -188,13 +217,15 @@ pub(crate) struct Inner {
     tokens: Mutex<HashMap<String, (String, Instant)>>,
     /// Providers that rejected `stream_options`.
     pub(crate) no_stream_options: Mutex<HashSet<String>>,
+    /// Provider id → (listed at, raw listing), for providers with `options.models_cache_secs`.
+    models_cache: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
 }
 
 impl Gateway {
     pub fn builder() -> GatewayBuilder {
         GatewayBuilder {
             providers: Vec::new(),
-            secrets: Box::new(|_: &str| None),
+            secrets: Box::new(|_: &str, _: &crate::SecretRead<'_>| None),
             env: Box::new(|name: &str| std::env::var(name).ok().filter(|v| !v.is_empty())),
             retries: 2,
             retry_delay: Duration::from_secs(1),
@@ -227,6 +258,11 @@ impl Gateway {
     /// fragments go to `sink`; the returned response's `model` is
     /// `provider-id/<the model the API says answered>`.
     pub fn complete(&self, req: &ChatRequest, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, GatewayError> {
+        self.complete_for(req, sink, &Caller::Hub)
+    }
+
+    /// [`Gateway::complete`] for `caller`: the credential is read for that caller only.
+    pub fn complete_for(&self, req: &ChatRequest, sink: &mut dyn FnMut(Delta), caller: &Caller) -> Result<ChatResponse, GatewayError> {
         let name = ModelRef::parse(&req.model)?;
         let pinned;
         let req = match &name.effort {
@@ -238,7 +274,7 @@ impl Gateway {
         };
         let (provider_id, model) = (name.provider.as_str(), name.model.as_str());
         let p = self.provider(provider_id)?;
-        let ctx = Ctx { gw: &self.inner, p: &p };
+        let ctx = Ctx { gw: &self.inner, p: &p, caller };
         let mut resp = match p.kind {
             ProviderKind::Anthropic | ProviderKind::VertexAnthropic => anthropic::complete(&ctx, req, model, sink),
             ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::AzureOpenAi => {
@@ -262,22 +298,54 @@ impl Gateway {
     /// The models a provider offers: its live listing (where the API has
     /// one) merged with the configured static `models`.
     pub fn list_models(&self, provider_id: &str) -> Result<Vec<ModelInfo>, GatewayError> {
+        self.list_models_for(provider_id, &Caller::Hub)
+    }
+
+    /// [`Gateway::list_models`] for `caller`.
+    pub fn list_models_for(&self, provider_id: &str, caller: &Caller) -> Result<Vec<ModelInfo>, GatewayError> {
         let p = self.provider(provider_id)?;
-        let ctx = Ctx { gw: &self.inner, p: &p };
-        let mut models = match p.kind {
-            ProviderKind::Anthropic => anthropic::list_models(&ctx)?,
-            ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => {
-                openai::list_models(&ctx)?
+        // The live listing, fetched from the provider's API.
+        let fetch = || -> Result<Vec<ModelInfo>, GatewayError> {
+            let ctx = Ctx { gw: &self.inner, p: &p, caller };
+            Ok(match p.kind {
+                ProviderKind::Anthropic => anthropic::list_models(&ctx)?,
+                ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiResponses => {
+                    openai::list_models(&ctx)?
+                }
+                ProviderKind::Gemini => gemini::list_models(&ctx)?,
+                ProviderKind::Bedrock => bedrock::list_models(&ctx)?,
+                ProviderKind::Mock => mock::MODELS.iter().map(|m| ModelInfo::new(*m)).collect(),
+                ProviderKind::AzureOpenAi
+                | ProviderKind::VertexAnthropic
+                | ProviderKind::VertexGemini
+                | ProviderKind::OpenAiDecisions
+                | ProviderKind::SystemOne
+                | ProviderKind::AzureDecisions => Vec::new(),
+            })
+        };
+        // `options.models_cache_secs` (a positive integer) keeps the live listing for that long.
+        let ttl = p.options.get("models_cache_secs").and_then(Value::as_u64).filter(|s| *s > 0).map(Duration::from_secs);
+        let mut models = match ttl {
+            None => fetch()?,
+            Some(ttl) => {
+                let cache = &self.inner.models_cache;
+                let hit = cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(provider_id)
+                    .filter(|(at, _)| at.elapsed() < ttl)
+                    .map(|(_, m)| m.clone());
+                match hit {
+                    Some(models) => models,
+                    None => {
+                        // A failed listing returns its error and is not cached.
+                        let models = fetch()?;
+                        let entry = (Instant::now(), models.clone());
+                        cache.lock().unwrap_or_else(|e| e.into_inner()).insert(provider_id.to_string(), entry);
+                        models
+                    }
+                }
             }
-            ProviderKind::Gemini => gemini::list_models(&ctx)?,
-            ProviderKind::Bedrock => bedrock::list_models(&ctx)?,
-            ProviderKind::Mock => mock::MODELS.iter().map(|m| ModelInfo::new(*m)).collect(),
-            ProviderKind::AzureOpenAi
-            | ProviderKind::VertexAnthropic
-            | ProviderKind::VertexGemini
-            | ProviderKind::OpenAiDecisions
-            | ProviderKind::SystemOne
-            | ProviderKind::AzureDecisions => Vec::new(),
         };
         for id in &p.models {
             if !models.iter().any(|m| &m.id == id) {
@@ -296,7 +364,7 @@ impl Gateway {
             return Err(GatewayError::Config(format!("{provider_id} is a chat model; it does not answer decisions")));
         }
         req.validate().map_err(|e| GatewayError::Config(format!("invalid decision request: {e}")))?;
-        let ctx = Ctx { gw: &self.inner, p: &p };
+        let ctx = Ctx { gw: &self.inner, p: &p, caller: &Caller::Hub };
         decisions::decide(&ctx, model, req)
     }
 
@@ -304,13 +372,18 @@ impl Gateway {
     /// first configured model, else the first listed one. Only a missing
     /// provider or model is an `Err`; a failed call is a report with `ok: false`.
     pub fn test(&self, provider_id: &str, model: Option<&str>) -> Result<TestReport, GatewayError> {
+        self.test_for(provider_id, model, &Caller::Hub)
+    }
+
+    /// [`Gateway::test`] for `caller` (the owner's console test passes [`Caller::Owner`]).
+    pub fn test_for(&self, provider_id: &str, model: Option<&str>, caller: &Caller) -> Result<TestReport, GatewayError> {
         let p = self.provider(provider_id)?;
         let model = match model.filter(|m| !m.is_empty()) {
             Some(m) => m.to_string(),
             None => match p.models.first() {
                 Some(m) => m.clone(),
                 None => self
-                    .list_models(provider_id)?
+                    .list_models_for(provider_id, caller)?
                     .into_iter()
                     .next()
                     .map(|m| m.id)
@@ -327,7 +400,7 @@ impl Gateway {
             effort: Some("low".to_string()),
         };
         let started = Instant::now();
-        let result = self.complete(&req, &mut |_| {});
+        let result = self.complete_for(&req, &mut |_| {}, caller);
         let latency_ms = started.elapsed().as_millis() as u64;
         Ok(match result {
             Ok(resp) => TestReport { ok: true, reply: resp.text(), model: resp.model, latency_ms, error: None },
@@ -391,10 +464,20 @@ impl std::str::FromStr for ModelRef {
     }
 }
 
+/// Whether the model name `provider/model[@effort]` is a contributor model: one that a preset lists
+/// in `options.trains_on_data`. Such a model trains its provider's future models on what it is sent
+/// and returns, so the hub never picks one by itself (see `apid`'s settings).
+pub fn trains_on_data(name: &str) -> bool {
+    let Ok(model) = ModelRef::parse(name) else { return false };
+    presets().iter().any(|p| p.id == model.provider && lists_training_model(&p.options, &model.model))
+}
+
 /// What an adapter needs for one call: the gateway and the provider.
 pub(crate) struct Ctx<'a> {
     pub gw: &'a Inner,
     pub p: &'a ProviderConfig,
+    /// Whose call this is: the credential is read for it.
+    pub caller: &'a Caller,
 }
 
 impl Ctx<'_> {
@@ -406,22 +489,54 @@ impl Ctx<'_> {
         &self.gw.http
     }
 
+    /// The named credential for this provider and caller: the source's value, or why there is none.
+    /// One lookup per call.
+    fn read_secret(&self, name: &str) -> Result<String, SecretReason> {
+        let read = SecretRead { provider: &self.p.id, caller: self.caller };
+        self.gw.secrets.fetch(name, &read)
+    }
+
+    /// A named secret this provider needs, for this caller: the value, the source's refusal (sealed,
+    /// out of scope), or `Auth` when the source holds no such secret. Never read from the process
+    /// environment (the AWS key pair is read this way).
+    pub(crate) fn required_secret(&self, name: &str) -> Result<String, GatewayError> {
+        self.read_secret(name).map_err(|reason| {
+            reason.error().unwrap_or_else(|| GatewayError::Auth(format!("secret `{name}` is not set (provider `{}`)", self.p.id)))
+        })
+    }
+
+    /// A named secret this provider may do without: `None` when the source holds none, but the source's
+    /// refusal (sealed, out of scope) still fails the call, so a refused key is never silently dropped.
+    pub(crate) fn optional_secret(&self, name: &str) -> Result<Option<String>, GatewayError> {
+        match self.read_secret(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(reason) => match reason.error() {
+                None => Ok(None),
+                Some(refusal) => Err(refusal),
+            },
+        }
+    }
+
     /// The provider's credential; `None` for [`Auth::None`].
     pub fn credential(&self) -> Result<Option<String>, GatewayError> {
         let id = &self.p.id;
         match &self.p.auth {
             Auth::None => Ok(None),
-            Auth::Env(name) => self
-                .env(name)
-                .map(Some)
-                .ok_or_else(|| GatewayError::Auth(format!("environment variable {name} is not set (provider `{id}`)"))),
-            Auth::Secret(name) => self
-                .gw
-                .secrets
-                .get(name)
-                .filter(|s| !s.is_empty())
-                .map(Some)
-                .ok_or_else(|| GatewayError::Auth(format!("secret `{name}` is not set (provider `{id}`)"))),
+            // The vault first (its entry for this provider), then the process environment.
+            Auth::Env(name) => match self.read_secret(name) {
+                Ok(value) => Ok(Some(value)),
+                Err(reason) => match reason.error() {
+                    // Only a name the vault does not hold may come from the process environment.
+                    None => self
+                        .env(name)
+                        .map(Some)
+                        .ok_or_else(|| GatewayError::Auth(format!("environment variable {name} is not set (provider `{id}`)"))),
+                    Some(refusal) => Err(refusal),
+                },
+            },
+            Auth::Secret(name) => self.read_secret(name).map(Some).map_err(|reason| {
+                reason.error().unwrap_or_else(|| GatewayError::Auth(format!("secret `{name}` is not set (provider `{id}`)")))
+            }),
             Auth::Command(cmd) => self.command_token(cmd).map(Some),
         }
     }
@@ -547,6 +662,97 @@ pub(crate) fn results_first(blocks: &[Block]) -> Vec<&Block> {
 mod tests {
     use super::*;
 
+    /// A secret source that holds nothing, and says why (`Missing` when it says nothing more).
+    struct Refusing(Option<SecretReason>);
+
+    impl SecretSource for Refusing {
+        fn get(&self, _name: &str, _read: &SecretRead<'_>) -> Option<String> {
+            None
+        }
+
+        fn fetch(&self, _name: &str, _read: &SecretRead<'_>) -> Result<String, SecretReason> {
+            Err(self.0.clone().unwrap_or(SecretReason::Missing))
+        }
+    }
+
+    /// A secret source that refuses with `reason`, counting each time the gateway asks it.
+    struct Counting {
+        asked: Arc<std::sync::atomic::AtomicUsize>,
+        reason: SecretReason,
+    }
+
+    impl SecretSource for Counting {
+        fn get(&self, _name: &str, _read: &SecretRead<'_>) -> Option<String> {
+            None
+        }
+
+        fn fetch(&self, _name: &str, _read: &SecretRead<'_>) -> Result<String, SecretReason> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(self.reason.clone())
+        }
+    }
+
+    #[test]
+    fn a_refused_secret_is_asked_for_once_and_the_call_says_why() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let source = Counting { asked: Arc::clone(&asked), reason: SecretReason::Sealed };
+        let mut p = ProviderConfig::new("claude", ProviderKind::Anthropic);
+        p.auth = Auth::Secret("CLAUDE_KEY".to_string());
+        let gw = Gateway::builder().providers(vec![p]).secrets(source).build();
+        let req = ChatRequest { model: "claude/m".to_string(), ..crate::testutil::request("hi") };
+        let err = gw.complete(&req, &mut |_| {}).unwrap_err();
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(err.to_string(), "vault sealed");
+    }
+
+    #[test]
+    fn a_sealed_vault_does_not_fall_back_to_the_process_environment() {
+        // The environment lookup answers a value; a sealed vault must still refuse, not use it.
+        let mut p = ProviderConfig::new("claude", ProviderKind::Anthropic);
+        p.auth = Auth::Env("GW_SEALED_FALLBACK_KEY_4417".to_string());
+        let gw = Gateway::builder()
+            .providers(vec![p])
+            .secrets(Refusing(Some(SecretReason::Sealed)))
+            .env(|_| Some("PROCESS-VALUE-4417".to_string()))
+            .build();
+        let req = ChatRequest { model: "claude/m".to_string(), ..crate::testutil::request("hi") };
+        let err = gw.complete(&req, &mut |_| {}).unwrap_err();
+        assert_eq!(err.to_string(), "vault sealed");
+    }
+
+    /// A call to an Anthropic provider whose named key the source refuses.
+    fn refused_call(source: Refusing) -> GatewayError {
+        let mut p = ProviderConfig::new("claude", ProviderKind::Anthropic);
+        p.auth = Auth::Secret("CLAUDE_KEY".to_string());
+        let gw = Gateway::builder().providers(vec![p]).secrets(source).build();
+        let req = ChatRequest { model: "claude/m".to_string(), ..crate::testutil::request("hi") };
+        gw.complete(&req, &mut |_| {}).unwrap_err()
+    }
+
+    #[test]
+    fn a_sealed_vault_fails_the_call_with_its_own_text_not_not_set() {
+        let err = refused_call(Refusing(Some(SecretReason::Sealed)));
+        assert!(matches!(&err, GatewayError::Vault { status: 503, .. }), "{err:?}");
+        assert_eq!(err.to_string(), "vault sealed");
+    }
+
+    #[test]
+    fn a_tampered_vault_and_a_secret_held_elsewhere_fail_with_their_own_status() {
+        let tampered = refused_call(Refusing(Some(SecretReason::Tampered("the index MAC does not match".into()))));
+        assert!(matches!(&tampered, GatewayError::Vault { status: 503, .. }), "{tampered:?}");
+        assert_eq!(tampered.to_string(), "vault tampered: the index MAC does not match");
+        let elsewhere = refused_call(Refusing(Some(SecretReason::OutOfScope)));
+        assert!(matches!(&elsewhere, GatewayError::Vault { status: 403, .. }), "{elsewhere:?}");
+        assert_eq!(elsewhere.to_string(), "that secret is not scoped to this node");
+    }
+
+    #[test]
+    fn without_a_reason_the_call_still_says_the_secret_is_not_set() {
+        let err = refused_call(Refusing(None));
+        assert!(matches!(&err, GatewayError::Auth(_)), "{err:?}");
+        assert!(err.to_string().contains("secret `CLAUDE_KEY` is not set"), "{err}");
+    }
+
     #[test]
     fn model_names_with_effort_pins() {
         let r = |s: &str| ModelRef::parse(s).unwrap();
@@ -562,6 +768,45 @@ mod tests {
         assert_eq!(r("vertex/claude-sonnet-4-5@20250929@max").effort.as_deref(), Some("max"));
         for bad in ["gpt-5", "openai/", "/gpt-5", "openai/@low"] {
             assert!(matches!(ModelRef::parse(bad), Err(GatewayError::BadModelName(_))), "{bad}");
+        }
+    }
+
+    #[test]
+    fn nested_model_ids_split_on_the_first_slash() {
+        let r = |s: &str| ModelRef::parse(s).unwrap();
+        let plain = r("openrouter/anthropic/claude-x");
+        assert_eq!((plain.provider.as_str(), plain.model.as_str(), plain.effort.as_deref()), ("openrouter", "anthropic/claude-x", None));
+        let free = r("openrouter/meta-llama/llama-3.3-70b-instruct:free");
+        assert_eq!(free.model, "meta-llama/llama-3.3-70b-instruct:free");
+        let zen = r("opencode/claude-x@high");
+        assert_eq!((zen.provider.as_str(), zen.model.as_str(), zen.effort.as_deref()), ("opencode", "claude-x", Some("high")));
+        let pinned = r("openrouter/anthropic/claude-x@xhigh");
+        assert_eq!((pinned.model.as_str(), pinned.effort.as_deref()), ("anthropic/claude-x", Some("xhigh")));
+        // Not an effort: the `@` stays part of the model.
+        let bogus = r("openrouter/vendor/model@bogus");
+        assert_eq!((bogus.model.as_str(), bogus.effort.is_none()), ("vendor/model@bogus", true));
+        // The base name round-trips the nested id, and the pin survives Display.
+        assert_eq!(pinned.base_name(), "openrouter/anthropic/claude-x");
+        assert_eq!(free.base_name(), "openrouter/meta-llama/llama-3.3-70b-instruct:free");
+        assert_eq!(ModelRef::parse(&pinned.base_name()).unwrap().base_name(), pinned.base_name());
+        assert_eq!(pinned.to_string(), "openrouter/anthropic/claude-x@xhigh");
+    }
+
+    #[test]
+    fn models_cache_secs_keeps_the_live_listing_for_that_long() {
+        use testutil::{FakeServer, Reply, gateway, provider};
+        let listing = || Reply::json(200, &json!({"data": [{"id": "m1"}]}));
+        for (cache, upstream_calls) in [(Some(3600), 1), (None, 2)] {
+            let server = FakeServer::start(vec![listing(), listing()]);
+            let mut p = provider("o", ProviderKind::OpenAiCompatible, &server, Auth::None);
+            if let Some(secs) = cache {
+                p.options = json!({"models_cache_secs": secs});
+            }
+            let gw = gateway(vec![p]);
+            let first = gw.list_models("o").unwrap();
+            let second = gw.list_models("o").unwrap();
+            assert_eq!(first, second);
+            assert_eq!(server.requests().len(), upstream_calls, "models_cache_secs {cache:?}");
         }
     }
 

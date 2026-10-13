@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "crystal",
+  "view": "part",
+  "size": [0.672, 0.168, 0.525],
+  "parts": [
+    {"id": "lid", "geo": {"type": "rbox", "w": 0.546, "h": 0.147, "d": 0.525, "r": 0.042}, "at": [0.0, 0.0995, 0.0], "mat": "nickel", "outline": false, "label": {"text": "25M", "size": 0.4, "color": "#1f2328"}},
+    {"id": "terminal", "geo": {"type": "box", "w": 0.126, "h": 0.021, "d": 0.462}, "at": [0.273, 0.0105, 0.0], "mat": "gold", "outline": false, "repeat": {"count": 2, "step": [-0.546, 0.0, 0.0]}, "detail": 2}
+  ]
+}

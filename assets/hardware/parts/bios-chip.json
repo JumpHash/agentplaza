@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "kind": "bios-chip",
+  "view": "part",
+  "size": [1.029, 0.4095, 1.113],
+  "parts": [
+    {"id": "body", "geo": {"type": "box", "w": 1.029, "h": 0.3675, "d": 0.819}, "at": [0.0, 0.2257, 0.0], "mat": "ic", "label": {"text": "BIOS", "size": 0.5, "color": "#e8eadf"}},
+    {"id": "leadA", "geo": {"type": "box", "w": 0.084, "h": 0.021, "d": 0.147}, "at": [-0.4001, 0.0315, -0.483], "mat": "solder", "outline": false, "repeat": {"count": 4, "step": [0.2667, 0.0, 0.0]}, "detail": 2},
+    {"id": "leadB", "geo": {"type": "box", "w": 0.084, "h": 0.021, "d": 0.147}, "at": [-0.4001, 0.0315, 0.483], "mat": "solder", "outline": false, "repeat": {"count": 4, "step": [0.2667, 0.0, 0.0]}, "detail": 2}
+  ]
+}
