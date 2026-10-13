@@ -60,8 +60,13 @@ pub fn send_with(
 fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
     let (status, headers) = read_head(&mut reader)?;
     let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
-    if header("transfer-encoding").is_some() {
-        return Err(invalid("the answer is chunked".to_string()));
+    match header("transfer-encoding") {
+        Some(te) if te.eq_ignore_ascii_case("chunked") => {
+            let body = read_chunked(&mut reader)?;
+            return Ok(reply_of(status, &headers, body));
+        }
+        Some(te) => return Err(invalid(format!("the answer's transfer encoding {te:?}"))),
+        None => {}
     }
     // Without a Content-Length the body runs to the close.
     let length = header("content-length")
@@ -78,13 +83,52 @@ fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
     if body.len() > MAX_BODY || length.is_some_and(|length| length != body.len()) {
         return Err(invalid(format!("the answer's body is {} bytes, not {length:?}", body.len())));
     }
+    Ok(reply_of(status, &headers, body))
+}
+
+/// The reply of a head and its body.
+fn reply_of(status: u16, headers: &[(String, String)], body: Vec<u8>) -> Reply {
+    let header = |name: &str| headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
     // Printable ASCII only: a proxy writes this into its own response head.
     let content_type = match header("content-type") {
         Some(value) if !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) => value,
         _ => "application/octet-stream",
     };
-    let content_type = content_type.to_string();
-    Ok(Reply { status, content_type, body, headers })
+    Reply { status, content_type: content_type.to_string(), body, headers: headers.to_vec() }
+}
+
+/// A chunked body (RFC 9112 7.1): hex-sized chunks (extensions ignored) up to the zero chunk, then the trailers, which
+/// are read and dropped. The whole body is held to MAX_BODY.
+fn read_chunked(reader: &mut impl BufRead) -> io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        reader.by_ref().take(MAX_HEAD as u64).read_line(&mut line)?;
+        let size = line.trim_end().split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size, 16).map_err(|_| invalid(format!("chunk size {size:?}")))?;
+        if size == 0 {
+            break;
+        }
+        if body.len() + size > MAX_BODY {
+            return Err(invalid(format!("the answer's body is over {MAX_BODY} bytes")));
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..])?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf)?;
+        if &crlf != b"\r\n" {
+            return Err(invalid("a chunk does not end in CRLF".to_string()));
+        }
+    }
+    // The trailers, to the empty line (or the close).
+    loop {
+        line.clear();
+        if reader.by_ref().take(MAX_HEAD as u64).read_line(&mut line)? == 0 || line.trim_end().is_empty() {
+            return Ok(body);
+        }
+    }
 }
 
 /// `GET path`, answered with JSON.
@@ -301,6 +345,15 @@ impl<R: Read + Socket> Read for Timed<R> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_chunked_answer_is_read_whole() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n4;x=1\r\n{\"a\"\r\n3\r\n:1}\r\n0\r\nX-Trailer: y\r\n\r\n";
+        let reply = read_reply(std::io::BufReader::new(&raw[..])).expect("a chunked answer");
+        assert_eq!((reply.status, reply.body.as_slice()), (200, &b"{\"a\":1}"[..]));
+        let bad = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n";
+        assert!(read_reply(std::io::BufReader::new(&bad[..])).is_err());
+    }
+
     use super::*;
     use crate::{Response, Router, Server};
     use std::net::TcpListener;
@@ -458,7 +511,7 @@ pub struct Target {
 
 /// One request to `target.base + path`, over plain TCP (http) or TLS (https: pinned for the hub,
 /// CA-verified for a public host; see [`Target`]). Same reply
-/// handling as [`send_with`] (no chunked bodies; Content-Length or read to close).
+/// handling as [`send_with`] (Content-Length, chunked, or read to close).
 pub fn request(target: &Target, method: &str, path: &str, body: Option<&[u8]>, timeout: Duration) -> io::Result<Reply> {
     let deadline = Instant::now() + timeout;
     let (tls, host, port) = split_base(&target.base)?;

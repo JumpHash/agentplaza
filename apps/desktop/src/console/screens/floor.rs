@@ -209,7 +209,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Fleet(res) => {
             state.fleet_asking = false;
             match res.and_then(|v| serde_json::from_value::<FleetResponse>(v).map_err(|e| e.to_string())) {
-                Ok(data) => state.apply_fleet(data),
+                Ok(data) => {
+                    state.apply_fleet(data);
+                    // `APZ_ENTER=<machine id>` (a capture hook, as `APZ_PICK`): the first fleet enters that machine's board.
+                    static ENTERED: std::sync::Once = std::sync::Once::new();
+                    if let Some(id) = std::env::var("APZ_ENTER").ok().filter(|id| !id.trim().is_empty()) {
+                        ENTERED.call_once(|| state.enter(id));
+                    }
+                }
                 Err(e) => state.fleet_failed(e),
             }
         }
