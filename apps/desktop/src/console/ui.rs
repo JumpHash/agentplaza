@@ -7,7 +7,7 @@ use iced::widget::{button, column, container, rich_text, row, scrollable, span, 
 use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Theme};
 
 pub use crate::theme::{INK, INK_2, INK_3, PAPER, RULE, RULE_FAINT, SHEET, SIGNAL};
-use crate::theme::{CRIT, HOVER, INFO, MONO, OK, ON_SIGNAL, SERIF, SIGNAL_INK, WARN};
+use crate::theme::{MONO, SERIF};
 
 /// Martian Mono at the web's chrome weights: 500 for badges, 600 for card heads and tabs, 700 for
 /// empty-state titles. The console embeds Regular, Medium and Bold, so 600 renders as Bold.
@@ -31,12 +31,12 @@ pub enum Tone {
 impl Tone {
     pub fn color(self) -> Color {
         match self {
-            Tone::Muted => INK_3,
-            Tone::Info => INFO,
-            Tone::Ok => OK,
-            Tone::Warn => WARN,
-            Tone::Danger => CRIT,
-            Tone::Signal => SIGNAL,
+            Tone::Muted => crate::theme::palette().ink_3,
+            Tone::Info => crate::theme::palette().info,
+            Tone::Ok => crate::theme::palette().ok,
+            Tone::Warn => crate::theme::palette().warn,
+            Tone::Danger => crate::theme::palette().crit,
+            Tone::Signal => crate::theme::palette().signal,
         }
     }
 }
@@ -48,17 +48,17 @@ pub fn mono<'a>(content: impl text::IntoFragment<'a>, size: f32, color: Color) -
 
 /// Serif prose.
 pub fn prose<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).font(SERIF).size(15.0).color(INK)
+    text(content).font(SERIF).size(15.0).color(crate::theme::palette().ink)
 }
 
 /// Faint serif, for secondary lines.
 pub fn faint<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).font(SERIF).size(13.0).color(INK_3)
+    text(content).font(SERIF).size(13.0).color(crate::theme::palette().ink_3)
 }
 
 /// A small uppercase mono label (10.5px, as the web's `.stat .label` and `.kv dt`).
 pub fn label<'a>(content: &str) -> text::Text<'a> {
-    text(content.to_uppercase()).font(MONO).size(10.5).color(INK_3)
+    text(content.to_uppercase()).font(MONO).size(10.5).color(crate::theme::palette().ink_3)
 }
 
 /// A lucide icon at `size`, tinted `color`.
@@ -105,8 +105,8 @@ pub fn sheet<'a, M: 'a>(head: Element<'a, M>, body: Element<'a, M>) -> Element<'
         .padding(Padding { top: 0.0, right: 28.0, bottom: 28.0, left: 28.0 })
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(SHEET.into()),
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -123,9 +123,9 @@ pub fn view_head_with_intro<'a, M: 'a>(title: &str, intro: &str, actions: Vec<El
 }
 
 fn head_line<'a, M: 'a>(title: &str, intro: Option<&str>, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
-    let mut heading = column![text(title.to_uppercase()).font(MONO).size(28.0).color(INK)].spacing(6);
+    let mut heading = column![text(title.to_uppercase()).font(MONO).size(28.0).color(crate::theme::palette().ink)].spacing(6);
     if let Some(intro) = intro {
-        heading = heading.push(text(intro.to_string()).font(SERIF).size(14.0).color(INK_2));
+        heading = heading.push(text(intro.to_string()).font(SERIF).size(14.0).color(crate::theme::palette().ink_2));
     }
     let mut line = row![heading].align_y(Alignment::End).spacing(16);
     line = line.push(Space::new().width(Length::Fill));
@@ -134,7 +134,7 @@ fn head_line<'a, M: 'a>(title: &str, intro: Option<&str>, actions: Vec<Element<'
     }
     column![
         container(line).padding(Padding { top: 24.0, right: 0.0, bottom: 14.0, left: 0.0 }),
-        container(Space::new().height(2.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(INK.into()), ..Default::default() }),
+        container(Space::new().height(2.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().ink.into()), ..Default::default() }),
     ]
     .into()
 }
@@ -142,17 +142,17 @@ fn head_line<'a, M: 'a>(title: &str, intro: Option<&str>, actions: Vec<Element<'
 /// A card: a ruled section of the sheet. Its mono head (600, 11.5px, ink, caps) sits over a rule;
 /// the body is padded 16, as the web's `.card-head` and `.card-body`.
 pub fn card<'a, M: 'a>(title: &str, body: Element<'a, M>) -> Element<'a, M> {
-    let head = container(text(title.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(INK))
+    let head = container(text(title.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink))
         .padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 })
         .width(Length::Fill);
     let under_head = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     });
     container(column![head, under_head, container(body).padding(16).width(Length::Fill)])
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -162,12 +162,12 @@ pub fn card<'a, M: 'a>(title: &str, body: Element<'a, M>) -> Element<'a, M> {
 /// ok, danger and signal are filled squares; warn, info and neutral are hollow.
 fn badge_marker(tone: Tone) -> (Color, Color, bool) {
     match tone {
-        Tone::Muted => (INK_3, INK_2, false),
-        Tone::Info => (INFO, INFO, false),
-        Tone::Ok => (OK, OK, true),
-        Tone::Warn => (WARN, WARN, false),
-        Tone::Danger => (CRIT, CRIT, true),
-        Tone::Signal => (SIGNAL, SIGNAL_INK, true),
+        Tone::Muted => (crate::theme::palette().ink_3, crate::theme::palette().ink_2, false),
+        Tone::Info => (crate::theme::palette().info, crate::theme::palette().info, false),
+        Tone::Ok => (crate::theme::palette().ok, crate::theme::palette().ok, true),
+        Tone::Warn => (crate::theme::palette().warn, crate::theme::palette().warn, false),
+        Tone::Danger => (crate::theme::palette().crit, crate::theme::palette().crit, true),
+        Tone::Signal => (crate::theme::palette().signal, crate::theme::palette().signal_ink, true),
     }
 }
 
@@ -222,9 +222,9 @@ pub fn btn_sm<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind
 /// The button both sizes share; `size` sets the icon, the label and the padding.
 fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind: Kind, on_press: Option<M>, size: BtnSize) -> Element<'a, M> {
     let fg = match kind {
-        Kind::Primary => ON_SIGNAL,
+        Kind::Primary => crate::theme::palette().on_signal,
         Kind::Danger => Color::WHITE,
-        _ => INK,
+        _ => crate::theme::palette().ink,
     };
     let mut inner = row![].spacing(6).align_y(Alignment::Center);
     if let Some(name) = icon_name {
@@ -235,10 +235,10 @@ fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind:
     let b = button(inner).padding(size.padding).style(move |_: &Theme, status: button::Status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let (bg, border) = match kind {
-            Kind::Primary => (Some(if hovered { SIGNAL_INK } else { SIGNAL }), SIGNAL),
-            Kind::Danger => (Some(CRIT), INK),
-            Kind::Secondary => (if hovered { Some(HOVER) } else { None }, INK),
-            Kind::Ghost => (if hovered { Some(HOVER) } else { None }, Color::TRANSPARENT),
+            Kind::Primary => (Some(if hovered { crate::theme::palette().signal_ink } else { crate::theme::palette().signal }), crate::theme::palette().signal),
+            Kind::Danger => (Some(crate::theme::palette().crit), crate::theme::palette().ink),
+            Kind::Secondary => (if hovered { Some(crate::theme::palette().hover) } else { None }, crate::theme::palette().ink),
+            Kind::Ghost => (if hovered { Some(crate::theme::palette().hover) } else { None }, Color::TRANSPARENT),
         };
         // A primary goes white on hover, over the signal-ink fill; otherwise it keeps the dark ink.
         let text_color = match kind {
@@ -268,7 +268,7 @@ pub fn link<'a, M: Clone + 'a>(label_text: &str, msg: M, mono: bool) -> Element<
         text(label_text.to_string()).font(SERIF).size(14.0)
     };
     let underline = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(INK_3.into()),
+        background: Some(crate::theme::palette().ink_3.into()),
         ..Default::default()
     });
     // The text carries no colour of its own: it takes the button's, so the hover signal reaches it.
@@ -276,7 +276,7 @@ pub fn link<'a, M: Clone + 'a>(label_text: &str, msg: M, mono: bool) -> Element<
         .padding(0.0)
         .style(|_: &Theme, status: button::Status| button::Style {
             background: None,
-            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { SIGNAL_INK } else { INK },
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { crate::theme::palette().signal_ink } else { crate::theme::palette().ink },
             border: Border::default(),
             ..Default::default()
         })
@@ -298,7 +298,7 @@ where
     for (i, (value, name)) in options.iter().enumerate() {
         if i > 0 {
             strip = strip.push(container(Space::new()).width(Length::Fixed(1.0)).height(Length::Fixed(SEG_HEIGHT)).style(|_: &Theme| {
-                container::Style { background: Some(RULE.into()), ..Default::default() }
+                container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() }
             }));
         }
         let on = *value == selected;
@@ -308,11 +308,11 @@ where
             .style(move |_: &Theme, status: button::Status| {
                 let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
                 let (background, text_color) = if on {
-                    (Some(INK), PAPER)
+                    (Some(crate::theme::palette().ink), crate::theme::palette().paper)
                 } else if hovered {
-                    (Some(HOVER), INK)
+                    (Some(crate::theme::palette().hover), crate::theme::palette().ink)
                 } else {
-                    (None, INK_2)
+                    (None, crate::theme::palette().ink_2)
                 };
                 button::Style {
                     background: background.map(Into::into),
@@ -326,7 +326,7 @@ where
     }
     container(strip)
         .style(|_: &Theme| container::Style {
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -343,7 +343,7 @@ where
     let mut strip = row![].spacing(22);
     for (value, name) in options.iter() {
         let on = *value == selected;
-        let bar = if on { SIGNAL } else { Color::TRANSPARENT };
+        let bar = if on { crate::theme::palette().signal } else { Color::TRANSPARENT };
         // The text carries no colour of its own: it takes the button's state colour.
         let body = column![
             container(text(name.to_uppercase()).font(MONO_SEMIBOLD).size(11.5)).padding(Padding {
@@ -363,7 +363,7 @@ where
                 let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
                 button::Style {
                     background: None,
-                    text_color: if on || hovered { INK } else { INK_3 },
+                    text_color: if on || hovered { crate::theme::palette().ink } else { crate::theme::palette().ink_3 },
                     border: Border::default(),
                     ..Default::default()
                 }
@@ -374,7 +374,7 @@ where
     column![
         strip,
         container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-            background: Some(RULE.into()),
+            background: Some(crate::theme::palette().rule.into()),
             ..Default::default()
         }),
     ]
@@ -385,9 +385,9 @@ where
 pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, M> {
     container(
         column![
-            icon(icon_name, 16.0, INK_3),
-            text(title.to_string()).font(MONO_BOLD).size(13.0).color(INK),
-            text(sentence.to_string()).font(SERIF).size(14.0).color(INK_3),
+            icon(icon_name, 16.0, crate::theme::palette().ink_3),
+            text(title.to_string()).font(MONO_BOLD).size(13.0).color(crate::theme::palette().ink),
+            text(sentence.to_string()).font(SERIF).size(14.0).color(crate::theme::palette().ink_3),
         ]
         .spacing(10)
         .align_x(Alignment::Center),
@@ -400,12 +400,12 @@ pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element
 
 /// An inline error line: serif italic in crit, as the web's `.error-text`.
 pub fn error_line<'a, M: 'a>(message: &str) -> Element<'a, M> {
-    text(message.to_string()).font(SERIF_ITALIC).size(14.0).color(CRIT).into()
+    text(message.to_string()).font(SERIF_ITALIC).size(14.0).color(crate::theme::palette().crit).into()
 }
 
 /// A faint "Loading…" line.
 pub fn loading<'a, M: 'a>() -> Element<'a, M> {
-    mono("Loading…", 12.0, INK_3).into()
+    mono("Loading…", 12.0, crate::theme::palette().ink_3).into()
 }
 
 /// Agent-written markdown in the design language: mono headings (a hairline under the first),
@@ -630,29 +630,29 @@ fn block_view<'a, M: 'a>(block: Block) -> Element<'a, M> {
                 2 => 15.0,
                 _ => 13.0,
             };
-            let head = mono(title, size, INK);
+            let head = mono(title, size, crate::theme::palette().ink);
             if level == 1 {
                 column![head, hairline()].spacing(8).width(Length::Fill).into()
             } else {
                 head.into()
             }
         }
-        Block::Para(body) => rich_para(inline(&body), SERIF, 15.0, INK),
+        Block::Para(body) => rich_para(inline(&body), SERIF, 15.0, crate::theme::palette().ink),
         Block::List(items) => column(items.into_iter().map(item_view).collect::<Vec<_>>()).spacing(4).width(Length::Fill).into(),
         Block::Code(code) => container(
-            scrollable(text(code).font(MONO).size(12.5).color(INK)).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::default())),
+            scrollable(text(code).font(MONO).size(12.5).color(crate::theme::palette().ink)).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::default())),
         )
         .padding(10)
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(SHEET.into()),
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into(),
         Block::Quote(inner) => {
             let bar = container(Space::new()).width(Length::Fixed(3.0)).height(Length::Fill).style(|_: &Theme| container::Style {
-                background: Some(INK_3.into()),
+                background: Some(crate::theme::palette().ink_3.into()),
                 ..Default::default()
             });
             row![bar, blocks_view(inner)].spacing(14).width(Length::Fill).into()
@@ -672,8 +672,8 @@ fn item_view<'a, M: 'a>(item: Item) -> Element<'a, M> {
     let indent = if item.depth > 0 { 24.0 } else { 0.0 };
     row![
         Space::new().width(Length::Fixed(indent)),
-        mono(marker, 13.0, INK_2).width(Length::Fixed(22.0)),
-        rich_para(inline(&item.text), SERIF, 15.0, INK),
+        mono(marker, 13.0, crate::theme::palette().ink_2).width(Length::Fixed(22.0)),
+        rich_para(inline(&item.text), SERIF, 15.0, crate::theme::palette().ink),
     ]
     .spacing(6)
     .width(Length::Fill)
@@ -685,12 +685,12 @@ fn table_row<'a, M: 'a>(cells: &[String], cols: usize, header: bool) -> Element<
     let row_cells = (0..cols)
         .map(|k| -> Element<'a, M> {
             let cell = cells.get(k).map_or("", String::as_str);
-            let content = if header { rich_para(inline(cell), MONO, 12.0, INK) } else { rich_para(inline(cell), SERIF, 14.0, INK) };
+            let content = if header { rich_para(inline(cell), MONO, 12.0, crate::theme::palette().ink) } else { rich_para(inline(cell), SERIF, 14.0, crate::theme::palette().ink) };
             container(content)
                 .padding([5, 8])
                 .width(Length::FillPortion(1))
                 .style(|_: &Theme| container::Style {
-                    border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+                    border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
                     ..Default::default()
                 })
                 .into()
@@ -710,19 +710,19 @@ fn part_span<'a>(part: Inline, base: Font) -> text::Span<'a> {
         Inline::Text(s) => span(s),
         Inline::Bold(s) => span(s).font(Font { weight: iced::font::Weight::Bold, ..base }),
         Inline::Italic(s) => span(s).font(Font { style: iced::font::Style::Italic, ..base }),
-        Inline::Code(s) => span(s).font(MONO).background(RULE_FAINT),
-        Inline::Link(label) => span(label).color(SIGNAL).underline(true),
+        Inline::Code(s) => span(s).font(MONO).background(crate::theme::palette().rule_faint),
+        Inline::Link(label) => span(label).color(crate::theme::palette().signal).underline(true),
     }
 }
 
 /// The page background.
 pub fn paper(_: &Theme) -> container::Style {
-    container::Style { background: Some(PAPER.into()), ..Default::default() }
+    container::Style { background: Some(crate::theme::palette().paper.into()), ..Default::default() }
 }
 
 /// A hairline rule.
 pub fn hairline<'a, M: 'a>() -> Element<'a, M> {
-    container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }).into()
+    container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }).into()
 }
 
 /// The sizes a button is drawn at.
@@ -791,9 +791,9 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
 /// A transcript disclosure: a marker and a mono label in a tone, that opens and shuts its body.
 pub fn disclosure<'a, M: Clone + 'a>(label: String, tone: Color, opened: bool, msg: M) -> Element<'a, M> {
     let marker = if opened { "▾" } else { "▸" };
-    button(row![mono(marker, 11.0, INK_3), mono(label, 12.0, tone)].spacing(6))
+    button(row![mono(marker, 11.0, crate::theme::palette().ink_3), mono(label, 12.0, tone)].spacing(6))
         .padding(0)
-        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: INK, border: Border::default(), ..Default::default() })
+        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: crate::theme::palette().ink, border: Border::default(), ..Default::default() })
         .on_press(msg)
         .into()
 }
@@ -801,12 +801,12 @@ pub fn disclosure<'a, M: Clone + 'a>(label: String, tone: Color, opened: bool, m
 /// A tool call's name as a chip: bordered, mono, opening its input.
 pub fn chip<'a, M: Clone + 'a>(label: String, opened: bool, msg: M) -> Element<'a, M> {
     let marker = if opened { "▾" } else { "▸" };
-    button(row![mono(marker, 10.0, INK_3), mono(label, 11.0, INK_2)].spacing(6))
+    button(row![mono(marker, 10.0, crate::theme::palette().ink_3), mono(label, 11.0, crate::theme::palette().ink_2)].spacing(6))
         .padding([2, 8])
         .style(|_: &Theme, _: button::Status| button::Style {
-            background: Some(HOVER.into()),
-            text_color: INK_2,
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().hover.into()),
+            text_color: crate::theme::palette().ink_2,
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .on_press(msg)
@@ -873,8 +873,8 @@ mod tests {
 
     #[test]
     fn info_is_the_night_info_blue() {
-        assert_eq!(INFO, Color::from_rgb8(0x6c, 0xc8, 0xff));
-        assert_eq!(Tone::Info.color(), INFO);
+        assert_eq!(crate::theme::palette().info, Color::from_rgb8(0x6c, 0xc8, 0xff));
+        assert_eq!(Tone::Info.color(), crate::theme::palette().info);
     }
 
     #[test]
@@ -882,7 +882,7 @@ mod tests {
         // Filled: ok, danger, signal. Hollow: warn, info, neutral.
         assert!(badge_marker(Tone::Ok).2 && badge_marker(Tone::Danger).2 && badge_marker(Tone::Signal).2);
         assert!(!badge_marker(Tone::Warn).2 && !badge_marker(Tone::Info).2 && !badge_marker(Tone::Muted).2);
-        assert_eq!(badge_marker(Tone::Muted).1, INK_2);
+        assert_eq!(badge_marker(Tone::Muted).1, crate::theme::palette().ink_2);
     }
 
     #[test]

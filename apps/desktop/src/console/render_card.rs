@@ -16,7 +16,6 @@ use crate::console::floor3d::hardware::{self, Built, Model, Params, Status};
 use crate::console::floor3d::render;
 use crate::console::floor3d::robot::{robot_palette, Robot, RobotPose, RobotState};
 use crate::console::floor3d::scene::{self, Camera, Draw, DrawKind, Filter, Frame, Geometry, Material, Obj, PointLightDraw, Shading, Texture, World};
-use crate::theme::PAPER;
 
 /// The machine cards' slots (`slot` wraps at this count).
 pub(crate) const CARD_SLOTS: usize = 8;
@@ -140,7 +139,7 @@ fn card_frame(built: &Built, model: &Model, statics: (u64, &Arc<Vec<Draw>>, &[Po
     lights.extend_from_slice(static_lights);
     let camera = fit_camera(model, aspect, &draws, statics.as_slice());
     let mut world = World::default();
-    world.background = scene::Color::srgb(PAPER.r, PAPER.g, PAPER.b);
+    world.background = scene::Color::srgb(crate::theme::palette().paper.r, crate::theme::palette().paper.g, crate::theme::palette().paper.b);
     world.fog_near = 1.0e6;
     world.fog_far = 1.0e6 + 1.0;
     Frame {

@@ -15,6 +15,7 @@ pub mod floor_engine;
 pub mod chart;
 pub mod client;
 pub mod events;
+pub mod hubs;
 pub mod icons;
 pub mod lab_api;
 pub mod picker;
@@ -59,6 +60,7 @@ pub enum Msg {
 }
 
 fn boot() -> (Console, Task<Msg>) {
+    crate::theme::choose_saved(boot::saved_setting("theme").as_ref().and_then(|value| value.as_str()));
     let (boot, task) = boot::init();
     if let Some(point) = snapshot_hover() {
         chart::set_snapshot_hover(point);
@@ -67,7 +69,10 @@ fn boot() -> (Console, Task<Msg>) {
     let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default(), pick };
     // For development and captures: `APZ_CONNECT=<hub url>` (and `APZ_TOKEN`) skips the chooser,
     // `APZ_SCREEN=<screen label>` opens that screen.
-    let info = iced::system::information().map(Msg::System);
+    let info = Task::batch([
+        iced::system::information().map(Msg::System),
+        iced::system::theme().map(|mode| Msg::Shell(shell::Msg::Appearance(mode))),
+    ]);
     let Ok(url) = std::env::var("APZ_CONNECT") else {
         return (console, Task::batch([task.map(Msg::Boot), info]));
     };
@@ -239,6 +244,7 @@ fn subscription(console: &Console) -> Subscription<Msg> {
         snapshot,
         iced::time::every(std::time::Duration::from_secs(4)).map(|_| Msg::Tick),
         shell::subscription(&console.shell).map(Msg::Shell),
+        iced::system::theme_changes().map(|mode| Msg::Shell(shell::Msg::Appearance(mode))),
         screens::subscription(&console.screens, &console.shell.current, ctx).map(Msg::Screen),
     ])
 }

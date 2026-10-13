@@ -256,10 +256,10 @@ pub fn view<'a, M: Clone + 'a>(state: &'a Picker, choices: &'a [Choice], current
     if let Some(c) = cur {
         trigger_row = trigger_row.push(ui::brand_logo(&c.provider, 16.0));
     }
-    let (shown, color) = if current.is_empty() { ("Choose a model".to_string(), ui::INK_3) } else { (current.to_string(), ui::INK) };
+    let (shown, color) = if current.is_empty() { ("Choose a model".to_string(), crate::theme::palette().ink_3) } else { (current.to_string(), crate::theme::palette().ink) };
     trigger_row = trigger_row.push(ui::mono(shown, 12.0, color));
     trigger_row = trigger_row.push(Space::new().width(Length::Fill));
-    trigger_row = trigger_row.push(ui::icon("chevron-down", 14.0, ui::INK_3));
+    trigger_row = trigger_row.push(ui::icon("chevron-down", 14.0, crate::theme::palette().ink_3));
     let trigger = button(trigger_row).on_press(wrap(PickerMsg::Toggle)).width(Length::Fill).padding([6, 10]).style(plain);
 
     let mut head = row![trigger].spacing(8).align_y(Alignment::Center);
@@ -304,8 +304,8 @@ pub fn view<'a, M: Clone + 'a>(state: &'a Picker, choices: &'a [Choice], current
             .padding(8)
             .width(Length::Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(ui::SHEET.into()),
-                border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+                background: Some(crate::theme::palette().sheet.into()),
+                border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             });
         col = col.push(panel);
@@ -319,7 +319,7 @@ fn model_row<'a, M: Clone + 'a>(c: &'a Choice, current: &str, wrap: fn(PickerMsg
     let is_current = c.id == current;
     let name = display_name(c);
     let model = split_id(&c.id).1;
-    let mut line = row![ui::mono(name.to_string(), 12.0, ui::INK)].spacing(8).align_y(Alignment::Center);
+    let mut line = row![ui::mono(name.to_string(), 12.0, crate::theme::palette().ink)].spacing(8).align_y(Alignment::Center);
     if model != name {
         line = line.push(ui::faint(model.to_string()));
     }
@@ -337,9 +337,9 @@ fn model_row<'a, M: Clone + 'a>(c: &'a Choice, current: &str, wrap: fn(PickerMsg
 fn plain(_: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered);
     button::Style {
-        background: if hovered { Some(ui::RULE_FAINT.into()) } else { None },
-        text_color: ui::INK,
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        background: if hovered { Some(crate::theme::palette().rule_faint.into()) } else { None },
+        text_color: crate::theme::palette().ink,
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }

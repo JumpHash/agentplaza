@@ -16,7 +16,7 @@ use crate::console::client;
 use crate::console::lab_api::{self, ModelView};
 use crate::console::ui::{self, Kind};
 use crate::console::Ctx;
-use crate::theme::{INK, INK_3, MONO, RULE, RULE_FAINT, SIGNAL};
+use crate::theme::{MONO};
 
 /// The error the apid answers for an unknown model id.
 const NO_SUCH_MODEL: &str = "no such model";
@@ -319,10 +319,10 @@ fn shadow_card<'a>(m: &'a ModelView) -> Element<'a, Msg> {
 
 /// A tally tile: its label over the figure, ruled.
 fn tile<'a>(label: &str, figure: String) -> Element<'a, Msg> {
-    container(column![ui::label(label), text(figure).font(MONO).size(16.0).color(INK)].spacing(4))
+    container(column![ui::label(label), text(figure).font(MONO).size(16.0).color(crate::theme::palette().ink)].spacing(4))
         .padding(10)
         .width(Length::FillPortion(1))
-        .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
 
@@ -332,10 +332,10 @@ fn meter<'a>(rate: f64) -> Element<'a, Msg> {
     row![
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion(pct.max(1)))
-            .style(|_: &Theme| container::Style { background: Some(SIGNAL.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() }),
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
     ]
     .into()
 }
@@ -350,7 +350,7 @@ fn grid<'a>(heads: &[&str], rows: Vec<Vec<String>>, none: &str) -> Element<'a, M
     if rows.is_empty() {
         return ui::faint(none.to_string()).into();
     }
-    let head = row(heads.iter().map(|h| cell(text(h.to_uppercase()).font(MONO).size(11.0).color(INK_3))).collect::<Vec<_>>()).spacing(10);
+    let head = row(heads.iter().map(|h| cell(text(h.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3))).collect::<Vec<_>>()).spacing(10);
     let mut lines = column![head].spacing(8);
     for cells in rows {
         lines = lines.push(row(cells.into_iter().map(|c| cell(lab_models::value(c))).collect::<Vec<_>>()).spacing(10));

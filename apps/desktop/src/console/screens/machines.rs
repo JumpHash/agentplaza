@@ -17,7 +17,7 @@ use serde_json::Value;
 use super::Id;
 use crate::console::ui::{Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::console::{client, render_card, ui, Ctx};
-use crate::theme::{MONO, PAPER};
+use crate::theme::{MONO};
 
 /// A machine's row in the topology, and the topology's fleet column.
 const ROW_H: f32 = 56.0;
@@ -638,7 +638,7 @@ impl Pen {
 
     /// A status LED: signal green when the machine runs VMs, paper otherwise.
     fn led(&mut self, cx: f32, cy: f32, active: bool) {
-        let fill = if active { Tone::Ok.color() } else { PAPER };
+        let fill = if active { Tone::Ok.color() } else { crate::theme::palette().paper };
         self.circle(cx, cy, 1.6, Some(fill), 1.0);
     }
 }
@@ -655,11 +655,11 @@ fn gpu_card(p: &mut Pen, riser: f32) {
 /// A 2U rack chassis: two front bays with drive slots, vents and an LED row. Returns its riser's x.
 fn server(p: &mut Pen, active: bool) -> f32 {
     p.rect(8.0, 18.0, 68.0, 44.0, 0.0, Some(SHEET));
-    p.rect(13.0, 23.0, 40.0, 14.0, 0.0, Some(PAPER));
+    p.rect(13.0, 23.0, 40.0, 14.0, 0.0, Some(crate::theme::palette().paper));
     for x in [17.0, 21.0, 25.0] {
         p.line(x, 27.0, x, 33.0, 1.5);
     }
-    p.rect(13.0, 41.0, 40.0, 15.0, 0.0, Some(PAPER));
+    p.rect(13.0, 41.0, 40.0, 15.0, 0.0, Some(crate::theme::palette().paper));
     for y in [45.0, 48.0, 51.0, 54.0] {
         p.line(17.0, y, 49.0, y, 1.0);
         p.line(58.0, y, 73.0, y, 1.0);
@@ -673,17 +673,17 @@ fn server(p: &mut Pen, active: bool) -> f32 {
 /// A tower: a front panel with a drive bay, a power button, LEDs and side vents.
 fn workstation(p: &mut Pen, active: bool) -> f32 {
     p.rect(26.0, 8.0, 42.0, 76.0, 0.0, Some(SHEET));
-    p.poly(&[(68.0, 8.0), (76.0, 3.0), (76.0, 79.0), (68.0, 84.0)], PAPER);
+    p.poly(&[(68.0, 8.0), (76.0, 3.0), (76.0, 79.0), (68.0, 84.0)], crate::theme::palette().paper);
     for y in [30.0, 36.0, 42.0] {
         p.line(70.0, y - 1.25, 75.0, y - 4.4, 1.0);
     }
-    p.rect(32.0, 14.0, 30.0, 18.0, 0.0, Some(PAPER));
+    p.rect(32.0, 14.0, 30.0, 18.0, 0.0, Some(crate::theme::palette().paper));
     p.line(36.0, 22.0, 58.0, 22.0, 1.0);
     p.line(36.0, 26.0, 58.0, 26.0, 1.0);
     for y in [70.0, 73.0, 76.0, 79.0] {
         p.line(34.0, y, 62.0, y, 1.0);
     }
-    p.circle(52.0, 60.0, 3.5, Some(PAPER), 1.5);
+    p.circle(52.0, 60.0, 3.5, Some(crate::theme::palette().paper), 1.5);
     p.led(36.0, 60.0, active);
     p.led(42.0, 60.0, active);
     76.0
@@ -697,16 +697,16 @@ fn edge(p: &mut Pen, active: bool) -> f32 {
         p.circle(x, y, 1.5, None, 1.0);
     }
     p.ink = INK_2;
-    p.rect(30.0, 40.0, 20.0, 20.0, 0.0, Some(PAPER));
+    p.rect(30.0, 40.0, 20.0, 20.0, 0.0, Some(crate::theme::palette().paper));
     p.rect(36.0, 46.0, 8.0, 8.0, 0.0, None);
     for i in 0..10 {
         let x = 52.0 + i as f32 * 2.2;
         p.circle(x, 34.0, 0.9, None, 0.8);
         p.circle(x, 37.0, 0.9, None, 0.8);
     }
-    p.rect(69.0, 48.0, 11.0, 9.0, 0.0, Some(PAPER));
-    p.rect(69.0, 58.0, 11.0, 9.0, 0.0, Some(PAPER));
-    p.rect(54.0, 60.0, 13.0, 10.0, 0.0, Some(PAPER));
+    p.rect(69.0, 48.0, 11.0, 9.0, 0.0, Some(crate::theme::palette().paper));
+    p.rect(69.0, 58.0, 11.0, 9.0, 0.0, Some(crate::theme::palette().paper));
+    p.rect(54.0, 60.0, 13.0, 10.0, 0.0, Some(crate::theme::palette().paper));
     p.led(18.0, 62.0, active);
     p.led(23.0, 62.0, active);
     80.0
@@ -725,7 +725,7 @@ fn mini(p: &mut Pen, active: bool) -> f32 {
 /// A laptop, lid open: a screen with a camera dot, a base wedge with a keyboard line and a light.
 fn laptop(p: &mut Pen, active: bool) -> f32 {
     p.rect(26.0, 14.0, 68.0, 46.0, 4.0, Some(SHEET));
-    p.rect(31.0, 19.0, 58.0, 36.0, 2.0, Some(PAPER));
+    p.rect(31.0, 19.0, 58.0, 36.0, 2.0, Some(crate::theme::palette().paper));
     p.circle(60.0, 16.5, 0.9, None, 0.8);
     p.poly(&[(12.0, 60.0), (108.0, 60.0), (113.0, 70.0), (7.0, 70.0)], SHEET);
     p.line(24.0, 65.0, 96.0, 65.0, 1.0);
@@ -736,8 +736,8 @@ fn laptop(p: &mut Pen, active: bool) -> f32 {
 /// A MacBook: a thin lid with a camera notch and a lit screen, on a slim aluminium base.
 fn macbook(p: &mut Pen, active: bool) -> f32 {
     p.rect(24.0, 14.0, 72.0, 48.0, 6.0, Some(SHEET));
-    p.rect(29.0, 19.0, 62.0, 38.0, 3.0, Some(PAPER));
-    p.rect(55.0, 15.5, 10.0, 2.5, 1.2, Some(PAPER));
+    p.rect(29.0, 19.0, 62.0, 38.0, 3.0, Some(crate::theme::palette().paper));
+    p.rect(55.0, 15.5, 10.0, 2.5, 1.2, Some(crate::theme::palette().paper));
     p.rect(12.0, 62.0, 96.0, 6.0, 3.0, Some(SHEET));
     p.line(44.0, 65.0, 76.0, 65.0, 1.0);
     p.led(104.0, 65.0, active);
@@ -747,7 +747,7 @@ fn macbook(p: &mut Pen, active: bool) -> f32 {
 /// A phone standing upright: a slim body, a screen, a speaker grille and a home bar.
 fn phone(p: &mut Pen, active: bool) -> f32 {
     p.rect(40.0, 8.0, 40.0, 74.0, 7.0, Some(SHEET));
-    p.rect(44.0, 14.0, 32.0, 60.0, 2.0, Some(PAPER));
+    p.rect(44.0, 14.0, 32.0, 60.0, 2.0, Some(crate::theme::palette().paper));
     p.line(55.0, 11.0, 65.0, 11.0, 1.0);
     p.line(54.0, 78.0, 66.0, 78.0, 1.5);
     p.led(72.0, 11.0, active);

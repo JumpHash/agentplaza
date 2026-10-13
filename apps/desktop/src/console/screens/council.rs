@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme::{self, CRIT, INK_3, OK};
+use crate::theme::{self};
 
 /// A motion as the hub reports it (`GET /v1/motions`).
 #[derive(Debug, Clone, Deserialize)]
@@ -290,7 +290,7 @@ fn ago(ms: f64) -> String {
 fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
     let rest = t.seats.saturating_sub(t.yes + t.no + t.abstain);
     let mut bar = row![].width(Length::Fill).height(Length::Fixed(8.0));
-    for (n, colour) in [(t.yes, OK), (t.no, CRIT), (t.abstain, INK_3), (rest, ui::RULE_FAINT)] {
+    for (n, colour) in [(t.yes, crate::theme::palette().ok), (t.no, crate::theme::palette().crit), (t.abstain, crate::theme::palette().ink_3), (rest, crate::theme::palette().rule_faint)] {
         if n > 0 {
             bar = bar.push(
                 container(Space::new())
@@ -300,7 +300,7 @@ fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
             );
         }
     }
-    container(bar).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(ui::RULE_FAINT.into()), ..Default::default() }).into()
+    container(bar).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }).into()
 }
 
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
@@ -376,6 +376,6 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
         container(stack).padding(16).width(Length::Fill),
     ])
     .width(Length::Fill)
-    .style(ui::frame(None, ui::RULE))
+    .style(ui::frame(None, crate::theme::palette().rule))
     .into()
 }

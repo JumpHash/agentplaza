@@ -13,7 +13,6 @@ use serde_json::{json, Value};
 use super::Id;
 use crate::console::services::{self, Mode, NodeStatus};
 use crate::console::{client, ui, Ctx};
-use crate::theme::WARN;
 
 /// The hub's own node: it is not drained or revoked from here.
 const HUB_NODE: &str = "n0";
@@ -557,9 +556,9 @@ fn node_row<'a>(n: &'a NodeView) -> Element<'a, Msg> {
     cells(vec![
         (3, column![ui::link(n.name.as_str(), Msg::Select(n.id.clone()), false), ui::faint(n.id.as_str())].spacing(2).into()),
         (2, ui::badge(state, tone)),
-        (2, ui::mono(if n.address.is_empty() { "—" } else { n.address.as_str() }, 12.0, ui::INK).into()),
-        (1, ui::mono(n.agents.to_string(), 12.0, ui::INK).into()),
-        (1, ui::mono(cids(n), 12.0, ui::INK).into()),
+        (2, ui::mono(if n.address.is_empty() { "—" } else { n.address.as_str() }, 12.0, crate::theme::palette().ink).into()),
+        (1, ui::mono(n.agents.to_string(), 12.0, crate::theme::palette().ink).into()),
+        (1, ui::mono(cids(n), 12.0, crate::theme::palette().ink).into()),
         (3, ui::faint(machine_text(&n.machine)).into()),
         (2, ui::faint(ago(n.last_seen_ms)).into()),
         (3, node_actions(n)),
@@ -622,10 +621,10 @@ fn code_row<'a>(c: &'a JoinCode) -> Element<'a, Msg> {
         Space::new().width(Length::Fill).into()
     };
     cells(vec![
-        (3, ui::mono(c.label.as_str(), 13.0, ui::INK).into()),
-        (2, ui::mono(c.id.as_str(), 11.0, ui::INK_3).into()),
+        (3, ui::mono(c.label.as_str(), 13.0, crate::theme::palette().ink).into()),
+        (2, ui::mono(c.id.as_str(), 11.0, crate::theme::palette().ink_3).into()),
         (2, ui::faint(ago(c.created_ms)).into()),
-        (2, ui::mono(expires, 12.0, ui::INK).into()),
+        (2, ui::mono(expires, 12.0, crate::theme::palette().ink).into()),
         (3, state_cell),
         (1, action),
     ])
@@ -638,13 +637,13 @@ fn hub_view<'a>(hub: &'a Load<HubIdentity>) -> Element<'a, Msg> {
         Load::Failed => ui::empty("alert", "Could not load this hub.", ""),
         Load::Ready(id) => {
             let fingerprint: Element<'a, Msg> = match &id.fingerprint {
-                Some(fp) => ui::mono(fp.as_str(), 11.0, ui::INK).into(),
+                Some(fp) => ui::mono(fp.as_str(), 11.0, crate::theme::palette().ink).into(),
                 None => ui::faint("no TLS (loopback only)").into(),
             };
             column![
-                fact("Name", ui::mono(id.name.as_str(), 13.0, ui::INK).into()),
-                fact("URL", ui::mono(id.url.as_str(), 12.0, ui::INK).into()),
-                fact("Version", ui::mono(id.version.as_str(), 12.0, ui::INK).into()),
+                fact("Name", ui::mono(id.name.as_str(), 13.0, crate::theme::palette().ink).into()),
+                fact("URL", ui::mono(id.url.as_str(), 12.0, crate::theme::palette().ink).into()),
+                fact("Version", ui::mono(id.version.as_str(), 12.0, crate::theme::palette().ink).into()),
                 fact("TLS fingerprint", fingerprint),
                 ui::btn("Rotate owner token", None, ui::Kind::Danger, Some(Msg::AskRotate)),
             ]
@@ -721,11 +720,11 @@ fn add_form<'a>(label: &'a str, minutes: u64) -> Element<'a, Msg> {
 /// The token just issued, shown once, with the command to run on the new machine.
 fn issued_view<'a>(made: &'a IssuedCode) -> Element<'a, Msg> {
     column![
-        ui::faint("Shown once. Single use. Anyone with it can join until it expires.").color(WARN),
+        ui::faint("Shown once. Single use. Anyone with it can join until it expires.").color(crate::theme::palette().warn),
         copy_box(&made.token),
         row![
             ui::faint("Expires in "),
-            ui::mono(countdown(made.expires_ms - now_ms()), 12.0, ui::INK),
+            ui::mono(countdown(made.expires_ms - now_ms()), 12.0, crate::theme::palette().ink),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -742,7 +741,7 @@ fn issued_view<'a>(made: &'a IssuedCode) -> Element<'a, Msg> {
 fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
     container(
         row![
-            ui::mono(value.to_string(), 12.0, ui::INK).width(Length::Fill),
+            ui::mono(value.to_string(), 12.0, crate::theme::palette().ink).width(Length::Fill),
             ui::btn("Copy", None, ui::Kind::Ghost, Some(Msg::Copy(value.to_string()))),
         ]
         .spacing(12)
@@ -795,7 +794,7 @@ fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
         Some(_) => join_form(state),
     });
     for line in &state.progress {
-        parts.push(ui::mono(line.as_str(), 11.0, ui::INK_3).into());
+        parts.push(ui::mono(line.as_str(), 11.0, crate::theme::palette().ink_3).into());
     }
     if let Some(error) = &state.node_error {
         parts.push(ui::error_line(error.as_str()));
@@ -852,9 +851,9 @@ fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
     }
     let service: Element<'a, Msg> = status.push(toggle).into();
     column![
-        fact("Hub", ui::mono(or_dash(&node.hub), 12.0, ui::INK).into()),
-        fact("This node", ui::mono(or_dash(&node.node_id), 12.0, ui::INK).into()),
-        fact("CIDs", ui::mono(or_dash(&node.cids), 12.0, ui::INK).into()),
+        fact("Hub", ui::mono(or_dash(&node.hub), 12.0, crate::theme::palette().ink).into()),
+        fact("This node", ui::mono(or_dash(&node.node_id), 12.0, crate::theme::palette().ink).into()),
+        fact("CIDs", ui::mono(or_dash(&node.cids), 12.0, crate::theme::palette().ink).into()),
         fact("Status", service),
         leave,
     ]
@@ -888,15 +887,15 @@ fn machine_facts<'a>(node: &'a NodeView, m: &'a PlazaMachine) -> Element<'a, Msg
     let gpus = if m.gpus.is_empty() { "None".to_string() } else { m.gpus.iter().map(gpu_text).collect::<Vec<_>>().join(", ") };
     let host = node.machine.as_ref().and_then(|x| x.host.as_deref()).unwrap_or("?");
     column![
-        fact("CPU", ui::mono(cpus, 12.0, ui::INK).into()),
-        fact("Memory", ui::mono(memory, 12.0, ui::INK).into()),
-        fact("GPUs", ui::mono(gpus, 12.0, ui::INK).into()),
-        fact("Arch", ui::mono(or_dash(&m.arch), 12.0, ui::INK).into()),
-        fact("Backend", ui::mono(or_dash(&m.backend), 12.0, ui::INK).into()),
-        fact("Host", ui::mono(host, 12.0, ui::INK).into()),
-        fact("Class", ui::mono(or_dash(&m.class), 12.0, ui::INK).into()),
-        fact("Irqchip", ui::mono(or_dash(&m.irqchip), 12.0, ui::INK).into()),
-        fact("vsock", ui::mono(or_dash(&m.vsock_mode), 12.0, ui::INK).into()),
+        fact("CPU", ui::mono(cpus, 12.0, crate::theme::palette().ink).into()),
+        fact("Memory", ui::mono(memory, 12.0, crate::theme::palette().ink).into()),
+        fact("GPUs", ui::mono(gpus, 12.0, crate::theme::palette().ink).into()),
+        fact("Arch", ui::mono(or_dash(&m.arch), 12.0, crate::theme::palette().ink).into()),
+        fact("Backend", ui::mono(or_dash(&m.backend), 12.0, crate::theme::palette().ink).into()),
+        fact("Host", ui::mono(host, 12.0, crate::theme::palette().ink).into()),
+        fact("Class", ui::mono(or_dash(&m.class), 12.0, crate::theme::palette().ink).into()),
+        fact("Irqchip", ui::mono(or_dash(&m.irqchip), 12.0, crate::theme::palette().ink).into()),
+        fact("vsock", ui::mono(or_dash(&m.vsock_mode), 12.0, crate::theme::palette().ink).into()),
     ]
     .spacing(12)
     .into()
@@ -921,10 +920,10 @@ fn runs_table<'a>(runs: &'a [Run]) -> Element<'a, Msg> {
         runs.iter()
             .map(|r| {
                 cells(vec![
-                    (3, ui::mono(r.id.as_str(), 12.0, ui::INK).into()),
+                    (3, ui::mono(r.id.as_str(), 12.0, crate::theme::palette().ink).into()),
                     (2, ui::faint(r.role.as_deref().unwrap_or("fleet")).into()),
                     (2, ui::badge(r.state.as_str(), run_tone(&r.state))),
-                    (1, ui::mono(r.vms.len().to_string(), 12.0, ui::INK).into()),
+                    (1, ui::mono(r.vms.len().to_string(), 12.0, crate::theme::palette().ink).into()),
                     (3, ui::faint(ago(r.created_at)).into()),
                 ])
             })
@@ -1026,7 +1025,7 @@ fn now_ms() -> f64 {
 /// A card's frame: a 1px rule border, square corners.
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }

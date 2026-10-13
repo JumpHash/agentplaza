@@ -14,7 +14,7 @@ use crate::console::client;
 use crate::console::lab_api::{self, Recipe};
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::Ctx;
-use crate::theme::{self, INK, INK_2};
+use crate::theme::{self};
 
 /// Cards per row in the recipe grid, as the web's `minmax(340px, 1fr)` at the console's width.
 const GRID_COLS: usize = 2;
@@ -255,9 +255,9 @@ fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
 /// One recipe: its name, its local-dev badge, its facts, its schema, and the Vet action.
 fn recipe_card<'a>(r: &'a Recipe) -> Element<'a, Msg> {
     let facts: Vec<Element<'a, Msg>> = vec![
-        fact("Id", ui::mono(r.id.clone(), 12.0, INK)),
-        fact("Repo", ui::mono(r.repo.clone(), 12.0, INK_2)),
-        fact("Commit", ui::mono(short_commit(&r.commit), 12.0, INK)),
+        fact("Id", ui::mono(r.id.clone(), 12.0, crate::theme::palette().ink)),
+        fact("Repo", ui::mono(r.repo.clone(), 12.0, crate::theme::palette().ink_2)),
+        fact("Commit", ui::mono(short_commit(&r.commit), 12.0, crate::theme::palette().ink)),
         fact("Vetted", vetted(r)),
     ];
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
@@ -349,7 +349,7 @@ fn schema_block<'a>(schema: &Value) -> Vec<Element<'a, Msg>> {
 
 /// A schema line: its label in the small caps, its value in mono under it.
 fn section<'a>(label: &str, value: String) -> Element<'a, Msg> {
-    column![ui::label(label), ui::mono(value, 11.5, INK_2)].spacing(4).into()
+    column![ui::label(label), ui::mono(value, 11.5, crate::theme::palette().ink_2)].spacing(4).into()
 }
 
 /// `text` cut to `max` characters, with an ellipsis when it had to be cut.

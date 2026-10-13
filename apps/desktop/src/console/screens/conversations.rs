@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme::{INK, INK_3, MONO, PAPER, RULE, SHEET, SIGNAL};
+use crate::theme::{MONO};
 
 /// The thread's scrollable, so a newly opened thread can start at its newest message.
 const THREAD: &str = "conversations-thread";
@@ -405,7 +405,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     };
 
     let divider = container(Space::new()).width(Length::Fixed(1.0)).height(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     });
 
@@ -492,14 +492,14 @@ fn name_link<'a>(cid: u64, agents: &[(u64, String)]) -> Element<'a, Msg> {
 fn pair_item<'a>(p: &Pair, active: bool, agents: &[(u64, String)]) -> Element<'a, Msg> {
     let names = format!("{} · {}", label(agents, p.a), label(agents, p.b));
     let meta = format!("{} · {} messages", ago(p.last.created_at, now_ms()), p.messages.len());
-    let (background, edge) = if active { (PAPER, SIGNAL) } else { (SHEET, RULE) };
-    button(column![ui::mono(names, 12.0, INK), ui::prose(clip(&p.last.text, 90)), ui::faint(meta)].spacing(4))
+    let (background, edge) = if active { (crate::theme::palette().paper, crate::theme::palette().signal) } else { (crate::theme::palette().sheet, crate::theme::palette().rule) };
+    button(column![ui::mono(names, 12.0, crate::theme::palette().ink), ui::prose(clip(&p.last.text, 90)), ui::faint(meta)].spacing(4))
         .width(Length::Fill)
         .padding(12)
         .on_press(Msg::Select(p.key.clone()))
         .style(move |_: &Theme, _: button::Status| button::Style {
             background: Some(background.into()),
-            text_color: INK,
+            text_color: crate::theme::palette().ink,
             border: Border { color: edge, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
@@ -527,7 +527,7 @@ fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>) ->
 }
 
 fn message<'a>(m: &Conversation, agents: &[(u64, String)]) -> Element<'a, Msg> {
-    let mut meta = row![name_link(m.from_cid, agents), ui::mono(ago(m.created_at, now_ms()), 11.0, INK_3)]
+    let mut meta = row![name_link(m.from_cid, agents), ui::mono(ago(m.created_at, now_ms()), 11.0, crate::theme::palette().ink_3)]
         .spacing(10)
         .align_y(Alignment::Center);
     if !m.delivered {

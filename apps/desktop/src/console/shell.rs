@@ -11,7 +11,6 @@ use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Tas
 use super::events;
 use super::screens::{Id, NAV};
 use super::{toast, ui, Ctx};
-use crate::theme::{CRIT, HOVER, OK};
 
 /// The sidebar's display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,6 +98,10 @@ pub enum Msg {
     Toast(toast::Kind, String),
     /// The toasts' clock: takes down the ones whose time is up. Ticks only while a toast is on screen.
     ToastTick(Instant),
+    /// The top bar's light/dark switch.
+    ToggleTheme,
+    /// The OS appearance, at start and when it changes; it counts only until the owner chooses a theme.
+    Appearance(iced::theme::Mode),
 }
 
 /// The shell's own data: the plaza's held state and the sidebar counts.
@@ -125,6 +128,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
         Msg::Go(id) => {
             state.current = id.clone();
             (Task::none(), Some(id))
+        }
+        Msg::ToggleTheme => {
+            let light = !crate::theme::is_light();
+            crate::theme::choose(light);
+            let _ = super::boot::save_setting("theme", serde_json::json!(if light { "light" } else { "dark" }));
+            (Task::none(), None)
+        }
+        Msg::Appearance(mode) => {
+            crate::theme::follow_system(mode);
+            (Task::none(), None)
         }
         Msg::ToggleSidebar => {
             state.mode = match state.mode {
@@ -289,8 +302,8 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
         .width(Length::Fixed(width))
         .height(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(ui::SHEET.into()),
-            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -299,7 +312,7 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
 fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
     let mark = ui::hive(26.0);
     let head: Element<'a, M> = if open {
-        row![mark, ui::mono("AgentPlaza", 14.0, ui::INK)].spacing(10).align_y(Alignment::Center).into()
+        row![mark, ui::mono("AgentPlaza", 14.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center).into()
     } else {
         mark
     };
@@ -308,8 +321,8 @@ fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
 
 fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name: &str, open: bool, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let active = *id == state.current;
-    let fg = if active { ui::INK } else { ui::INK_2 };
-    let glyph = if active { ui::SIGNAL } else { ui::INK_3 };
+    let fg = if active { crate::theme::palette().ink } else { crate::theme::palette().ink_2 };
+    let glyph = if active { crate::theme::palette().signal } else { crate::theme::palette().ink_3 };
     let content: Element<'a, M> = if open {
         let mut r = row![ui::icon(icon_name, 16.0, glyph), ui::mono(label.to_string(), 12.5, fg)].spacing(10).align_y(Alignment::Center);
         r = r.push(Space::new().width(Length::Fill));
@@ -327,7 +340,7 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
         .style(move |_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
-                background: if active || hovered { Some(HOVER.into()) } else { None },
+                background: if active || hovered { Some(crate::theme::palette().hover.into()) } else { None },
                 text_color: fg,
                 border: Border::default(),
                 ..Default::default()
@@ -335,7 +348,7 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
         })
         .on_press(wrap(Msg::Go(id.clone())));
     let bar = container(Space::new().width(Length::Fixed(3.0)).height(Length::Fixed(30.0))).style(move |_: &Theme| container::Style {
-        background: if active { Some(ui::SIGNAL.into()) } else { None },
+        background: if active { Some(crate::theme::palette().signal.into()) } else { None },
         ..Default::default()
     });
     let line: Element<'a, M> = row![bar, item].height(Length::Fixed(30.0)).into();
@@ -344,9 +357,9 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
     } else {
         tooltip(
             line,
-            container(ui::mono(label.to_string(), 11.0, ui::INK)).padding([4, 8]).style(|_: &Theme| container::Style {
-                background: Some(ui::SHEET.into()),
-                border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+            container(ui::mono(label.to_string(), 11.0, crate::theme::palette().ink)).padding([4, 8]).style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().sheet.into()),
+                border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             }),
             tooltip::Position::Right,
@@ -356,10 +369,10 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
 }
 
 fn count_badge<'a, M: 'a>(n: u32) -> Element<'a, M> {
-    container(ui::mono(n.to_string(), 11.0, ui::INK_3))
+    container(ui::mono(n.to_string(), 11.0, crate::theme::palette().ink_3))
         .padding([1, 5])
         .style(|_: &Theme| container::Style {
-            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -368,7 +381,7 @@ fn count_badge<'a, M: 'a>(n: u32) -> Element<'a, M> {
 /// The sidebar's footer: the hub's address, and the width steps.
 fn footer<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
     column![
-        ui::mono(state.hub.clone(), 10.5, ui::INK_3),
+        ui::mono(state.hub.clone(), 10.5, crate::theme::palette().ink_3),
         row![
             Space::new().width(Length::Fill),
             ui::btn("-", None, ui::Kind::Ghost, Some(wrap(Msg::Resize(-24.0)))),
@@ -393,28 +406,30 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     let health = row![
         indicator(state.hub_ok, "HUB"),
         indicator(state.node_ok, "NODE"),
-        row![hollow_mark(ui::INK_2), ui::mono(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, ui::INK_2)]
+        row![hollow_mark(crate::theme::palette().ink_2), ui::mono(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, crate::theme::palette().ink_2)]
             .spacing(7)
             .align_y(Alignment::Center),
     ]
     .spacing(14)
     .align_y(Alignment::Center);
     let mut right = row![health].spacing(16).align_y(Alignment::Center);
+    let (theme_label, theme_icon) = if crate::theme::is_light() { ("Dark theme", "moon") } else { ("Light theme", "sun") };
+    right = right.push(ui::btn(theme_label, Some(theme_icon), ui::Kind::Ghost, Some(wrap(Msg::ToggleTheme))));
     if state.paused {
-        right = right.push(row![ui::mono("◆", 11.0, CRIT), ui::mono("HELD", 11.5, CRIT)].spacing(5).align_y(Alignment::Center));
-        right = right.push(top_btn("RESUME", "play", ui::SIGNAL, wrap(Msg::Resume)));
+        right = right.push(row![ui::mono("◆", 11.0, crate::theme::palette().crit), ui::mono("HELD", 11.5, crate::theme::palette().crit)].spacing(5).align_y(Alignment::Center));
+        right = right.push(top_btn("RESUME", "play", crate::theme::palette().signal, wrap(Msg::Resume)));
     } else {
-        right = right.push(top_btn("STOP ALL", "stop", CRIT, wrap(Msg::StopAll)));
+        right = right.push(top_btn("STOP ALL", "stop", crate::theme::palette().crit, wrap(Msg::StopAll)));
     }
     container(
-        row![toggle, ui::mono(title.to_uppercase(), 13.0, ui::INK), Space::new().width(Length::Fill), right]
+        row![toggle, ui::mono(title.to_uppercase(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), right]
             .spacing(16)
             .align_y(Alignment::Center),
     )
     .padding([10, 16])
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     })
     .into()
@@ -424,7 +439,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
 fn gpu_banner<'a, M: 'a>(adapter: &'a str) -> Element<'a, M> {
     container(
         column![
-            ui::mono("Software rendering: no GPU is available to the app, so the 3D floor is slow.", 12.5, CRIT),
+            ui::mono("Software rendering: no GPU is available to the app, so the 3D floor is slow.", 12.5, crate::theme::palette().crit),
             ui::faint(format!("Adapter: {adapter}. A driver update that has not been loaded yet (reboot) is the usual cause.")),
         ]
         .spacing(4),
@@ -432,8 +447,8 @@ fn gpu_banner<'a, M: 'a>(adapter: &'a str) -> Element<'a, M> {
     .padding([10, 16])
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
-        background: Some(ui::SHEET.into()),
-        border: Border { color: CRIT, width: 1.0, radius: 0.0.into() },
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border { color: crate::theme::palette().crit, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     })
     .into()
@@ -461,7 +476,7 @@ fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M)
         .style(move |_: &Theme, _: button::Status| button::Style {
             background: Some(fill.into()),
             text_color: Color::WHITE,
-            border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -469,13 +484,13 @@ fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M)
 
 /// A square status light and its label, as the web's top bar draws the hub and node.
 fn indicator<'a, M: 'a>(up: bool, label: &'static str) -> Element<'a, M> {
-    let tone = if up { OK } else { CRIT };
+    let tone = if up { crate::theme::palette().ok } else { crate::theme::palette().crit };
     row![
         container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0))).style(move |_: &Theme| container::Style {
             background: Some(tone.into()),
             ..Default::default()
         }),
-        ui::mono(label, 11.5, ui::INK_2),
+        ui::mono(label, 11.5, crate::theme::palette().ink_2),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -511,9 +526,9 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
     );
     container(
         row![
-            hollow_mark(CRIT),
-            ui::mono(text, 12.5, CRIT).width(Length::Fill),
-            top_btn("RESUME", "play", ui::SIGNAL, wrap(Msg::Resume)),
+            hollow_mark(crate::theme::palette().crit),
+            ui::mono(text, 12.5, crate::theme::palette().crit).width(Length::Fill),
+            top_btn("RESUME", "play", crate::theme::palette().signal, wrap(Msg::Resume)),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -521,8 +536,8 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
     .padding([10, 16])
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
-        background: Some(ui::SHEET.into()),
-        border: Border { color: CRIT, width: 1.0, radius: 0.0.into() },
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border { color: crate::theme::palette().crit, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     })
     .into()

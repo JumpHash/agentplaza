@@ -8,7 +8,7 @@ use iced::mouse;
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme};
 
-use crate::theme::{INK, INK_2, INK_3, MONO, RULE, RULE_FAINT, SHEET};
+use crate::theme::{MONO};
 
 /// One named series: `values[i]` is the value at bucket (or point) `i`.
 #[derive(Debug, Clone, PartialEq)]
@@ -191,12 +191,12 @@ impl<M> canvas::Program<M> for StackedArea {
         for k in 0..=4 {
             let v = ceiling * k as f64 / 4.0;
             let yy = y(v);
-            let rule = if k == 0 { RULE } else { RULE_FAINT };
+            let rule = if k == 0 { crate::theme::palette().rule } else { crate::theme::palette().rule_faint };
             frame.stroke(&Path::line(Point::new(left, yy), Point::new(left + width, yy)), Stroke::default().with_color(rule).with_width(1.0));
-            label(&mut frame, (self.format)(v), Point::new(left - 8.0, yy - 6.0), INK_3, 10.5, true);
+            label(&mut frame, (self.format)(v), Point::new(left - 8.0, yy - 6.0), crate::theme::palette().ink_3, 10.5, true);
         }
         if n == 0 || peak <= 0.0 {
-            label(&mut frame, self.empty.to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), INK_3, 13.0, false);
+            label(&mut frame, self.empty.to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), crate::theme::palette().ink_3, 13.0, false);
             return vec![frame.into_geometry()];
         }
 
@@ -243,12 +243,12 @@ impl<M> canvas::Program<M> for StackedArea {
             } else {
                 Point::new(x(i), top + height + 6.0)
             };
-            label(&mut frame, text, anchor, INK_3, 10.5, k + 1 == ticks && ticks > 1);
+            label(&mut frame, text, anchor, crate::theme::palette().ink_3, 10.5, k + 1 == ticks && ticks > 1);
         }
 
         if let Some(i) = hover.filter(|i| *i < n) {
             let hx = x(i);
-            frame.stroke(&Path::line(Point::new(hx, top), Point::new(hx, top + height)), Stroke::default().with_color(INK_3).with_width(1.0));
+            frame.stroke(&Path::line(Point::new(hx, top), Point::new(hx, top + height)), Stroke::default().with_color(crate::theme::palette().ink_3).with_width(1.0));
             let rows: Vec<(Color, String)> = self
                 .series
                 .iter()
@@ -263,13 +263,13 @@ impl<M> canvas::Program<M> for StackedArea {
             let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
             let bx = if hx > left + width / 2.0 { hx - 12.0 - box_w } else { hx + 12.0 };
             let by = top + 4.0;
-            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), SHEET);
-            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(RULE).with_width(1.0));
-            label(&mut frame, heading, Point::new(bx + 10.0, by + 8.0), INK, 11.0, false);
+            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), crate::theme::palette().sheet);
+            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(crate::theme::palette().rule).with_width(1.0));
+            label(&mut frame, heading, Point::new(bx + 10.0, by + 8.0), crate::theme::palette().ink, 11.0, false);
             for (k, (color, text)) in rows.into_iter().enumerate() {
                 let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
                 frame.fill(&Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5), color);
-                label(&mut frame, text, Point::new(bx + 24.0, row_y), INK_2, 11.0, false);
+                label(&mut frame, text, Point::new(bx + 24.0, row_y), crate::theme::palette().ink_2, 11.0, false);
             }
         }
         vec![frame.into_geometry()]
@@ -291,7 +291,7 @@ impl<M> canvas::Program<M> for Bars {
     fn draw(&self, _state: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
-        frame.stroke(&Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)), Stroke::default().with_color(RULE).with_width(1.0));
+        frame.stroke(&Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)), Stroke::default().with_color(crate::theme::palette().rule).with_width(1.0));
         let n = self.values.len();
         let peak = self.values.iter().copied().fold(0.0, f64::max);
         if n > 0 && peak > 0.0 {
@@ -376,7 +376,7 @@ mod tests {
     use super::*;
 
     fn series(key: &str, values: &[f64]) -> Series {
-        Series { key: key.to_string(), color: INK, values: values.to_vec() }
+        Series { key: key.to_string(), color: crate::theme::palette().ink, values: values.to_vec() }
     }
 
     #[test]

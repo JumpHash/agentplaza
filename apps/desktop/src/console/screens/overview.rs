@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme::{self, INK, INK_2, INK_3, OK, RULE, RULE_FAINT, SIGNAL};
+use crate::theme::{self};
 
 const FEED_MAX: usize = 40;
 const FLEET_COLS: usize = 4;
@@ -230,9 +230,9 @@ fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
 /// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line.
 fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
     let body = column![
-        text(value).font(ui::MONO_BOLD).size(34.0).color(INK),
-        text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(INK_3),
-        text(sub).font(SERIF_ITALIC).size(13.0).color(INK_2),
+        text(value).font(ui::MONO_BOLD).size(34.0).color(crate::theme::palette().ink),
+        text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(crate::theme::palette().ink_3),
+        text(sub).font(SERIF_ITALIC).size(13.0).color(crate::theme::palette().ink_2),
     ]
     .spacing(6);
     container(body)
@@ -253,12 +253,12 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
     };
     let (status, tone, filled) = match orch.status.as_str() {
         "working" => ("Working", INFO, false),
-        "idle" => ("Idle", OK, true),
-        _ => ("Offline", INK_2, false),
+        "idle" => ("Idle", crate::theme::palette().ok, true),
+        _ => ("Offline", crate::theme::palette().ink_2, false),
     };
     let head = row![
-        ui::icon::<Msg>("orchestrator", 15.0, INK),
-        text(name(orch).to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(INK),
+        ui::icon::<Msg>("orchestrator", 15.0, crate::theme::palette().ink),
+        text(name(orch).to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink),
         ui::faint(orch.role_label.clone()),
         marker_tag(status, tone, filled),
     ]
@@ -281,14 +281,14 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
         .style(|_: &Theme, _| text_editor::Style {
             background: Background::Color(Color::TRANSPARENT),
             border: Border::default(),
-            placeholder: INK_3,
-            value: INK,
-            selection: SIGNAL,
+            placeholder: crate::theme::palette().ink_3,
+            value: crate::theme::palette().ink,
+            selection: crate::theme::palette().signal,
         });
 
     let mut body = column![
-        text(format!("Plans the work and delegates it to the fleet · {}", orch.model)).font(theme::SERIF).size(15.0).color(INK_2),
-        column![goal, rule(INK)],
+        text(format!("Plans the work and delegates it to the fleet · {}", orch.model)).font(theme::SERIF).size(15.0).color(crate::theme::palette().ink_2),
+        column![goal, rule(crate::theme::palette().ink)],
         row![
             ui::faint("Ctrl+Enter to send"),
             space::horizontal(),
@@ -330,7 +330,7 @@ fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
                     row![
                         ui::faint(ago(now, item.at_ms)).width(Length::Fixed(72.0)),
                         link(&who, 13.0, Msg::Go(Id::Agent(item.cid))),
-                        text(item.line.clone()).font(theme::SERIF).size(13.0).color(INK_2).wrapping(Wrapping::None).width(Length::Fill),
+                        text(item.line.clone()).font(theme::SERIF).size(13.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None).width(Length::Fill),
                     ]
                     .spacing(8)
                     .align_y(Vertical::Center),
@@ -368,8 +368,8 @@ fn fleet<'a>(agents: &'a [Agent]) -> Element<'a, Msg> {
 fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
     let (tone, filled) = match a.status.as_str() {
         "working" => (INFO, true),
-        "idle" => (OK, true),
-        _ => (INK_3, false),
+        "idle" => (crate::theme::palette().ok, true),
+        _ => (crate::theme::palette().ink_3, false),
     };
     let sub = match &a.work {
         Some(w) => clip(&w.prompt, 60),
@@ -377,7 +377,7 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         None => a.role_label.clone(),
     };
     let body = column![
-        row![marker(tone, filled), text(name(a)).font(SERIF_BOLD).size(13.0).color(INK)]
+        row![marker(tone, filled), text(name(a)).font(SERIF_BOLD).size(13.0).color(crate::theme::palette().ink)]
             .spacing(8)
             .align_y(Vertical::Center),
         ui::faint(sub),
@@ -395,9 +395,9 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
 fn tile_style(_: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: Some(Background::Color(if hovered { RULE_FAINT } else { theme::HOVER })),
-        text_color: INK,
-        border: Border { color: if hovered { INK_3 } else { RULE }, width: 1.0, radius: 0.0.into() },
+        background: Some(Background::Color(if hovered { crate::theme::palette().rule_faint } else { crate::theme::palette().hover })),
+        text_color: crate::theme::palette().ink,
+        border: Border { color: if hovered { crate::theme::palette().ink_3 } else { crate::theme::palette().rule }, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
@@ -409,7 +409,7 @@ fn card<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>, flush: bool) -> Elem
         .padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 })
         .width(Length::Fill);
     let body = container(body).padding(if flush { 0.0 } else { 16.0 }).width(Length::Fill);
-    container(column![head, rule(RULE), body])
+    container(column![head, rule(crate::theme::palette().rule), body])
         .width(Length::Fill)
         .style(rule_box)
         .into()
@@ -417,16 +417,16 @@ fn card<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>, flush: bool) -> Elem
 
 /// A card's title: mono, semibold, uppercase.
 fn card_title<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(INK).into()
+    text(title.to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink).into()
 }
 
 /// An empty state: an icon, a bold mono line, a faint serif sentence; centred.
 fn empty<'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, Msg> {
     container(
         column![
-            ui::icon::<Msg>(icon_name, 16.0, INK_3),
-            text(title.to_string()).font(ui::MONO_BOLD).size(13.0).color(INK),
-            text(sentence.to_string()).font(theme::SERIF).size(14.0).color(INK_3),
+            ui::icon::<Msg>(icon_name, 16.0, crate::theme::palette().ink_3),
+            text(title.to_string()).font(ui::MONO_BOLD).size(13.0).color(crate::theme::palette().ink),
+            text(sentence.to_string()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_3),
         ]
         .spacing(10)
         .align_x(iced::alignment::Horizontal::Center),
@@ -458,13 +458,13 @@ fn marker<'a>(color: Color, filled: bool) -> Element<'a, Msg> {
 
 /// A text link: serif, underlined, as the web's links are.
 fn link<'a>(label: &str, size: f32, on_press: Msg) -> Element<'a, Msg> {
-    let spans: Vec<Span<'_, ()>> = vec![span(label.to_string()).underline(true).font(theme::SERIF).size(size).color(INK)];
+    let spans: Vec<Span<'_, ()>> = vec![span(label.to_string()).underline(true).font(theme::SERIF).size(size).color(crate::theme::palette().ink)];
     button(rich_text(spans))
         .on_press(on_press)
         .padding(0)
         .style(|_: &Theme, status: button::Status| button::Style {
             background: None,
-            text_color: if matches!(status, button::Status::Hovered) { SIGNAL } else { INK },
+            text_color: if matches!(status, button::Status::Hovered) { crate::theme::palette().signal } else { crate::theme::palette().ink },
             ..Default::default()
         })
         .into()
@@ -481,7 +481,7 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
 /// A ruled box with no fill: the web's `.card` and `.stat` frame.
 fn rule_box(_: &Theme) -> container::Style {
     container::Style {
-        border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }

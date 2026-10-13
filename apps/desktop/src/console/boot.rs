@@ -18,13 +18,13 @@ use apz_trust::token::JoinToken;
 
 use super::cli_link::{self, CliLink};
 use super::client::{self, Client};
+use super::hubs;
 use super::services::{self, Mode};
 use super::setup;
 use super::ui::{self, Kind, Tone};
-use crate::theme::HOVER;
 
 /// The hub the local services run; the chooser polls it until it answers.
-const LOCAL_HUB: &str = "http://127.0.0.1:7700";
+pub const LOCAL_HUB: &str = "http://127.0.0.1:7700";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Choice {
@@ -67,8 +67,8 @@ impl Choice {
 pub struct State {
     /// The option being set up (None = the four cards).
     pub choice: Option<Choice>,
-    pub url: String,
-    pub token: String,
+    /// The Connect screen: the saved hubs, the hub URL and the owner token.
+    pub hubs: hubs::State,
     pub join_token: String,
     pub bind: String,
     /// Progress lines from starting services.
@@ -97,8 +97,7 @@ pub struct State {
 pub enum Msg {
     Pick(Choice),
     Back,
-    Url(String),
-    Token(String),
+    Hubs(hubs::Msg),
     JoinToken(String),
     Bind(String),
     /// Start / connect for the chosen option.
@@ -135,7 +134,7 @@ pub fn init() -> (State, Task<Msg>) {
     (
         State {
             bind: "0.0.0.0".into(),
-            url: LOCAL_HUB.into(),
+            hubs: hubs::State::new(),
             remembered: load_remembered(),
             cli: cli_link::status(),
             ..Default::default()
@@ -172,13 +171,9 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             }
             (Task::none(), None)
         }
-        Msg::Url(value) => {
-            state.url = value;
-            (Task::none(), None)
-        }
-        Msg::Token(value) => {
-            state.token = value;
-            (Task::none(), None)
+        Msg::Hubs(msg) => {
+            let (task, client) = hubs::update(&mut state.hubs, msg);
+            (task.map(Msg::Hubs), client)
         }
         Msg::JoinToken(value) => {
             state.join_token = value;
@@ -296,16 +291,8 @@ fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
             state.busy = true;
             Task::perform(async move { join_node(&code) }, Msg::Started)
         }
-        Choice::Connect => {
-            let url = state.url.trim().to_string();
-            let token = state.token.trim().to_string();
-            if url.is_empty() || token.is_empty() {
-                state.error = Some("Enter the hub's URL and its owner token.".into());
-                return (Task::none(), None);
-            }
-            state.busy = true;
-            client::task(move || check(Client::new(&url, None, Some(token))), Msg::Connected)
-        }
+        // The Connect screen (`hubs`) verifies its own sign-in.
+        Choice::Connect => return (Task::none(), None),
     };
     (task, None)
 }
@@ -416,12 +403,6 @@ fn join_code_note<'a>(text: &str) -> Option<Element<'a, Msg>> {
     })
 }
 
-/// Checks that the hub answers the owner's token; Ok carries the client back.
-fn check(client: Client) -> Result<Client, String> {
-    client.get::<serde_json::Value>("/v1/auth/check")?;
-    Ok(client)
-}
-
 /// Polls the local hub up to 20 times, a second apart.
 fn await_local_hub() -> Result<Client, String> {
     let client = Client::new(LOCAL_HUB, None, services::local_owner_token());
@@ -456,8 +437,8 @@ pub fn view(state: &State) -> Element<'_, Msg> {
 fn chooser(state: &State) -> Element<'_, Msg> {
     let busy = state.busy;
     let mut page: Vec<Element<'_, Msg>> = vec![
-        ui::mono("AgentPlaza", 13.0, ui::INK).into(),
-        ui::mono("How do you want to run it?", 30.0, ui::INK).into(),
+        ui::mono("AgentPlaza", 13.0, crate::theme::palette().ink).into(),
+        ui::mono("How do you want to run it?", 30.0, crate::theme::palette().ink).into(),
     ];
     if let Some(choice) = state.remembered {
         let label = format!("Continue: {}", choice.title());
@@ -492,19 +473,19 @@ fn chooser(state: &State) -> Element<'_, Msg> {
 
 /// One square option card: icon, title, one serif sentence. Clicking it picks the option.
 fn option_card(choice: Choice, busy: bool) -> Element<'static, Msg> {
-    let icon: Element<'static, Msg> = ui::icon(choice.icon(), 22.0, ui::INK);
-    let body = column![icon, ui::mono(choice.title(), 14.0, ui::INK), ui::prose(choice.sentence())].spacing(12);
+    let icon: Element<'static, Msg> = ui::icon(choice.icon(), 22.0, crate::theme::palette().ink);
+    let body = column![icon, ui::mono(choice.title(), 14.0, crate::theme::palette().ink), ui::prose(choice.sentence())].spacing(12);
     let card = button(body)
         .width(Length::Fill)
         .height(Length::Fixed(180.0))
         .padding(18)
         .style(|_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let background: Color = if hovered { HOVER } else { ui::SHEET };
+            let background: Color = if hovered { crate::theme::palette().hover } else { crate::theme::palette().sheet };
             button::Style {
                 background: Some(background.into()),
-                text_color: ui::INK,
-                border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+                text_color: crate::theme::palette().ink,
+                border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             }
         });
@@ -518,7 +499,7 @@ fn option_card(choice: Choice, busy: bool) -> Element<'static, Msg> {
 fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     let busy = state.busy;
     let head = row![
-        column![ui::mono(choice.title(), 26.0, ui::INK), ui::faint(choice.sentence())].spacing(4),
+        column![ui::mono(choice.title(), 26.0, crate::theme::palette().ink), ui::faint(choice.sentence())].spacing(4),
         Space::new().width(Length::Fill),
         ui::btn("Back", None, Kind::Ghost, (!busy && state.fixing.is_none()).then_some(Msg::Back)),
     ]
@@ -540,12 +521,7 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
                 page.push(note);
             }
         }
-        Choice::Connect => {
-            page.push(ui::label("Hub URL").into());
-            page.push(text_input("https://hub.example:7700", &state.url).on_input(Msg::Url).on_submit(Msg::Go).into());
-            page.push(ui::label("Owner token").into());
-            page.push(text_input("owner token", &state.token).on_input(Msg::Token).on_submit(Msg::Go).secure(true).into());
-        }
+        Choice::Connect => page.push(hubs::view(&state.hubs).map(Msg::Hubs)),
     }
     let action = match choice {
         Choice::Local => "Start",
@@ -555,7 +531,9 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     };
     let gated = setup_mode(Some(choice)).is_some();
     let ready = !gated || can_start(state);
-    page.push(ui::btn(action, Some(choice.icon()), Kind::Primary, (!busy && ready).then_some(Msg::Go)));
+    if choice != Choice::Connect {
+        page.push(ui::btn(action, Some(choice.icon()), Kind::Primary, (!busy && ready).then_some(Msg::Go)));
+    }
     if gated && !ready && !state.checking {
         page.push(ui::faint("Install or set up what is missing first.").into());
     }
@@ -597,7 +575,7 @@ fn requirements(state: &State) -> Element<'_, Msg> {
             _ => Space::new().into(),
         };
         let line = row![
-            ui::mono(check.label, 13.0, ui::INK),
+            ui::mono(check.label, 13.0, crate::theme::palette().ink),
             ui::faint(check.detail.clone()),
             Space::new().width(Length::Fill),
             action,
@@ -638,15 +616,15 @@ fn requirements(state: &State) -> Element<'_, Msg> {
 /// The box that asks before a fix runs: the same paper and rule as the option cards.
 fn confirm_box(_: &Theme) -> container::Style {
     container::Style {
-        background: Some(ui::SHEET.into()),
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
 
 /// The progress lines, mono and faint.
 fn log_lines(lines: &[String]) -> Element<'static, Msg> {
-    let rows: Vec<Element<'static, Msg>> = lines.iter().map(|line| ui::mono(line.clone(), 11.5, ui::INK_3).into()).collect();
+    let rows: Vec<Element<'static, Msg>> = lines.iter().map(|line| ui::mono(line.clone(), 11.5, crate::theme::palette().ink_3).into()).collect();
     column(rows).spacing(2).into()
 }
 
@@ -673,11 +651,31 @@ fn load_remembered() -> Option<Choice> {
 }
 
 fn save_remembered(choice: Choice) -> std::io::Result<()> {
+    let remembered: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&encode_remembered(choice)).unwrap_or_default();
+    for (key, value) in remembered {
+        save_setting(&key, value)?;
+    }
+    Ok(())
+}
+
+/// Sets one key of `desktop.json`, keeping the other keys (the remembered choice and the theme share the file).
+pub fn save_setting(key: &str, value: serde_json::Value) -> std::io::Result<()> {
     let path = config_path().ok_or_else(|| std::io::Error::other("HOME is not set"))?;
+    let mut settings = read_settings(&path);
+    settings.insert(key.to_string(), value);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, encode_remembered(choice))
+    std::fs::write(path, serde_json::Value::Object(settings).to_string())
+}
+
+/// A key of `desktop.json`, if it is set.
+pub fn saved_setting(key: &str) -> Option<serde_json::Value> {
+    read_settings(&config_path()?).remove(key)
+}
+
+fn read_settings(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
 
 #[cfg(test)]

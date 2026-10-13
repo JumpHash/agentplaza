@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use super::usage::usd;
 use super::Id;
 use crate::console::{chart, client::{self, Client}, ui, Ctx};
-use crate::theme::{self, INK, INK_2, INK_3, MONO, SHEET};
+use crate::theme::{self, MONO};
 
 const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
 const AMOUNT: Font = Font { weight: font::Weight::Semibold, ..theme::MONO };
@@ -653,16 +653,16 @@ fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
 fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
     // Long figures step down a size so they stay inside the tile.
     let size = if value.chars().count() > 8 { 22.0 } else { 28.0 };
-    let mut stack = column![iced::widget::text(value).font(VALUE).size(size).color(theme::INK).wrapping(Wrapping::None), ui::label(title).wrapping(Wrapping::None)]
+    let mut stack = column![iced::widget::text(value).font(VALUE).size(size).color(crate::theme::palette().ink).wrapping(Wrapping::None), ui::label(title).wrapping(Wrapping::None)]
         .spacing(6);
     // A note wraps onto as many lines as it needs and the tile grows with it; a tile without one keeps
     // a blank line, so the tiles beside it stay the same height.
     let note = if note.is_empty() { "\u{a0}".to_string() } else { note };
-    stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(theme::INK_2));
+    stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(crate::theme::palette().ink_2));
     container(stack)
         .padding(Padding::from(16.0))
         .width(Length::FillPortion(1))
-        .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
 
@@ -696,12 +696,12 @@ impl canvas::Program<Msg> for FlowChart {
 
         let boxed = |frame: &mut canvas::Frame, x: f32, y: f32, label: &str, value: f64| {
             let (tl, size) = (at(x, y), Size::new(170.0 * scale, 70.0 * scale));
-            frame.fill_rectangle(tl, size, SHEET);
-            frame.stroke(&Path::rectangle(tl, size), Stroke::default().with_color(INK).with_width(1.0));
+            frame.fill_rectangle(tl, size, crate::theme::palette().sheet);
+            frame.stroke(&Path::rectangle(tl, size), Stroke::default().with_color(crate::theme::palette().ink).with_width(1.0));
             frame.fill_text(canvas::Text {
                 content: label.to_uppercase(),
                 position: at(x + 12.0, y + 12.0),
-                color: INK_3,
+                color: crate::theme::palette().ink_3,
                 size: Pixels(10.5 * scale),
                 font: MONO,
                 ..canvas::Text::default()
@@ -709,7 +709,7 @@ impl canvas::Program<Msg> for FlowChart {
             frame.fill_text(canvas::Text {
                 content: money(value),
                 position: at(x + 12.0, y + 33.0),
-                color: INK,
+                color: crate::theme::palette().ink,
                 size: Pixels(24.0 * scale),
                 font: VALUE,
                 ..canvas::Text::default()
@@ -721,7 +721,7 @@ impl canvas::Program<Msg> for FlowChart {
             let (ux, uy) = (dx / len, dy / len);
             let head = 8.75;
             let base = (to.0 - ux * head, to.1 - uy * head);
-            frame.stroke(&Path::line(at(from.0, from.1), at(base.0, base.1)), Stroke::default().with_color(INK_2).with_width(1.25 * scale));
+            frame.stroke(&Path::line(at(from.0, from.1), at(base.0, base.1)), Stroke::default().with_color(crate::theme::palette().ink_2).with_width(1.25 * scale));
             let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
             let (wing_a, wing_b, tip) = (at(base.0 + px, base.1 + py), at(base.0 - px, base.1 - py), at(to.0, to.1));
             let head_path = Path::new(|b| {
@@ -730,7 +730,7 @@ impl canvas::Program<Msg> for FlowChart {
                 b.line_to(wing_b);
                 b.close();
             });
-            frame.fill(&head_path, INK_2);
+            frame.fill(&head_path, crate::theme::palette().ink_2);
             // The dashes: they travel from the source toward the head, at a speed that grows with the flow.
             let speed = (20.0 + 30.0 * (1.0 + flow.max(0.0)).log10()).min(140.0) as f32;
             let travel = (self.t as f32 * speed) % DASH_PERIOD;
@@ -741,7 +741,7 @@ impl canvas::Program<Msg> for FlowChart {
                 if b > a {
                     let p = at(from.0 + ux * a, from.1 + uy * a);
                     let q = at(from.0 + ux * b, from.1 + uy * b);
-                    frame.stroke(&Path::line(p, q), Stroke::default().with_color(theme::SIGNAL).with_width(2.0 * scale));
+                    frame.stroke(&Path::line(p, q), Stroke::default().with_color(crate::theme::palette().signal).with_width(2.0 * scale));
                 }
                 s += DASH_PERIOD;
             }
@@ -823,12 +823,12 @@ impl canvas::Program<Msg> for StackedBars {
         for k in 0..=4 {
             let v = ceiling * k as f64 / 4.0;
             let yy = y(v);
-            let rule = if k == 0 { theme::RULE } else { theme::RULE_FAINT };
+            let rule = if k == 0 { crate::theme::palette().rule } else { crate::theme::palette().rule_faint };
             frame.stroke(&Path::line(Point::new(left, yy), Point::new(left + width, yy)), Stroke::default().with_color(rule).with_width(1.0));
-            caption(&mut frame, money(v), Point::new(left - 8.0, yy - 6.0), INK_3, 10.5, true);
+            caption(&mut frame, money(v), Point::new(left - 8.0, yy - 6.0), crate::theme::palette().ink_3, 10.5, true);
         }
         if n == 0 || peak <= 0.0 {
-            caption(&mut frame, "No flows in this range".to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), INK_3, 13.0, false);
+            caption(&mut frame, "No flows in this range".to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), crate::theme::palette().ink_3, 13.0, false);
             return vec![frame.into_geometry()];
         }
 
@@ -852,12 +852,12 @@ impl canvas::Program<Msg> for StackedBars {
             let x = left + slot * i as f32 + slot / 2.0;
             let last_tick = k + 1 == ticks && ticks > 1;
             let anchor = if last_tick { Point::new(left + width, top + height + 6.0) } else { Point::new(x, top + height + 6.0) };
-            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), anchor, INK_3, 10.5, last_tick);
+            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), anchor, crate::theme::palette().ink_3, 10.5, last_tick);
         }
 
         if let Some(i) = hover.filter(|i| *i < n) {
             let hx = left + slot * i as f32;
-            frame.fill_rectangle(Point::new(hx, top), Size::new(slot, height), theme::HOVER);
+            frame.fill_rectangle(Point::new(hx, top), Size::new(slot, height), crate::theme::palette().hover);
             let rows: Vec<(Color, String)> = self
                 .series
                 .iter()
@@ -871,13 +871,13 @@ impl canvas::Program<Msg> for StackedBars {
             let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
             let bx = if hx > left + width / 2.0 { hx - 12.0 - box_w } else { hx + slot + 12.0 };
             let by = top + 4.0;
-            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), SHEET);
-            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(theme::RULE).with_width(1.0));
-            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), Point::new(bx + 10.0, by + 8.0), INK, 11.0, false);
+            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), crate::theme::palette().sheet);
+            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(crate::theme::palette().rule).with_width(1.0));
+            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), Point::new(bx + 10.0, by + 8.0), crate::theme::palette().ink, 11.0, false);
             for (k, (color, text)) in rows.into_iter().enumerate() {
                 let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
                 frame.fill(&Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5), color);
-                caption(&mut frame, text, Point::new(bx + 24.0, row_y), INK_2, 11.0, false);
+                caption(&mut frame, text, Point::new(bx + 24.0, row_y), crate::theme::palette().ink_2, 11.0, false);
             }
         }
         vec![frame.into_geometry()]
@@ -924,8 +924,8 @@ fn legend<'a>(series: &[chart::Series], format: fn(f64) -> String, last: bool) -
                     r = r.push(
                         row![
                             swatch,
-                            iced::widget::text(key.clone()).font(MONO).size(11.0).color(INK_2).wrapping(Wrapping::None),
-                            iced::widget::text(value.clone()).font(MONO).size(11.0).color(INK).wrapping(Wrapping::None),
+                            iced::widget::text(key.clone()).font(MONO).size(11.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None),
+                            iced::widget::text(value.clone()).font(MONO).size(11.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
                         ]
                         .spacing(6)
                         .align_y(Alignment::Center),
@@ -981,9 +981,9 @@ fn series_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
 
 /// One series row, in the order of `SERIES_COLUMNS`.
 fn series_cells<'a>(p: &Bucket, label: String) -> Vec<Element<'a, Msg>> {
-    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, INK));
+    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
     vec![
-        cell(3, false, ui::mono(label, 11.5, INK_2)),
+        cell(3, false, ui::mono(label, 11.5, crate::theme::palette().ink_2)),
         figure(p.minted),
         figure(p.escrowed),
         figure(p.paid),
@@ -1059,7 +1059,7 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for w in wallets {
         let role = d.roster.iter().find(|m| m.cid == w.cid).map_or_else(|| "—".to_string(), |m| m.role_label.clone());
-        let name = button(iced::widget::text(w.name.clone()).font(theme::SERIF).size(14.0).color(theme::INK))
+        let name = button(iced::widget::text(w.name.clone()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink))
             .padding(0.0)
             .style(link)
             .on_press(Msg::Go(Id::Agent(w.cid)));
@@ -1068,9 +1068,9 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
         lines = lines.push(
             row![
                 cell(3, false, name),
-                cell(2, false, iced::widget::text(role).font(theme::SERIF).size(14.0).color(theme::INK_2)),
-                cell(2, true, ui::mono(money(w.balance), 12.5, theme::INK)),
-                cell(3, false, row![share_bar(share), ui::mono(format!("{:.1}%", share * 100.0), 11.0, INK_2)].spacing(10).align_y(Alignment::Center)),
+                cell(2, false, iced::widget::text(role).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_2)),
+                cell(2, true, ui::mono(money(w.balance), 12.5, crate::theme::palette().ink)),
+                cell(3, false, row![share_bar(share), ui::mono(format!("{:.1}%", share * 100.0), 11.0, crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center)),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1090,9 +1090,9 @@ fn share_bar<'a>(share: f64) -> Element<'a, Msg> {
             .into()
     };
     let bar: Element<'a, Msg> = match filled {
-        0 => segment(100, theme::RULE_FAINT),
-        100 => segment(100, theme::OK),
-        f => row![segment(f, theme::OK), segment(100 - f, theme::RULE_FAINT)].into(),
+        0 => segment(100, crate::theme::palette().rule_faint),
+        100 => segment(100, crate::theme::palette().ok),
+        f => row![segment(f, crate::theme::palette().ok), segment(100 - f, crate::theme::palette().rule_faint)].into(),
     };
     container(bar).width(Length::Fill).into()
 }
@@ -1117,7 +1117,7 @@ fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a
             ledger = ledger.push(entry_row(e, fade(&state.fresh, e.id, now)));
             if i < last {
                 ledger = ledger.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-                    background: Some(theme::RULE_FAINT.into()),
+                    background: Some(crate::theme::palette().rule_faint.into()),
                     ..Default::default()
                 }));
             }
@@ -1155,13 +1155,13 @@ fn entry_row<'a>(e: &Entry, alpha: f32) -> Element<'a, Msg> {
         let room = (size.width - JOURNAL_FIXED).max(0.0);
         let memo = ellipsize(&memo, (room / SERIF15_CHAR) as usize);
         row![
-            container(ui::mono(id.clone(), 11.5, fade(INK_3))).width(Length::Fixed(56.0)).clip(true),
-            container(ui::mono(when.clone(), 11.5, fade(INK_3))).width(Length::Fixed(92.0)).clip(true),
+            container(ui::mono(id.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(56.0)).clip(true),
+            container(ui::mono(when.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(92.0)).clip(true),
             container(ui::badge::<Msg>(&kind, tone)).width(Length::Fixed(120.0)).clip(true),
-            container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(fade(INK)).wrapping(Wrapping::None))
+            container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
                 .width(Length::Fill)
                 .clip(true),
-            container(iced::widget::text(amount.clone()).font(AMOUNT).size(14.0).color(fade(INK)).wrapping(Wrapping::None))
+            container(iced::widget::text(amount.clone()).font(AMOUNT).size(14.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
                 .width(Length::Fixed(90.0))
                 .align_right(Length::Fixed(90.0)),
         ]
@@ -1246,7 +1246,7 @@ fn sort_head<'a, T: Copy + PartialEq>(label: &str, portion: u16, value: T, curre
     } else {
         ""
     };
-    let content = button(iced::widget::text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { INK } else { INK_3 }))
+    let content = button(iced::widget::text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
         .style(link)
         .padding(0)
         .on_press(make(value));
@@ -1275,7 +1275,7 @@ fn segmented<'a, T: Copy + PartialEq + 'a>(options: &[(T, &str)], current: T, ma
 
 /// A plain link-looking button for an agent's name.
 fn link(_: &Theme, _: button::Status) -> button::Style {
-    button::Style { text_color: ui::INK, ..Default::default() }
+    button::Style { text_color: crate::theme::palette().ink, ..Default::default() }
 }
 
 fn roster_choices(state: &State) -> Vec<AgentChoice> {
@@ -1335,13 +1335,13 @@ fn kind_tone(kind: &str) -> ui::Tone {
 /// The colour a kind's flow takes in the charts (the same families as its badge).
 fn kind_color(kind: &str) -> Color {
     match kind {
-        "mint" => theme::OK,
-        "spend" => theme::WARN,
-        "payment" => theme::SIGNAL,
+        "mint" => crate::theme::palette().ok,
+        "spend" => crate::theme::palette().warn,
+        "payment" => crate::theme::palette().signal,
         "refund" | "transfer" => BLUE,
-        "fine" => theme::CRIT,
+        "fine" => crate::theme::palette().crit,
         "escrow" => PURPLE,
-        _ => INK_3,
+        _ => crate::theme::palette().ink_3,
     }
 }
 
@@ -1349,9 +1349,9 @@ fn kind_color(kind: &str) -> Color {
 fn balance_series(points: &[Bucket]) -> Vec<chart::Series> {
     let pick = |key: &str, color: Color, f: fn(&Bucket) -> f64| chart::Series { key: key.to_string(), color, values: points.iter().map(f).collect() };
     vec![
-        pick("Budget", theme::OK, |p| p.budget),
+        pick("Budget", crate::theme::palette().ok, |p| p.budget),
         pick("Circulating", BLUE, |p| p.circulating),
-        pick("Treasury", theme::WARN, |p| p.treasury),
+        pick("Treasury", crate::theme::palette().warn, |p| p.treasury),
     ]
 }
 

@@ -18,7 +18,7 @@ use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::Ctx;
-use crate::theme::{CRIT, INK, INK_2, INK_3, MONO, RULE, RULE_FAINT, SIGNAL};
+use crate::theme::{MONO};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const LIBRARIES: [&str; 5] = ["any", "onnx", "safetensors", "transformers", "gguf"];
@@ -509,7 +509,7 @@ fn token_block<'a>(state: &'a State) -> Element<'a, Msg> {
         ))
         .font(MONO)
         .size(12.0)
-        .color(INK_2)
+        .color(crate::theme::palette().ink_2)
         .into(),
         None => ui::faint(state.status_error.clone().unwrap_or_else(|| "Reading the token state".to_string())).into(),
     };
@@ -630,7 +630,7 @@ fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
     let size_line = |label: &str, size: u64| -> Element<'a, Msg> {
         let over = size > cap;
         let line = format!("{label}: {}{}", lab_common::size(size), if over { " (over the cap)" } else { "" });
-        text(line).font(MONO).size(12.0).color(if over { CRIT } else { INK_2 }).into()
+        text(line).font(MONO).size(12.0).color(if over { crate::theme::palette().crit } else { crate::theme::palette().ink_2 }).into()
     };
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
     if is_gated(&d.gated) {
@@ -639,7 +639,7 @@ fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
                 text("Gated: this model needs its terms accepted on its Hub page. Accept them there yourself; this console never accepts terms for you.")
                     .font(MONO)
                     .size(12.0)
-                    .color(CRIT),
+                    .color(crate::theme::palette().crit),
                 ui::link("Open its page on huggingface.co", Msg::OpenUrl(d.url.clone()), false),
             ]
             .spacing(6)
@@ -727,7 +727,7 @@ fn imports_block<'a>(state: &'a State) -> Element<'a, Msg> {
             state_cell.push(ui::faint(reason.clone()).into());
         }
         if let Some(error) = &r.error {
-            state_cell.push(text(error.clone()).font(MONO).size(12.0).color(CRIT).into());
+            state_cell.push(text(error.clone()).font(MONO).size(12.0).color(crate::theme::palette().crit).into());
         }
         lines = lines.push(
             row![
@@ -768,7 +768,7 @@ fn pair<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
 }
 
 fn value<'a>(s: &str) -> Element<'a, Msg> {
-    text(s.to_string()).font(MONO).size(12.0).color(INK_2).width(Length::Fill).into()
+    text(s.to_string()).font(MONO).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
 }
 
 fn bar<'a>(ratio: f64) -> Element<'a, Msg> {
@@ -776,10 +776,10 @@ fn bar<'a>(ratio: f64) -> Element<'a, Msg> {
     row![
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion(pct.max(1)))
-            .style(|_: &Theme| container::Style { background: Some(SIGNAL.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() }),
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
     ]
     .into()
 }
@@ -794,27 +794,27 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 }
 
 fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_uppercase()).font(MONO).size(11.0).color(INK_3).into()
+    text(label.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3).into()
 }
 
 /// A panel section: a ruled box with its title in caps and its body.
 fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
     container(column![
-        text(title.to_uppercase()).font(MONO).size(11.5).color(INK),
-        container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(RULE.into()), ..Default::default() }),
+        text(title.to_uppercase()).font(MONO).size(11.5).color(crate::theme::palette().ink),
+        container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() }),
         body,
     ]
     .spacing(12))
     .padding(16)
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style { border: iced::Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+    .style(|_: &Theme| container::Style { border: iced::Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
     .into()
 }
 
 fn section_head<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(column![head, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(RULE.into()), ..Default::default() }), body].spacing(12))
+    container(column![head, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() }), body].spacing(12))
         .padding(16)
         .width(Length::Fill)
-        .style(|_: &Theme| container::Style { border: iced::Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: iced::Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }

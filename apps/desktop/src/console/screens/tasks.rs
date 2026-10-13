@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use super::Id;
 use crate::console::ui::{self, Tone};
 use crate::console::{client, Ctx};
-use crate::theme::{self, CRIT, OK};
+use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
 const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
@@ -596,9 +596,9 @@ fn status_of(agents: &[AgentRecord], cid: Option<u64>) -> String {
 
 fn status_color(status: &str) -> Color {
     match status {
-        "working" => ui::SIGNAL,
-        "idle" => OK,
-        _ => ui::INK_3,
+        "working" => crate::theme::palette().signal,
+        "idle" => crate::theme::palette().ok,
+        _ => crate::theme::palette().ink_3,
     }
 }
 
@@ -654,7 +654,7 @@ fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
-    column![ui::mono(value.to_string(), 22.0, ui::INK), ui::label(label)].spacing(2).into()
+    column![ui::mono(value.to_string(), 22.0, crate::theme::palette().ink), ui::label(label)].spacing(2).into()
 }
 
 /// The four lanes, each full height, with a line when empty.
@@ -668,7 +668,7 @@ fn board<'a>(state: &'a State) -> Element<'a, Msg> {
             let items: Vec<Element<'a, Msg>> = sorted.iter().filter(|t| lane_of(&t.state) == i).map(|t| task_card(state, *t)).collect();
             let count = items.len();
             let body: Element<'a, Msg> = if items.is_empty() {
-                text(*idle).font(ITALIC).size(15.0).color(ui::INK_3).into()
+                text(*idle).font(ITALIC).size(15.0).color(crate::theme::palette().ink_3).into()
             } else {
                 column(items).spacing(10).into()
             };
@@ -682,9 +682,9 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
     let mark = container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
     let head = row![
         mark,
-        text(label.to_uppercase()).font(MONO_BOLD).size(11.5).color(ui::INK),
+        text(label.to_uppercase()).font(MONO_BOLD).size(11.5).color(crate::theme::palette().ink),
         Space::new().width(Length::Fill),
-        text(count.to_string()).font(MONO_BOLD).size(12.0).color(ui::INK_2),
+        text(count.to_string()).font(MONO_BOLD).size(12.0).color(crate::theme::palette().ink_2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -712,8 +712,8 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
                 .unwrap_or_else(|| "waiting for the first step…".to_string());
             column![
                 stripe(),
-                container(mono_text(clip(&line, 36), 11.5, ui::INK_2)).width(Length::Fill).clip(true),
-                meta_row(meta_text("elapsed".to_string()), ui::mono(fmt_elapsed(now - t.updated_at), 12.0, ui::INK).into()),
+                container(mono_text(clip(&line, 36), 11.5, crate::theme::palette().ink_2)).width(Length::Fill).clip(true),
+                meta_row(meta_text("elapsed".to_string()), ui::mono(fmt_elapsed(now - t.updated_at), 12.0, crate::theme::palette().ink).into()),
             ]
             .spacing(8)
             .width(Length::Fill)
@@ -722,7 +722,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
         2 => {
             let mut items: Vec<Element<'a, Msg>> = Vec::new();
             if let Some(note) = t.note.as_deref() {
-                items.push(serif_text(clip(note, 110), 13.5, ui::INK_2));
+                items.push(serif_text(clip(note, 110), 13.5, crate::theme::palette().ink_2));
             }
             items.push(meta_row(
                 meta_text(format!("took {}", fmt_span(t.updated_at - t.created_at))),
@@ -733,7 +733,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
         3 => {
             let reason = t.outcome.clone().or_else(|| t.note.clone()).unwrap_or_else(|| label_of(&t.state));
             column![
-                serif_text(clip(&reason, 160), 13.0, CRIT),
+                serif_text(clip(&reason, 160), 13.0, crate::theme::palette().crit),
                 meta_row(meta_text(label_of(&t.state)), meta_text(ago(t.updated_at))),
             ]
             .spacing(8)
@@ -745,9 +745,9 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
         ),
     };
     let top = row![
-        mono_text(t.id.clone(), 11.0, ui::INK_3),
+        mono_text(t.id.clone(), 11.0, crate::theme::palette().ink_3),
         Space::new().width(Length::Fill),
-        mono_text(clip(&role, 18).to_uppercase(), 10.5, ui::INK_2),
+        mono_text(clip(&role, 18).to_uppercase(), 10.5, crate::theme::palette().ink_2),
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill);
@@ -756,7 +756,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
             .font(TITLE_FONT)
             .size(15.0)
             .line_height(1.35)
-            .color(ui::INK)
+            .color(crate::theme::palette().ink)
             .wrapping(Wrapping::WordOrGlyph),
     )
     .width(Length::Fill)
@@ -771,9 +771,9 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
 /// The card's box: the paper colour under a rule, as the web's task card.
 fn card_box(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(ui::INK),
-        background: Some(theme::PAPER.into()),
-        border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().paper.into()),
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..container::Style::default()
     }
 }
@@ -787,7 +787,7 @@ fn solid(color: Color) -> impl Fn(&Theme) -> container::Style {
 fn stripe<'a>() -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     for _ in 0..9 {
-        parts.push(container(Space::new().width(10.0).height(3.0)).style(solid(ui::SIGNAL)).into());
+        parts.push(container(Space::new().width(10.0).height(3.0)).style(solid(crate::theme::palette().signal)).into());
         parts.push(Space::new().width(10.0).height(3.0).into());
     }
     container(row(parts)).width(Length::Fill).clip(true).into()
@@ -801,7 +801,7 @@ fn mono_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
 
 /// The faint mono of a card's footer.
 fn meta_text<'a>(s: String) -> Element<'a, Msg> {
-    mono_text(s, 11.5, ui::INK_3)
+    mono_text(s, 11.5, crate::theme::palette().ink_3)
 }
 
 /// Serif text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
@@ -819,7 +819,7 @@ fn meta_row<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, 
 fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
     match cid {
         None => ui::faint("Unassigned").into(),
-        Some(cid) => button(ui::mono(agent_name(&state.agents, cid), 11.5, ui::INK))
+        Some(cid) => button(ui::mono(agent_name(&state.agents, cid), 11.5, crate::theme::palette().ink))
             .padding(0.0)
             .style(button::text)
             .on_press(Msg::Go(Id::Agent(cid)))
@@ -876,7 +876,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         kv("State", ui::badge(&label_of(&t.state), tone_of_state(&t.state))),
         kv("Role", ui::faint(role).into()),
         kv("Assignee", assignee_link(state, t.agent_cid)),
-        kv("Budget", ui::mono(fmt_num(t.budget), 12.0, ui::INK).into()),
+        kv("Budget", ui::mono(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()),
         kv("Created", ui::faint(ago(t.created_at)).into()),
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
@@ -914,7 +914,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         main_parts.push(section("Result", ui::markdown(n)));
     }
 
-    let head = column![ui::mono(t.id.clone(), 11.0, ui::INK_3), ui::mono(title_of(&t.goal), 22.0, ui::INK)].spacing(4);
+    let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::mono(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);
     let main = column(main_parts).spacing(22).width(Length::FillPortion(3));
     let side = column![section("Facts", column(side_parts).spacing(10).into()), section("Timeline", steps)]
         .spacing(22)
@@ -923,8 +923,8 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn timeline_row<'a>(e: &'a EntryRecord) -> Element<'a, Msg> {
-    let color = if e.kind == "error" { CRIT } else { ui::INK };
-    row![ui::mono(clock(e.at_ms), 11.0, ui::INK_3), ui::mono(describe(e), 12.0, color)]
+    let color = if e.kind == "error" { crate::theme::palette().crit } else { crate::theme::palette().ink };
+    row![ui::mono(clock(e.at_ms), 11.0, crate::theme::palette().ink_3), ui::mono(describe(e), 12.0, color)]
         .spacing(12)
         .into()
 }

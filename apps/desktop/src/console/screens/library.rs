@@ -554,16 +554,16 @@ fn card<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
     let title = if d.title.is_empty() { d.name.as_str() } else { d.title.as_str() };
     let mut body: Vec<Element<'a, Msg>> = vec![
         container(ui::faint(d.store.as_str())).into(),
-        container(ui::mono(monogram(&d.name), 20.0, ui::INK_2)).padding(12).width(Fill).into(),
-        text(title).font(SEMIBOLD).size(15.0).color(ui::INK).into(),
-        ui::mono(d.name.as_str(), 11.0, ui::INK_3).into(),
+        container(ui::mono(monogram(&d.name), 20.0, crate::theme::palette().ink_2)).padding(12).width(Fill).into(),
+        text(title).font(SEMIBOLD).size(15.0).color(crate::theme::palette().ink).into(),
+        ui::mono(d.name.as_str(), 11.0, crate::theme::palette().ink_3).into(),
         ui::faint(format!("by {} · {} · {}", d.author, ago(d.created_ms), human_size(d.size))).into(),
     ];
     if d.kind == "shared" && d.audience == "private" {
         body.push(ui::faint(format!("private · {} agents", d.allowed.len())).into());
     }
     if let Some(task) = &d.task {
-        body.push(ui::mono(task.as_str(), 11.0, ui::INK_3).into());
+        body.push(ui::mono(task.as_str(), 11.0, crate::theme::palette().ink_3).into());
     }
     button_card(body, Msg::Open(d.id.clone()))
 }
@@ -584,7 +584,7 @@ fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
         Preview::Idle => ui::faint("").into(),
         Preview::Loading => ui::loading(),
         Preview::Image(handle) => image(handle.clone()).width(Fill).into(),
-        Preview::Text(s) => container(ui::mono(s.as_str(), 12.0, ui::INK)).padding(12).width(Fill).into(),
+        Preview::Text(s) => container(ui::mono(s.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into(),
         Preview::Markdown(s) => ui::markdown(s),
         Preview::Note(s) => ui::faint(s.as_str()).into(),
     };
@@ -643,7 +643,7 @@ fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
 
 /// One fact: a faint label, then the value (mono for names, hashes and ids; serif otherwise).
 fn fact<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Msg> {
-    let value: Element<'a, Msg> = if mono { ui::mono(value, 12.0, ui::INK).into() } else { ui::prose(value).size(13.0).into() };
+    let value: Element<'a, Msg> = if mono { ui::mono(value, 12.0, crate::theme::palette().ink).into() } else { ui::prose(value).size(13.0).into() };
     row![container(ui::faint(label)).width(Length::Fixed(120.0)), value].spacing(8).into()
 }
 
@@ -707,7 +707,7 @@ fn tool_card<'a>(state: &'a State, t: &'a LibraryTool) -> Element<'a, Msg> {
         }
         if let Some(view) = state.tool_view.as_ref().filter(|v| v.tool == me) {
             body.push(ui::faint(view.path.as_str()).into());
-            body.push(container(ui::mono(view.content.as_str(), 12.0, ui::INK)).padding(12).width(Fill).into());
+            body.push(container(ui::mono(view.content.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into());
         }
     }
 

@@ -19,7 +19,7 @@ use crate::console::client;
 use crate::console::lab_api::{self, Dataset, DatasetSpec};
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::Ctx;
-use crate::theme::{self, INFO, INK, INK_2, INK_3, OK, RULE, SIGNAL, SIGNAL_INK};
+use crate::theme::{self};
 
 /// Cards per row in the dataset grid, as the web's `minmax(300px, 1fr)` at the console's width.
 const GRID_COLS: usize = 2;
@@ -552,9 +552,9 @@ fn upload_body<'a>(u: &'a Upload) -> Element<'a, Msg> {
         items.push(ui::prose(format!("Uploaded as {}.", made.id)).into());
         items.push(
             column![
-                fact("Name", ui::mono(made.name.clone(), 12.0, INK)),
-                fact("Rows", ui::mono(lab_common::count(made.rows), 12.0, INK)),
-                fact("Frozen rows", ui::mono(lab_common::count(made.frozen_rows), 12.0, INK)),
+                fact("Name", ui::mono(made.name.clone(), 12.0, crate::theme::palette().ink)),
+                fact("Rows", ui::mono(lab_common::count(made.rows), 12.0, crate::theme::palette().ink)),
+                fact("Frozen rows", ui::mono(lab_common::count(made.frozen_rows), 12.0, crate::theme::palette().ink)),
                 fact("Balance", balance_cell(made)),
                 fact("Taint", taints_cell(made)),
             ]
@@ -637,7 +637,7 @@ fn table<'a>(rows: &[&'a Dataset], selected: Option<&str>) -> Element<'a, Msg> {
     let head_cells: Vec<Element<'a, Msg>> = heads
         .iter()
         .map(|(label, portion, right)| {
-            let content: Element<'a, Msg> = ui::mono(label.to_uppercase(), 11.0, INK_3).into();
+            let content: Element<'a, Msg> = ui::mono(label.to_uppercase(), 11.0, crate::theme::palette().ink_3).into();
             if *right { cell_right(*portion, content) } else { cell(*portion, content) }
         })
         .collect();
@@ -653,7 +653,7 @@ fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
     let content = row![
         cell(3, name_cell(d)),
         cell(2, ui::badge(&d.kind, kind_tone(&d.kind))),
-        cell(2, ui::mono(source_of(d), 12.0, INK_2)),
+        cell(2, ui::mono(source_of(d), 12.0, crate::theme::palette().ink_2)),
         cell(3, range_cell(d)),
         cell_right(2, rows_cell(d)),
         cell(3, balance_cell(d)),
@@ -672,8 +672,8 @@ fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
 /// One dataset as a card: the same facts as the table's row, opening its detail on a click.
 fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
     let body = column![
-        ui::mono(d.id.clone(), 11.5, INK_3).wrapping(Wrapping::None),
-        fact("Source", ui::mono(source_of(d), 12.0, INK_2)),
+        ui::mono(d.id.clone(), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
+        fact("Source", ui::mono(source_of(d), 12.0, crate::theme::palette().ink_2)),
         fact("Time range", range_cell(d)),
         fact("Rows", rows_cell(d)),
         fact("Balance", balance_cell(d)),
@@ -692,17 +692,17 @@ fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
 /// The detail panel of one dataset: its facts, then the provenance (folded until it is asked for).
 fn detail<'a>(d: &'a Dataset, provenance_open: bool) -> Element<'a, Msg> {
     let facts = column![
-        fact("Id", ui::mono(d.id.clone(), 12.0, INK).wrapping(Wrapping::None)),
-        fact("Source", ui::mono(source_of(d), 12.0, INK_2)),
-        fact("Created", ui::mono(lab_common::time(d.created_ms), 12.0, INK_2)),
+        fact("Id", ui::mono(d.id.clone(), 12.0, crate::theme::palette().ink).wrapping(Wrapping::None)),
+        fact("Source", ui::mono(source_of(d), 12.0, crate::theme::palette().ink_2)),
+        fact("Created", ui::mono(lab_common::time(d.created_ms), 12.0, crate::theme::palette().ink_2)),
         fact("Time range", range_cell(d)),
-        fact("Rows", ui::mono(lab_common::count(d.rows), 12.0, INK)),
-        fact("Frozen rows", ui::mono(lab_common::count(d.frozen_rows), 12.0, INK)),
+        fact("Rows", ui::mono(lab_common::count(d.rows), 12.0, crate::theme::palette().ink)),
+        fact("Frozen rows", ui::mono(lab_common::count(d.frozen_rows), 12.0, crate::theme::palette().ink)),
         fact("Balance", balance_cell(d)),
         fact("Taint", taints_cell(d)),
-        fact("SHA-256", ui::mono(or_none(&d.sha256), 11.0, INK_2)),
-        fact("File", ui::mono(or_none(&d.file), 11.0, INK_2)),
-        fact("Frozen file", ui::mono(or_none(&d.frozen_file), 11.0, INK_2)),
+        fact("SHA-256", ui::mono(or_none(&d.sha256), 11.0, crate::theme::palette().ink_2)),
+        fact("File", ui::mono(or_none(&d.file), 11.0, crate::theme::palette().ink_2)),
+        fact("Frozen file", ui::mono(or_none(&d.frozen_file), 11.0, crate::theme::palette().ink_2)),
     ]
     .spacing(8);
     let toggle = ui::btn(if provenance_open { "Hide provenance" } else { "Show provenance" }, None, Kind::Ghost, Some(Msg::ToggleProvenance));
@@ -712,7 +712,7 @@ fn detail<'a>(d: &'a Dataset, provenance_open: bool) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = vec![facts.into(), actions.into()];
     if provenance_open {
         let pretty = serde_json::to_string_pretty(&d.provenance).unwrap_or_default();
-        body.push(scrollable(ui::mono(pretty, 11.0, INK_2)).height(Length::Fixed(260.0)).into());
+        body.push(scrollable(ui::mono(pretty, 11.0, crate::theme::palette().ink_2)).height(Length::Fixed(260.0)).into());
     }
     ui::card(&d.name, column(body).spacing(14).into())
 }
@@ -738,15 +738,15 @@ fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
 fn rule<'a>() -> Element<'a, Msg> {
     container(Space::new().height(Length::Fixed(1.0)))
         .width(Length::Fill)
-        .style(|_: &Theme| container::Style { background: Some(RULE.into()), ..Default::default() })
+        .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() })
         .into()
 }
 
 /// The dataset's name over its id; the id stays on one line.
 fn name_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     column![
-        ui::mono(d.name.clone(), 12.5, INK),
-        ui::mono(d.id.clone(), 11.0, INK_3).wrapping(Wrapping::None),
+        ui::mono(d.name.clone(), 12.5, crate::theme::palette().ink),
+        ui::mono(d.id.clone(), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(3)
     .into()
@@ -755,8 +755,8 @@ fn name_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 /// The time span: from, then `to` and the end, in local time.
 fn range_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     column![
-        ui::mono(lab_common::time(d.from_ms), 11.5, INK_2).wrapping(Wrapping::None),
-        ui::mono(format!("to {}", lab_common::time(d.to_ms)), 11.5, INK_3).wrapping(Wrapping::None),
+        ui::mono(lab_common::time(d.from_ms), 11.5, crate::theme::palette().ink_2).wrapping(Wrapping::None),
+        ui::mono(format!("to {}", lab_common::time(d.to_ms)), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(2)
     .into()
@@ -764,10 +764,10 @@ fn range_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
 
 /// The row count, with the frozen set under it (a padlock and its count) when there is one.
 fn rows_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
-    let mut lines: Vec<Element<'a, Msg>> = vec![ui::mono(lab_common::count(d.rows), 12.0, INK).into()];
+    let mut lines: Vec<Element<'a, Msg>> = vec![ui::mono(lab_common::count(d.rows), 12.0, crate::theme::palette().ink).into()];
     if d.frozen_rows > 0 {
         lines.push(
-            row![lock_mark(SIGNAL_INK), ui::mono(format!("{} frozen", lab_common::count(d.frozen_rows)), 11.0, SIGNAL_INK)]
+            row![lock_mark(crate::theme::palette().signal_ink), ui::mono(format!("{} frozen", lab_common::count(d.frozen_rows)), 11.0, crate::theme::palette().signal_ink)]
                 .spacing(6)
                 .align_y(Alignment::Center)
                 .into(),
@@ -806,11 +806,11 @@ fn balance_cell<'a>(d: &'a Dataset) -> Element<'a, Msg> {
     let bar = container(row(segments).width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fixed(8.0))
-        .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() });
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() });
     let legend: Vec<Element<'a, Msg>> = entries
         .iter()
         .map(|(class, n)| {
-            row![swatch(class_color(class)), ui::mono(format!("{class} {}", lab_common::count(*n)), 11.0, INK_2)]
+            row![swatch(class_color(class)), ui::mono(format!("{class} {}", lab_common::count(*n)), 11.0, crate::theme::palette().ink_2)]
                 .spacing(6)
                 .align_y(Alignment::Center)
                 .into()
@@ -846,10 +846,10 @@ fn balance_entries(balance: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
 /// A class's colour: cheap is ok, mid info, frontier the signal; any other class is faint.
 fn class_color(class: &str) -> Color {
     match class {
-        "cheap" => OK,
-        "mid" => INFO,
-        "frontier" => SIGNAL,
-        _ => INK_3,
+        "cheap" => crate::theme::palette().ok,
+        "mid" => crate::theme::palette().info,
+        "frontier" => crate::theme::palette().signal,
+        _ => crate::theme::palette().ink_3,
     }
 }
 

@@ -998,7 +998,7 @@ fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut strip = row(Vec::new()).spacing(22);
     for (tab, name) in [(Tab::Providers, "Providers"), (Tab::Policy, "Policy & defaults")] {
         let on = state.tab == tab;
-        let spans: Vec<text_mod::Span<'a>> = vec![span(name.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(if on { ui::INK } else { ui::INK_3 }).underline(on)];
+        let spans: Vec<text_mod::Span<'a>> = vec![span(name.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(if on { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }).underline(on)];
         let label = rich_text(spans);
         let cell = button(container(label).padding(Padding { top: 10.0, right: 0.0, bottom: 8.0, left: 0.0 }))
             .padding(0.0)
@@ -1006,7 +1006,7 @@ fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
                 let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
                 button::Style {
                     background: None,
-                    text_color: if on || hovered { ui::INK } else { ui::INK_3 },
+                    text_color: if on || hovered { crate::theme::palette().ink } else { crate::theme::palette().ink_3 },
                     border: Border::default(),
                     ..Default::default()
                 }
@@ -1054,7 +1054,7 @@ fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
 /// The kind entry a configured provider was made from: same id, else the first of the same kind.
 /// A policy sub-heading: serif semibold 13px in ink-3, as the web's `.models-policy h3`.
 fn h3<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_string()).font(SERIF_SEMIBOLD).size(13.0).color(ui::INK_3).into()
+    text(title.to_string()).font(SERIF_SEMIBOLD).size(13.0).color(crate::theme::palette().ink_3).into()
 }
 
 /// The provider kinds that answer decision questions; the rest are chat (as the web's `isDecisionKind`).
@@ -1218,12 +1218,12 @@ fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// The providers tab's section heading: mono caps, as the web's `.prov-section-title`.
 fn section_title<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_uppercase()).font(MONO_SEMIBOLD).size(16.0).color(ui::INK).into()
+    text(title.to_uppercase()).font(MONO_SEMIBOLD).size(16.0).color(crate::theme::palette().ink).into()
 }
 
 /// A credential group's heading: small mono caps over a hairline, as the web's `.prov-group-title`.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    column(vec![text(title.to_uppercase()).font(MONO).size(11.0).color(ui::INK_3).into(), ui::hairline()]).spacing(6).into()
+    column(vec![text(title.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3).into(), ui::hairline()]).spacing(6).into()
 }
 
 /// The chat providers, under their credential groups.
@@ -1242,7 +1242,7 @@ fn chat_section<'a>(state: &'a State) -> Element<'a, Msg> {
 /// The Decisions section: the decision providers, the decision model and the Try-it form.
 fn decisions_section<'a>(state: &'a State) -> Element<'a, Msg> {
     let cards: Vec<Element<'a, Msg>> = state.providers.iter().filter(|p| p.group == "decisions").map(|p| provider_card(state, p)).collect();
-    let mut items: Vec<Element<'a, Msg>> = vec![section_title("Decisions"), text(DECISIONS_LEDE).font(theme::SERIF).size(16.0).color(ui::INK_2).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![section_title("Decisions"), text(DECISIONS_LEDE).font(theme::SERIF).size(16.0).color(crate::theme::palette().ink_2).into()];
     if !cards.is_empty() {
         items.push(ui::card_grid(cards));
     }
@@ -1330,26 +1330,26 @@ fn answer_view<'a>(answer: &'a Answer) -> Element<'a, Msg> {
     match answer {
         Answer::Predicate { name, probability } => bar_line(name.clone(), *probability),
         Answer::Choice { name, choice, probabilities, confidence } => {
-            let head: Element<'a, Msg> = row(vec![ui::mono(name.clone(), 12.0, ui::INK).into(), spacer(), ui::badge(&value_text(choice), Tone::Signal)]).spacing(8).into();
+            let head: Element<'a, Msg> = row(vec![ui::mono(name.clone(), 12.0, crate::theme::palette().ink).into(), spacer(), ui::badge(&value_text(choice), Tone::Signal)]).spacing(8).into();
             let mut items: Vec<Element<'a, Msg>> = vec![head];
             items.extend(probabilities.iter().map(|w| bar_line(weighted_label(w), w.probability)));
             items.extend(confidence.map(confidence_line));
             column(items).spacing(6).into()
         }
         Answer::Score { name, score, probabilities, confidence } => {
-            let head: Element<'a, Msg> = row(vec![ui::mono(name.clone(), 12.0, ui::INK).into(), spacer(), ui::badge(&format!("{score:.2}"), Tone::Signal)]).spacing(8).into();
+            let head: Element<'a, Msg> = row(vec![ui::mono(name.clone(), 12.0, crate::theme::palette().ink).into(), spacer(), ui::badge(&format!("{score:.2}"), Tone::Signal)]).spacing(8).into();
             let mut items: Vec<Element<'a, Msg>> = vec![head];
             items.extend(probabilities.iter().map(|w| bar_line(weighted_label(w), w.probability)));
             items.extend(confidence.map(confidence_line));
             column(items).spacing(6).into()
         }
-        Answer::Refusal { name } => row(vec![ui::mono(name.clone(), 12.0, ui::INK).into(), spacer(), ui::badge("Refused", Tone::Warn)]).spacing(8).into(),
+        Answer::Refusal { name } => row(vec![ui::mono(name.clone(), 12.0, crate::theme::palette().ink).into(), spacer(), ui::badge("Refused", Tone::Warn)]).spacing(8).into(),
     }
 }
 
 /// A label with its percentage, and the probability as a bar under it.
 fn bar_line<'a>(label: String, probability: f64) -> Element<'a, Msg> {
-    let head: Element<'a, Msg> = row(vec![ui::mono(label, 12.0, ui::INK).into(), spacer(), ui::mono(format!("{:.1}%", probability * 100.0), 11.0, ui::INK_3).into()])
+    let head: Element<'a, Msg> = row(vec![ui::mono(label, 12.0, crate::theme::palette().ink).into(), spacer(), ui::mono(format!("{:.1}%", probability * 100.0), 11.0, crate::theme::palette().ink_3).into()])
         .spacing(8)
         .into();
     column(vec![head, bar(probability)]).spacing(4).into()
@@ -1362,12 +1362,12 @@ fn bar<'a>(probability: f64) -> Element<'a, Msg> {
         container(Space::new())
             .width(Length::FillPortion(filled))
             .height(6.0)
-            .style(|_: &Theme| container::Style { background: Some(ui::SIGNAL.into()), ..Default::default() })
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() })
             .into(),
         container(Space::new())
             .width(Length::FillPortion(1000 - filled))
             .height(6.0)
-            .style(|_: &Theme| container::Style { background: Some(ui::RULE_FAINT.into()), ..Default::default() })
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() })
             .into(),
     ])
     .width(Length::Fill)
@@ -1408,14 +1408,14 @@ fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
     let logo: Element<'a, Msg> = container(ui::brand_logo::<Msg>(brand, 26.0))
         .padding(10)
         .style(|_: &Theme| container::Style {
-            background: Some(theme::PAPER.into()),
-            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().paper.into()),
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into();
     let names: Element<'a, Msg> = column(vec![
-        text(title.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(ui::INK).wrapping(Wrapping::None).into(),
-        ui::mono(ui::ellipsize(&sub, 28), 11.5, ui::INK_3).wrapping(Wrapping::None).into(),
+        text(title.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None).into(),
+        ui::mono(ui::ellipsize(&sub, 28), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None).into(),
     ])
     .spacing(2)
     .width(Length::Fill)
@@ -1448,7 +1448,7 @@ fn provider_card<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
         .padding(Padding { top: 16.0, right: 16.0, bottom: 12.0, left: 16.0 })
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -1464,7 +1464,7 @@ fn model_list<'a>(state: &'a State, p: &'a Provider) -> Element<'a, Msg> {
             let mut items: Vec<Element<'a, Msg>> = list
                 .iter()
                 .map(|m| {
-                    let mut line: Vec<Element<'a, Msg>> = vec![ui::mono(m.id.clone(), 12.0, ui::INK).into()];
+                    let mut line: Vec<Element<'a, Msg>> = vec![ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink).into()];
                     if trains(&m.id) {
                         line.push(ui::trains_badge());
                     }
@@ -1533,7 +1533,7 @@ fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
 fn kind_tile<'a>(k: &'a ProviderKind) -> Element<'a, Msg> {
     let content: Vec<Element<'a, Msg>> = vec![
         ui::brand_logo::<Msg>(&k.brand, 18.0),
-        text(k.label.as_str()).font(theme::SERIF).size(14.0).color(ui::INK).wrapping(Wrapping::None).width(Length::Fill).into(),
+        text(k.label.as_str()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink).wrapping(Wrapping::None).width(Length::Fill).into(),
     ];
     button(row(content).spacing(8).align_y(Alignment::Center))
         .on_press(Msg::PickKind(k.id.clone()))
@@ -1542,9 +1542,9 @@ fn kind_tile<'a>(k: &'a ProviderKind) -> Element<'a, Msg> {
         .style(|_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
-                background: Some(if hovered { theme::HOVER } else { theme::SHEET }.into()),
-                text_color: ui::INK,
-                border: Border { color: if hovered { ui::INK_3 } else { ui::RULE }, width: 1.0, radius: 0.0.into() },
+                background: Some(if hovered { crate::theme::palette().hover } else { crate::theme::palette().sheet }.into()),
+                text_color: crate::theme::palette().ink,
+                border: Border { color: if hovered { crate::theme::palette().ink_3 } else { crate::theme::palette().rule }, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             }
         })
@@ -1648,13 +1648,13 @@ fn policy_row<'a>(p: &'a Policy, tier: Tier, index: usize, entry: &'a str) -> El
         .width(Length::Fixed(8.0))
         .height(Length::Fixed(8.0))
         .style(move |_: &Theme| container::Style {
-            background: if listed { Some(theme::OK.into()) } else { None },
-            border: Border { color: if listed { theme::OK } else { ui::INK_3 }, width: 1.0, radius: 0.0.into() },
+            background: if listed { Some(crate::theme::palette().ok.into()) } else { None },
+            border: Border { color: if listed { crate::theme::palette().ok } else { crate::theme::palette().ink_3 }, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into();
     // The whole id, nested slashes included: it wraps rather than being cut off.
-    let mut items: Vec<Element<'a, Msg>> = vec![marker, ui::mono(base.to_string(), 12.0, ui::INK).wrapping(Wrapping::WordOrGlyph).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![marker, ui::mono(base.to_string(), 12.0, crate::theme::palette().ink).wrapping(Wrapping::WordOrGlyph).into()];
     if effort.is_some() {
         items.push(ui::badge("effort pinned", Tone::Signal));
     }
@@ -1689,7 +1689,7 @@ fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
         };
         let options = model_options(p, tier, current, Some(inherit));
         let role_row: Element<'a, Msg> = row(vec![
-            ui::mono(role.clone(), 12.0, ui::INK).into(),
+            ui::mono(role.clone(), 12.0, crate::theme::palette().ink).into(),
             picker(options, current, Slot::Role(role.clone())),
         ])
         .spacing(12)
@@ -1773,9 +1773,9 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
                 .into()
         };
         let key_cell: Element<'a, Msg> = if listed_trains(&p.models, &key) {
-            row(vec![ui::mono(key.clone(), 12.0, ui::INK).into(), ui::trains_badge()]).spacing(8).align_y(Alignment::Center).into()
+            row(vec![ui::mono(key.clone(), 12.0, crate::theme::palette().ink).into(), ui::trains_badge()]).spacing(8).align_y(Alignment::Center).into()
         } else {
-            ui::mono(key.clone(), 12.0, ui::INK).into()
+            ui::mono(key.clone(), 12.0, crate::theme::palette().ink).into()
         };
         let line: Element<'a, Msg> = row(vec![
             key_cell,

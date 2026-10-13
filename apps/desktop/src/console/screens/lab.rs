@@ -22,7 +22,7 @@ use crate::console::chart;
 use crate::console::client::{self, Client};
 use crate::console::lab_api::{self, Device, DeviceMachine, JobSummary, ModelView};
 use crate::console::{ui, Ctx};
-use crate::theme::{self, INK, INK_2, INK_3, MONO, RULE, RULE_FAINT, SIGNAL, SIGNAL_INK};
+use crate::theme::{self, MONO};
 
 /// A section tab. A detail screen sits under its list's tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +263,7 @@ fn lab_tabs<'a, M: Clone + 'a>(current: Section, on_go: impl Fn(Section) -> M + 
     let mut strip = row![].spacing(22);
     for &(value, name) in SECTIONS {
         let on = value == current;
-        let bar = if on { SIGNAL } else { Color::TRANSPARENT };
+        let bar = if on { crate::theme::palette().signal } else { Color::TRANSPARENT };
         // Martian Mono is monospace (advance 0.7 em), so a label is as wide as its characters: the
         // underline is drawn that wide, not to Fill, which would share the strip out across the width.
         let width = name.chars().count() as f32 * TAB_ADVANCE * TAB_SIZE;
@@ -281,7 +281,7 @@ fn lab_tabs<'a, M: Clone + 'a>(current: Section, on_go: impl Fn(Section) -> M + 
                 let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
                 button::Style {
                     background: None,
-                    text_color: if on || hovered { INK } else { INK_3 },
+                    text_color: if on || hovered { crate::theme::palette().ink } else { crate::theme::palette().ink_3 },
                     border: Border::default(),
                     ..Default::default()
                 }
@@ -290,7 +290,7 @@ fn lab_tabs<'a, M: Clone + 'a>(current: Section, on_go: impl Fn(Section) -> M + 
         strip = strip.push(cell);
     }
     column![strip, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     })]
     .width(Length::Fill)
@@ -309,7 +309,7 @@ fn link<'a>(label: &str, msg: Msg, mono: bool) -> Element<'a, Msg> {
         .padding(0.0)
         .style(|_: &Theme, status: button::Status| button::Style {
             background: None,
-            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { INK } else { SIGNAL_INK },
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { crate::theme::palette().ink } else { crate::theme::palette().signal_ink },
             border: Border::default(),
             ..Default::default()
         })
@@ -322,7 +322,7 @@ fn link<'a>(label: &str, msg: Msg, mono: bool) -> Element<'a, Msg> {
 /// A ruled card as the web's `.lab-card`: a head (the title on the left, tags and a muted meta on the
 /// right) over a rule, then the body padded 16.
 fn lab_card<'a>(title: &str, tags: Vec<Element<'a, Msg>>, meta: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    let mut line = row![text(title.to_string()).font(MONO_SEMIBOLD).size(12.0).color(INK), Space::new().width(Length::Fill)]
+    let mut line = row![text(title.to_string()).font(MONO_SEMIBOLD).size(12.0).color(crate::theme::palette().ink), Space::new().width(Length::Fill)]
         .spacing(10)
         .align_y(Alignment::Center);
     for tag in tags {
@@ -338,13 +338,13 @@ fn lab_card<'a>(title: &str, tags: Vec<Element<'a, Msg>>, meta: &str, body: Elem
 /// The frame of a card: its head over a rule, then the body padded 16.
 fn card_shell<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
     let rule = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     });
     container(column![head, rule, container(body).padding(16).width(Length::Fill)])
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -431,17 +431,17 @@ fn device_row(dv: &Device, dim: bool) -> Element<'_, Msg> {
 /// The text colour of a line: ink, or ink-3 for a dim (offline) one.
 fn ink(dim: bool) -> Color {
     if dim {
-        INK_3
+        crate::theme::palette().ink_3
     } else {
-        INK
+        crate::theme::palette().ink
     }
 }
 
 fn ink_2(dim: bool) -> Color {
     if dim {
-        INK_3
+        crate::theme::palette().ink_3
     } else {
-        INK_2
+        crate::theme::palette().ink_2
     }
 }
 
@@ -454,7 +454,7 @@ fn util_bar<'a>(pct: f64) -> Element<'a, Msg> {
             container(Space::new().height(Length::Fill))
                 .width(Length::FillPortion(on))
                 .height(Length::Fill)
-                .style(|_: &Theme| container::Style { background: Some(SIGNAL.into()), ..Default::default() })
+                .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() })
                 .into(),
         );
     }
@@ -465,7 +465,7 @@ fn util_bar<'a>(pct: f64) -> Element<'a, Msg> {
         .width(Length::Fill)
         .height(Length::Fixed(8.0))
         .style(|_: &Theme| container::Style {
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -543,18 +543,18 @@ fn hours_card(d: &Data, shown: Option<Vec<f64>>) -> Element<'_, Msg> {
     let jobs = d.week.jobs;
     let stat = column![
         ui::label("GPU-hours, last 7 days"),
-        text(lab_common::gpu_hours(total)).font(VALUE).size(30.0).color(INK),
+        text(lab_common::gpu_hours(total)).font(VALUE).size(30.0).color(crate::theme::palette().ink),
         text(format!("{} {} created in the last 7 days", lab_common::count(jobs as u64), if jobs == 1 { "job" } else { "jobs" }))
             .font(ITALIC)
             .size(13.0)
-            .color(INK_2),
+            .color(crate::theme::palette().ink_2),
     ]
     .spacing(4);
     let stat = container(stat)
         .padding(Padding { top: 12.0, right: 16.0, bottom: 12.0, left: 16.0 })
         .width(Length::Fixed(280.0))
         .style(|_: &Theme| container::Style {
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
     let body = column![stat, day_bars(&d.week.labels, &values)].spacing(16).width(Length::Fill);
@@ -571,12 +571,12 @@ fn day_bars<'a>(labels: &[String], values: &[f64]) -> Element<'a, Msg> {
             let px = if max > 0.0 { (v.max(0.0) / max * f64::from(BAR_AREA)) as f32 } else { 0.0 };
             let bar = container(Space::new().width(Length::Fill).height(Length::Fixed(px)))
                 .width(Length::Fill)
-                .style(|_: &Theme| container::Style { background: Some(SIGNAL.into()), ..Default::default() });
+                .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() });
             let area = column![Space::new().height(Length::Fixed(BAR_AREA - px)), bar].width(Length::Fill).height(Length::Fixed(BAR_AREA));
             column![
-                text(lab_common::number(v, 2)).font(MONO).size(11.0).color(INK_2),
+                text(lab_common::number(v, 2)).font(MONO).size(11.0).color(crate::theme::palette().ink_2),
                 area,
-                text(label.clone()).font(MONO).size(10.5).color(INK_3),
+                text(label.clone()).font(MONO).size(10.5).color(crate::theme::palette().ink_3),
             ]
             .spacing(6)
             .width(Length::Fill)
@@ -605,7 +605,7 @@ fn table<'a>(cols: &[Col], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg>
     let heads: Vec<Element<'a, Msg>> = cols
         .iter()
         .map(|c| {
-            let label = text(c.head.to_uppercase()).font(MONO).size(10.5).color(INK_3);
+            let label = text(c.head.to_uppercase()).font(MONO).size(10.5).color(crate::theme::palette().ink_3);
             aligned(label.into(), c)
         })
         .collect();
@@ -614,7 +614,7 @@ fn table<'a>(cols: &[Col], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg>
         let line: Vec<Element<'a, Msg>> = cells.into_iter().zip(cols).map(|(cell, c)| aligned(cell, c)).collect();
         body = body.push(row(line).spacing(12).align_y(Alignment::Center).width(Length::Fill));
         body = body.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-            background: Some(RULE_FAINT.into()),
+            background: Some(crate::theme::palette().rule_faint.into()),
             ..Default::default()
         }));
     }
@@ -629,7 +629,7 @@ fn aligned<'a>(content: Element<'a, Msg>, c: &Col) -> Element<'a, Msg> {
 /// A table cell in ink: mono for ids and recipes, the body's serif for the rest (as the web's `td`).
 fn cell<'a>(value: &str, mono: bool) -> Element<'a, Msg> {
     let face = if mono { MONO } else { theme::SERIF };
-    text(value.to_string()).font(face).size(13.0).color(INK).into()
+    text(value.to_string()).font(face).size(13.0).color(crate::theme::palette().ink).into()
 }
 
 // ---- Helpers ---------------------------------------------------------------

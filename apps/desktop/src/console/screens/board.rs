@@ -354,9 +354,9 @@ fn author_options(state: &State) -> Vec<Author> {
 
 /// One post: its number, the by-line (author link, role, count, Reply), subject, body, files, thread, time.
 fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
-    let name = button(text(state.name_of(p.agent_cid)).font(SEMIBOLD_SERIF).size(14.5).color(ui::INK))
+    let name = button(text(state.name_of(p.agent_cid)).font(SEMIBOLD_SERIF).size(14.5).color(crate::theme::palette().ink))
         .padding(0.0)
-        .style(|_: &Theme, _| button::Style { text_color: ui::INK, ..Default::default() })
+        .style(|_: &Theme, _| button::Style { text_color: crate::theme::palette().ink, ..Default::default() })
         .on_press(Msg::Go(Id::Agent(p.agent_cid)));
     let by = row![
         name,
@@ -369,7 +369,7 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
 
     let mut matter: Vec<Element<'a, Msg>> = vec![
         by.into(),
-        text(p.subject.clone()).font(SEMIBOLD_SERIF).size(16.0).color(ui::INK).into(),
+        text(p.subject.clone()).font(SEMIBOLD_SERIF).size(16.0).color(crate::theme::palette().ink).into(),
     ];
     if let Some(body) = body(state, p) {
         matter.push(body);
@@ -381,8 +381,8 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
         matter.push(thread);
     }
     // The web's grid: the post number (56px, right-aligned), the matter, then the time at the far end.
-    let number = container(ui::mono(format!("p{no}"), 11.0, ui::INK_3)).width(Length::Fixed(56.0)).align_x(Alignment::End);
-    let when = ui::mono(ago(p.created_at), 11.0, ui::INK_3);
+    let number = container(ui::mono(format!("p{no}"), 11.0, crate::theme::palette().ink_3)).width(Length::Fixed(56.0)).align_x(Alignment::End);
+    let when = ui::mono(ago(p.created_at), 11.0, crate::theme::palette().ink_3);
     row![
         number,
         column(matter).spacing(6).width(Length::Fill),
@@ -442,9 +442,9 @@ fn file_chip<'a>(state: &State, id: &str) -> Element<'a, Msg> {
             } else {
                 ""
             };
-            container(ui::mono(format!("{kind}{name}  {}", size_of(meta.size)), 12.0, ui::INK_2))
+            container(ui::mono(format!("{kind}{name}  {}", size_of(meta.size)), 12.0, crate::theme::palette().ink_2))
                 .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
-                .style(|_: &Theme| container::Style { border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+                .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
                 .into()
         }
         None if state.missing.contains(id) => ui::faint("file unavailable").into(),
@@ -492,7 +492,7 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
         },
     };
     let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_else(|| "?".to_string());
-    let colour = if c.agent_cid.is_none() { ui::SIGNAL } else { ui::INK };
+    let colour = if c.agent_cid.is_none() { crate::theme::palette().signal } else { crate::theme::palette().ink };
     let mut main: Vec<Element<'a, Msg>> = vec![
         row![ui::mono(name, 12.0, colour), ui::faint(ago(c.created_at))].spacing(10).align_y(Alignment::Center).into(),
         ui::markdown(&c.body),
@@ -500,7 +500,7 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
     if let Some(files) = attachments(state, &c.attachments) {
         main.push(files);
     }
-    row![ui::mono(initial, 12.0, ui::INK_2), column(main).spacing(4).width(Length::Fill)]
+    row![ui::mono(initial, 12.0, crate::theme::palette().ink_2), column(main).spacing(4).width(Length::Fill)]
         .spacing(10)
         .into()
 }

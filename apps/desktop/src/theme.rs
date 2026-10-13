@@ -4,7 +4,8 @@
 //! the rules and the space between them stand in).
 
 use iced::widget::{button, container, rule, text_input};
-use iced::{Background, Border, Color, Font, Shadow, Theme, Vector, theme::Palette};
+use iced::{Background, Border, Color, Font, Shadow, Theme, Vector, theme::Palette as IcedPalette};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The page behind everything: the console's night navy.
 pub const PAPER: Color = Color::from_rgb8(0x0a, 0x0e, 0x19);
@@ -72,11 +73,11 @@ impl Tone {
     /// The tone's colour.
     pub fn color(self) -> Color {
         match self {
-            Tone::Neutral => INK_2,
-            Tone::Ok => OK,
-            Tone::Warn => WARN,
-            Tone::Crit => CRIT,
-            Tone::Signal => SIGNAL,
+            Tone::Neutral => crate::theme::palette().ink_2,
+            Tone::Ok => crate::theme::palette().ok,
+            Tone::Warn => crate::theme::palette().warn,
+            Tone::Crit => crate::theme::palette().crit,
+            Tone::Signal => crate::theme::palette().signal,
         }
     }
 }
@@ -84,15 +85,16 @@ impl Tone {
 /// The application theme: the Plaza night palette, dark by default, so
 /// default-styled widgets (icons, selections, scroll rails) match the register.
 pub fn theme() -> Theme {
+    let p = palette();
     Theme::custom(
-        "AgentPlaza register",
-        Palette {
-            background: PAPER,
-            text: INK,
-            primary: SIGNAL,
-            success: OK,
-            warning: WARN,
-            danger: CRIT,
+        if is_light() { "AgentPlaza register (light)" } else { "AgentPlaza register" },
+        IcedPalette {
+            background: p.paper,
+            text: p.ink,
+            primary: p.signal,
+            success: p.ok,
+            warning: p.warn,
+            danger: p.crit,
         },
     )
 }
@@ -100,8 +102,8 @@ pub fn theme() -> Theme {
 /// The page.
 pub fn paper(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(INK),
-        background: Some(PAPER.into()),
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().paper.into()),
         ..container::Style::default()
     }
 }
@@ -109,9 +111,9 @@ pub fn paper(_theme: &Theme) -> container::Style {
 /// The index column, ruled off from the sheet.
 pub fn index(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(INK_2),
-        background: Some(PAPER.into()),
-        border: Border::default().width(1.0).color(RULE),
+        text_color: Some(crate::theme::palette().ink_2),
+        background: Some(crate::theme::palette().paper.into()),
+        border: Border::default().width(1.0).color(crate::theme::palette().rule),
         snap: true,
         ..container::Style::default()
     }
@@ -120,9 +122,9 @@ pub fn index(_theme: &Theme) -> container::Style {
 /// A sheet: a slightly brighter page with a hard print shadow.
 pub fn sheet(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(INK),
-        background: Some(SHEET.into()),
-        border: Border::default().width(1.0).color(RULE),
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border::default().width(1.0).color(crate::theme::palette().rule),
         shadow: print_shadow(),
         snap: true,
     }
@@ -132,7 +134,7 @@ pub fn sheet(_theme: &Theme) -> container::Style {
 pub fn margin(_theme: &Theme) -> container::Style {
     container::Style {
         border: Border {
-            color: MARGIN,
+            color: crate::theme::palette().margin,
             width: 2.0,
             ..Border::default()
         },
@@ -145,7 +147,7 @@ pub fn margin(_theme: &Theme) -> container::Style {
 pub fn swatch(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| container::Style {
         background: Some(Background::Color(color)),
-        border: Border::default().width(1.0).color(INK_3),
+        border: Border::default().width(1.0).color(crate::theme::palette().ink_3),
         snap: true,
         ..container::Style::default()
     }
@@ -155,7 +157,7 @@ pub fn swatch(color: Color) -> impl Fn(&Theme) -> container::Style {
 pub fn stamp(tone: Tone) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {
         text_color: Some(tone.color()),
-        background: Some(SHEET.into()),
+        background: Some(crate::theme::palette().sheet.into()),
         border: Border {
             color: tone.color(),
             width: 2.0,
@@ -169,9 +171,9 @@ pub fn stamp(tone: Tone) -> impl Fn(&Theme) -> container::Style {
 /// A plain bounded box: the serial pane, a key/value block.
 pub fn boxed(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(INK),
-        background: Some(SHEET.into()),
-        border: Border::default().width(1.0).color(RULE_FAINT),
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border::default().width(1.0).color(crate::theme::palette().rule_faint),
         snap: true,
         ..container::Style::default()
     }
@@ -190,12 +192,12 @@ pub fn scrim(_theme: &Theme) -> container::Style {
 /// The notice line: the last action's outcome.
 pub fn notice(tone: Tone) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {
-        text_color: Some(INK),
+        text_color: Some(crate::theme::palette().ink),
         background: Some(
             if tone == Tone::Crit {
                 Color::from_rgba8(0xa3, 0x18, 0x2b, 0.08)
             } else {
-                TAINT
+                crate::theme::palette().taint
             }
             .into(),
         ),
@@ -215,13 +217,13 @@ pub fn notice(tone: Tone) -> impl Fn(&Theme) -> container::Style {
 pub fn register_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let background = match (selected, status) {
-            (true, _) => Some(TAINT.into()),
-            (false, button::Status::Hovered | button::Status::Pressed) => Some(HOVER.into()),
+            (true, _) => Some(crate::theme::palette().taint.into()),
+            (false, button::Status::Hovered | button::Status::Pressed) => Some(crate::theme::palette().hover.into()),
             (false, button::Status::Active | button::Status::Disabled) => None,
         };
         button::Style {
             background,
-            text_color: INK,
+            text_color: crate::theme::palette().ink,
             border: Border::default(),
             shadow: Shadow::default(),
             snap: true,
@@ -246,12 +248,12 @@ pub fn act_button(tone: Tone, armed: bool) -> impl Fn(&Theme, button::Status) ->
                         a: 0.12,
                         ..tone.color()
                     },
-                    button::Status::Active | button::Status::Disabled => SHEET,
+                    button::Status::Active | button::Status::Disabled => crate::theme::palette().sheet,
                 }
             }
             .into(),
         ),
-        text_color: if armed { SHEET } else { tone.color() },
+        text_color: if armed { crate::theme::palette().sheet } else { tone.color() },
         border: Border::default().width(2.0).color(tone.color()),
         shadow: Shadow::default(),
         snap: true,
@@ -271,15 +273,15 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
             status,
             text_input::Status::Focused { .. } | text_input::Status::Hovered
         ) {
-            Background::Color(HOVER)
+            Background::Color(crate::theme::palette().hover)
         } else {
-            Background::Color(SHEET)
+            Background::Color(crate::theme::palette().sheet)
         },
-        border: Border::default().width(1.0).color(RULE),
-        icon: INK_3,
-        placeholder: INK_3,
-        value: INK,
-        selection: SIGNAL,
+        border: Border::default().width(1.0).color(crate::theme::palette().rule),
+        icon: crate::theme::palette().ink_3,
+        placeholder: crate::theme::palette().ink_3,
+        value: crate::theme::palette().ink,
+        selection: crate::theme::palette().signal,
     }
 }
 
@@ -295,12 +297,12 @@ fn print_shadow() -> Shadow {
 
 /// A ruled line.
 pub fn rule(_theme: &Theme) -> rule::Style {
-    ruled(RULE)
+    ruled(crate::theme::palette().rule)
 }
 
 /// A ruled line drawn in ink: under a heading, above a total.
 pub fn rule_ink(_theme: &Theme) -> rule::Style {
-    ruled(INK)
+    ruled(crate::theme::palette().ink)
 }
 
 /// A full-width ruled line in `color`.
@@ -318,14 +320,169 @@ fn ruled(color: Color) -> rule::Style {
 pub fn pick_list(_theme: &Theme, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
     use iced::widget::pick_list::Status;
     let (edge, width) = match status {
-        Status::Opened { .. } => (SIGNAL, 2.0),
-        Status::Active | Status::Hovered => (INK, 1.0),
+        Status::Opened { .. } => (crate::theme::palette().signal, 2.0),
+        Status::Active | Status::Hovered => (crate::theme::palette().ink, 1.0),
     };
     iced::widget::pick_list::Style {
-        text_color: INK,
-        placeholder_color: INK_3,
-        handle_color: INK_2,
+        text_color: crate::theme::palette().ink,
+        placeholder_color: crate::theme::palette().ink_3,
+        handle_color: crate::theme::palette().ink_2,
         background: Background::Color(Color::TRANSPARENT),
         border: Border::default().width(width).color(edge),
+    }
+}
+
+/// One full set of the register's colours. [`Palette::dark`] is the night console (the constants above);
+/// [`Palette::light`] maps the same tokens to the web's light register (`tokens.css`, `:root`). The
+/// tokens the web does not carry (`on_signal`, `taint`, `substrate`) get light values with the same role.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Palette {
+    pub paper: Color,
+    pub sheet: Color,
+    pub rule: Color,
+    pub rule_faint: Color,
+    pub margin: Color,
+    pub ink: Color,
+    pub ink_2: Color,
+    pub ink_3: Color,
+    pub signal: Color,
+    pub signal_ink: Color,
+    pub on_signal: Color,
+    pub info: Color,
+    pub crit: Color,
+    pub warn: Color,
+    pub ok: Color,
+    pub taint: Color,
+    pub hover: Color,
+    pub substrate: Color,
+}
+
+impl Palette {
+    /// The night console: exactly the constants above.
+    pub const fn dark() -> Self {
+        Self {
+            paper: PAPER,
+            sheet: SHEET,
+            rule: RULE,
+            rule_faint: RULE_FAINT,
+            margin: MARGIN,
+            ink: INK,
+            ink_2: INK_2,
+            ink_3: INK_3,
+            signal: SIGNAL,
+            signal_ink: SIGNAL_INK,
+            on_signal: ON_SIGNAL,
+            info: INFO,
+            crit: CRIT,
+            warn: WARN,
+            ok: OK,
+            taint: TAINT,
+            hover: HOVER,
+            substrate: SUBSTRATE,
+        }
+    }
+
+    /// The web's light register (`apps/web/src/styles/tokens.css`, `:root`).
+    pub const fn light() -> Self {
+        Self {
+            paper: Color::from_rgb8(0xe9, 0xec, 0xe5),
+            sheet: Color::from_rgb8(0xf4, 0xf6, 0xf1),
+            rule: Color::from_rgb8(0xc7, 0xcf, 0xc3),
+            rule_faint: Color::from_rgb8(0xdb, 0xe1, 0xd7),
+            margin: Color::from_rgb8(0xd0, 0x7a, 0x72),
+            ink: Color::from_rgb8(0x15, 0x19, 0x16),
+            ink_2: Color::from_rgb8(0x4c, 0x54, 0x4d),
+            ink_3: Color::from_rgb8(0x7d, 0x86, 0x7e),
+            signal: Color::from_rgb8(0xe8, 0x59, 0x0c),
+            signal_ink: Color::from_rgb8(0xa6, 0x3c, 0x00),
+            on_signal: Color::from_rgb8(0x12, 0x08, 0x00),
+            info: Color::from_rgb8(0x2d, 0x5f, 0x8a),
+            crit: Color::from_rgb8(0xa3, 0x18, 0x2b),
+            warn: Color::from_rgb8(0x85, 0x64, 0x0e),
+            ok: Color::from_rgb8(0x2e, 0x6a, 0x40),
+            taint: Color::from_rgb8(0xf5, 0xee, 0xd2),
+            hover: Color::from_rgb8(0xe6, 0xea, 0xe2),
+            substrate: Color::from_rgb8(0xec, 0xee, 0xe7),
+        }
+    }
+}
+
+/// The palette on screen: light only when the owner chose it, or the OS is light and nothing is chosen.
+static LIGHT: AtomicBool = AtomicBool::new(false);
+/// Whether the owner has chosen a theme; once chosen, the OS appearance no longer decides.
+static CHOSEN: AtomicBool = AtomicBool::new(false);
+
+/// The palette in use now.
+pub fn palette() -> Palette {
+    if is_light() { Palette::light() } else { Palette::dark() }
+}
+
+/// Whether the light palette is in use.
+pub fn is_light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
+
+/// The owner's choice, from the switch in the top bar. It is kept for the rest of the run.
+pub fn choose(light: bool) {
+    LIGHT.store(light, Ordering::Relaxed);
+    CHOSEN.store(true, Ordering::Relaxed);
+}
+
+/// The saved choice at start (`"light"` or `"dark"` in `desktop.json`); nothing when none is saved.
+pub fn choose_saved(value: Option<&str>) {
+    match value {
+        Some("light") => choose(true),
+        Some("dark") => choose(false),
+        _ => {}
+    }
+}
+
+/// The OS appearance: it decides only until the owner chooses. An unknown mode stays dark.
+pub fn follow_system(mode: iced::theme::Mode) {
+    if !CHOSEN.load(Ordering::Relaxed) {
+        LIGHT.store(matches!(mode, iced::theme::Mode::Light), Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens(p: &Palette) -> [Color; 18] {
+        [p.paper, p.sheet, p.rule, p.rule_faint, p.margin, p.ink, p.ink_2, p.ink_3, p.signal, p.signal_ink,
+            p.on_signal, p.info, p.crit, p.warn, p.ok, p.taint, p.hover, p.substrate]
+    }
+
+    #[test]
+    fn dark_palette_is_the_old_constants() {
+        assert_eq!(
+            tokens(&Palette::dark()),
+            [PAPER, SHEET, RULE, RULE_FAINT, MARGIN, INK, INK_2, INK_3, SIGNAL, SIGNAL_INK, ON_SIGNAL, INFO, CRIT, WARN, OK, TAINT, HOVER, SUBSTRATE]
+        );
+    }
+
+    #[test]
+    fn every_token_is_set_in_both_palettes() {
+        for (name, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            for (i, c) in tokens(&p).iter().enumerate() {
+                assert_eq!(c.a, 1.0, "{name} token {i} is not opaque");
+                assert_ne!(*c, Color::TRANSPARENT, "{name} token {i} is unset");
+            }
+        }
+    }
+
+    #[test]
+    fn light_palette_turns_the_page_over() {
+        let (dark, light) = (Palette::dark(), Palette::light());
+        assert!(dark.paper.r < 0.1 && light.paper.r > 0.8);
+        assert!(dark.ink.r > 0.8 && light.ink.r < 0.2);
+    }
+
+    #[test]
+    fn choosing_switches_the_palette_in_use() {
+        choose(true);
+        assert_eq!(palette(), Palette::light());
+        choose(false);
+        assert_eq!(palette(), Palette::dark());
     }
 }

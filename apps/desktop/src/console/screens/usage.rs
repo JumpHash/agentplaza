@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::Id;
 use crate::console::{chart, client::{self, Client}, ui, Ctx};
-use crate::theme::{self, INK, INK_2, INK_3, MONO, OK, RULE, RULE_FAINT, SIGNAL, WARN};
+use crate::theme::{self, MONO};
 
 const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
 const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
@@ -23,7 +23,9 @@ const ANIM: Duration = Duration::from_millis(600);
 /// Groups drawn as their own band; the rest sum into "other".
 const TOP: usize = 6;
 const OTHER: &str = "*other*";
-const PALETTE: [Color; TOP] = [SIGNAL, OK, Color::from_rgb8(0x6f, 0xa8, 0xdc), WARN, Color::from_rgb8(0xb4, 0x8e, 0xd6), Color::from_rgb8(0x4f, 0xc3, 0xc3)];
+fn palette() -> [Color; TOP] {
+    [crate::theme::palette().signal, crate::theme::palette().ok, Color::from_rgb8(0x6f, 0xa8, 0xdc), crate::theme::palette().warn, Color::from_rgb8(0xb4, 0x8e, 0xd6), Color::from_rgb8(0x4f, 0xc3, 0xc3)]
+}
 const DAY_MS: u64 = 86_400_000;
 const CALLS_PAGE: usize = 50;
 const CALLS_LIMIT: usize = 200;
@@ -726,7 +728,7 @@ fn chart_series(tl: &Timeline, unit: Unit) -> (Vec<chart::Series>, Vec<String>) 
         .enumerate()
         .map(|(i, (key, _))| chart::Series {
             key: key.to_string(),
-            color: PALETTE[i],
+            color: palette()[i],
             values: tl.points.iter().map(|p| p.groups.get(*key).map_or(0.0, |t| unit.value(t))).collect(),
         })
         .collect();
@@ -740,7 +742,7 @@ fn chart_series(tl: &Timeline, unit: Unit) -> (Vec<chart::Series>, Vec<String>) 
         })
         .collect();
     if rest.iter().any(|v| *v > 0.0) {
-        out.push(chart::Series { key: OTHER.to_string(), color: INK_3, values: rest });
+        out.push(chart::Series { key: OTHER.to_string(), color: crate::theme::palette().ink_3, values: rest });
     }
     (out, labels)
 }
@@ -945,7 +947,7 @@ fn tiles<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, Msg> {
     let spend_note = format!("reported {} · estimated {}", usd(t.cost_usd), usd(t.est_usd));
     let calls_note = if t.calls == 0 { "no calls in this range yet" } else { "in this range" };
     row![
-        tile(usd(c.usd.at(now)), "Spend", spend_note, Some(chart::sparkline(spark, SIGNAL))),
+        tile(usd(c.usd.at(now)), "Spend", spend_note, Some(chart::sparkline(spark, crate::theme::palette().signal))),
         tile(
             format!("{} / {}", compact(c.input.at(now)), compact(c.output.at(now))),
             "Tokens in / out",
@@ -961,16 +963,16 @@ fn tiles<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, Msg> {
 
 /// A tally tile (the web's `.stat`): the figure, its label, an optional extra, then an italic note.
 fn tile<'a>(figure: String, title: &str, note: String, extra: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut stack = column![text(figure).font(VALUE).size(30.0).color(INK), ui::label(title)].spacing(4);
+    let mut stack = column![text(figure).font(VALUE).size(30.0).color(crate::theme::palette().ink), ui::label(title)].spacing(4);
     if let Some(e) = extra {
         stack = stack.push(e);
     }
-    stack = stack.push(text(note).font(ITALIC).size(13.0).color(INK_2));
+    stack = stack.push(text(note).font(ITALIC).size(13.0).color(crate::theme::palette().ink_2));
     container(stack)
         .padding(Padding { top: 14.0, right: 16.0, bottom: 16.0, left: 16.0 })
         .width(Length::FillPortion(1))
         .height(Length::Fixed(156.0))
-        .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
 
@@ -992,7 +994,7 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
                     background: Some(color.into()),
                     ..Default::default()
                 });
-                line.push(row![swatch, text(name).font(MONO).size(11.0).color(INK_2), text(format(total)).font(MONO).size(11.0).color(INK)].spacing(6).align_y(Alignment::Center))
+                line.push(row![swatch, text(name).font(MONO).size(11.0).color(crate::theme::palette().ink_2), text(format(total)).font(MONO).size(11.0).color(crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center))
             });
             let calls: Vec<f64> = d.timeline.points.iter().map(|p| p.totals.calls as f64).collect();
             column![
@@ -1000,7 +1002,7 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
                 chart::stacked_area(series, state.labels.clone(), format, "No calls in this range"),
                 legend,
                 ui::faint("Calls per bucket"),
-                chart::bars(calls, INK_2),
+                chart::bars(calls, crate::theme::palette().ink_2),
             ]
             .spacing(14)
             .into()
@@ -1013,7 +1015,7 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
 fn sort_head<'a>(label: &str, sort: Sort, state: &State, portion: u16) -> Element<'a, Msg> {
     let active = state.sort == sort;
     let arrow = if active { if state.asc { " ^" } else { " v" } } else { "" };
-    let content = button(text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { INK } else { INK_3 }))
+    let content = button(text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
         .style(link)
         .padding(0)
         .on_press(Msg::Sort(sort));
@@ -1021,7 +1023,7 @@ fn sort_head<'a>(label: &str, sort: Sort, state: &State, portion: u16) -> Elemen
 }
 
 fn link(_: &Theme, _: button::Status) -> button::Style {
-    button::Style { background: None, text_color: INK, ..Default::default() }
+    button::Style { background: None, text_color: crate::theme::palette().ink, ..Default::default() }
 }
 
 /// The table: one row per group, sorted, with a share bar, and a total row.
@@ -1085,11 +1087,11 @@ fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> 
             row![
                 container(Space::new().width(Length::Fill).height(6.0))
                     .width(Length::FillPortion(pct.max(1)))
-                    .style(|_: &Theme| container::Style { background: Some(SIGNAL.into()), ..Default::default() }),
+                    .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() }),
                 container(Space::new().width(Length::Fill).height(6.0))
                     .width(Length::FillPortion((100 - pct).max(1)))
-                    .style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }),
-                text(format!("{:.0}%", s * 100.0)).font(MONO).size(11.0).color(INK_2).width(Length::Fixed(40.0)),
+                    .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
+                text(format!("{:.0}%", s * 100.0)).font(MONO).size(11.0).color(crate::theme::palette().ink_2).width(Length::Fixed(40.0)),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -1097,9 +1099,9 @@ fn table_row<'a>(name: String, trains: bool, t: &Totals, share: Option<f64>) -> 
         }
         None => text("").into(),
     };
-    let num = |v: String| cell(2, true, text(v).font(MONO).size(12.0).color(INK_2));
+    let num = |v: String| cell(2, true, text(v).font(MONO).size(12.0).color(crate::theme::palette().ink_2));
     row![
-        cell(5, false, with_badge(text(name).font(MONO).size(12.0).color(INK), trains)),
+        cell(5, false, with_badge(text(name).font(MONO).size(12.0).color(crate::theme::palette().ink), trains)),
         num(commas(&t.calls.to_string())),
         num(compact(t.input as f64)),
         num(compact(t.output as f64)),
@@ -1150,7 +1152,7 @@ fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
         cell(3, false, ui::faint("Via")),
     ].spacing(10)]
     .spacing(6);
-    let txt = |s: String| text(s).font(MONO).size(12.0).color(INK_2);
+    let txt = |s: String| text(s).font(MONO).size(12.0).color(crate::theme::palette().ink_2);
     for c in &d.calls {
         let agent = d.agents.get(&c.cid).cloned().unwrap_or_else(|| format!("#{}", c.cid));
         let cost = match c.cost_usd {
@@ -1203,7 +1205,7 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
     if models.is_empty() {
         lines = lines.push(ui::faint("No models in use yet."));
     }
-    let txt = |s: String| text(s).font(MONO).size(12.0).color(INK_2);
+    let txt = |s: String| text(s).font(MONO).size(12.0).color(crate::theme::palette().ink_2);
     for model in &models {
         let calls = d.summary.by_model.iter().find(|g| &g.key == model).map_or(0, |g| g.totals.calls);
         let used = uses.get(model).map(|v| v.join(", ")).unwrap_or_default();
@@ -1219,7 +1221,7 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
         };
         lines = lines.push(
             row![
-                cell(5, false, text(model.clone()).font(MONO).size(12.0).color(INK)),
+                cell(5, false, text(model.clone()).font(MONO).size(12.0).color(crate::theme::palette().ink)),
                 cell(3, false, txt(used)),
                 cell(2, true, txt(commas(&calls.to_string()))),
                 cell(2, true, txt(input)),

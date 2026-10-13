@@ -427,7 +427,7 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
 pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
     let _ = ctx;
     let last = wizard.step + 1 == STEPS.len();
-    let head = row![ui::mono("Spawn agents", 13.0, ui::INK), ui::btn("Close", None, Kind::Ghost, Some(WizardMsg::Close))]
+    let head = row![ui::mono("Spawn agents", 13.0, crate::theme::palette().ink), ui::btn("Close", None, Kind::Ghost, Some(WizardMsg::Close))]
         .spacing(12)
         .align_y(Alignment::Center);
     let steps = row(STEPS.iter().enumerate().map(|(i, name)| {
@@ -469,9 +469,9 @@ pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
     }
     let card = card.push(nav);
     let sheet = container(card).padding(24).width(Length::Fill).max_width(720.0).style(|_: &Theme| container::Style {
-        background: Some(Background::Color(ui::SHEET)),
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
-        shadow: Shadow { color: Color { a: 0.35, ..ui::INK }, offset: Vector::new(4.0, 4.0), blur_radius: 0.5 },
+        background: Some(Background::Color(crate::theme::palette().sheet)),
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        shadow: Shadow { color: Color { a: 0.35, ..crate::theme::palette().ink }, offset: Vector::new(4.0, 4.0), blur_radius: 0.5 },
         ..Default::default()
     });
     container(sheet)
@@ -496,7 +496,7 @@ fn body_for<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         3 => ("Prompt", prompt_step(w)),
         _ => ("Review and spawn", review_step(w)),
     };
-    column![ui::mono(heading, 14.0, ui::INK), content].spacing(14).into()
+    column![ui::mono(heading, 14.0, crate::theme::palette().ink), content].spacing(14).into()
 }
 
 fn purpose_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
@@ -539,7 +539,7 @@ fn role_preview<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     };
     let d = &role.def;
     column![
-        ui::mono(d.title.clone(), 13.0, ui::INK),
+        ui::mono(d.title.clone(), 13.0, crate::theme::palette().ink),
         ui::faint(format!("{}, an existing role", role.id)),
         read_only("Purpose", d.purpose.clone()),
         read_only("Responsibilities", list_text(&d.responsibilities)),
@@ -634,7 +634,7 @@ fn new_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
 fn count_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let stepper = row![
         ui::btn("−", None, Kind::Secondary, (w.count > 1).then_some(WizardMsg::Count(w.count.saturating_sub(1)))),
-        ui::mono(w.count.to_string(), 13.0, ui::INK),
+        ui::mono(w.count.to_string(), 13.0, crate::theme::palette().ink),
         ui::btn("+", None, Kind::Secondary, (w.count < MAX_AGENTS).then_some(WizardMsg::Count(w.count + 1))),
     ]
     .spacing(8)

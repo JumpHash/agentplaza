@@ -13,7 +13,7 @@ use super::wizard::{self, WizardMsg};
 use super::Id;
 use crate::console::floor3d::world::layout::{agent_hue, role_hue};
 use crate::console::{client, render_card, ui, Ctx};
-use crate::theme::{self, HOVER, INK, INK_2, INK_3, OK, RULE, RULE_FAINT, SIGNAL, SHEET};
+use crate::theme::{self};
 use crate::console::ui::Kind;
 
 /// The web's `info` tone on the dark ground.
@@ -275,11 +275,11 @@ fn head<'a>(state: &'a State) -> Element<'a, Msg> {
 /// The web's `.select`: a transparent field with an ink rule, the handle in ink-2.
 fn select_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
     pick_list::Style {
-        text_color: INK,
-        placeholder_color: INK_3,
-        handle_color: INK_2,
+        text_color: crate::theme::palette().ink,
+        placeholder_color: crate::theme::palette().ink_3,
+        handle_color: crate::theme::palette().ink_2,
         background: Background::Color(Color::TRANSPARENT),
-        border: Border { color: INK, width: 1.0, radius: 0.0.into() },
+        border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
     }
 }
 
@@ -327,20 +327,20 @@ fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
     .align_y(Alignment::Center);
     let mut lines: Vec<Element<'a, Msg>> = vec![
         container(header).padding([12, 0]).width(Length::Fill).into(),
-        rule(INK),
+        rule(crate::theme::palette().ink),
     ];
     for (slot, a) in rows.into_iter().enumerate() {
         lines.push(row_view(a, slot));
-        lines.push(rule(RULE_FAINT));
+        lines.push(rule(crate::theme::palette().rule_faint));
     }
     container(scrollable(column(lines).width(Length::Fill)).width(Length::Fill))
-        .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .width(Length::Fill)
         .into()
 }
 
 fn head_label<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_uppercase()).font(ui::MONO_SEMIBOLD).size(10.5).color(INK_3).wrapping(Wrapping::None).into()
+    text(label.to_uppercase()).font(ui::MONO_SEMIBOLD).size(10.5).color(crate::theme::palette().ink_3).wrapping(Wrapping::None).into()
 }
 
 /// A table cell at `portion` of the row, its text at the web's 14px inset; `right` aligns it.
@@ -373,8 +373,8 @@ fn row_view<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
 fn row_style(_: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: hovered.then_some(Background::Color(HOVER)),
-        text_color: INK,
+        background: hovered.then_some(Background::Color(crate::theme::palette().hover)),
+        text_color: crate::theme::palette().ink,
         border: Border::default(),
         ..Default::default()
     }
@@ -393,14 +393,14 @@ const AVATAR: f32 = 40.0;
 
 fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let initial = name(a).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-    let tile = container(text(initial).font(ui::MONO_SEMIBOLD).size(15.0).color(INK))
+    let tile = container(text(initial).font(ui::MONO_SEMIBOLD).size(15.0).color(crate::theme::palette().ink))
         .width(Length::Fixed(AVATAR))
         .height(Length::Fixed(AVATAR))
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
         .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(SHEET)),
-            border: Border { color: INK, width: 1.0, radius: 0.0.into() },
+            background: Some(Background::Color(crate::theme::palette().sheet)),
+            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
     let spec = render_card::PortraitSpec {
@@ -418,13 +418,13 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let portrait = iced::widget::stack(layers).width(Length::Fixed(AVATAR)).height(Length::Fixed(AVATAR));
     let name_line = row![
         dot(status_tone(&a.status)),
-        text(name(a)).font(SERIF_SEMIBOLD).size(15.0).color(INK).wrapping(Wrapping::None),
+        text(name(a)).font(SERIF_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
     row![
         portrait,
-        column![name_line, text(a.role_label.clone()).font(theme::SERIF).size(CELL).color(INK_3).wrapping(Wrapping::None)].spacing(2),
+        column![name_line, text(a.role_label.clone()).font(theme::SERIF).size(CELL).color(crate::theme::palette().ink_3).wrapping(Wrapping::None)].spacing(2),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -432,15 +432,15 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
 }
 
 fn model_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
-    let mut line = row![text(a.model.clone()).font(theme::MONO).size(12.5).color(INK).wrapping(Wrapping::None)]
+    let mut line = row![text(a.model.clone()).font(theme::MONO).size(12.5).color(crate::theme::palette().ink).wrapping(Wrapping::None)]
         .spacing(8)
         .align_y(Alignment::Center);
     if a.orchestrator {
-        line = line.push(badge("orchestrator", SIGNAL, true));
+        line = line.push(badge("orchestrator", crate::theme::palette().signal, true));
     }
     if a.model_source != "default" {
         let label = if a.model_source == "agent" { "own" } else { "role" };
-        line = line.push(badge(label, INK_2, false));
+        line = line.push(badge(label, crate::theme::palette().ink_2, false));
     }
     line.into()
 }
@@ -451,18 +451,18 @@ fn work_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
             let (color, mark) = work_tone(kind);
             row![
                 badge(kind, color, mark),
-                text(ui_clip(prompt, 56)).font(theme::SERIF).size(CELL).color(INK).wrapping(Wrapping::None),
+                text(ui_clip(prompt, 56)).font(theme::SERIF).size(CELL).color(crate::theme::palette().ink).wrapping(Wrapping::None),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .into()
         }
-        None => text("—").font(theme::SERIF).size(CELL).color(INK_3).into(),
+        None => text("—").font(theme::SERIF).size(CELL).color(crate::theme::palette().ink_3).into(),
     }
 }
 
 fn tokens_cell<'a>(tokens: u64) -> Element<'a, Msg> {
-    text(compact(tokens)).font(MONO_MEDIUM).size(12.5).color(INK).into()
+    text(compact(tokens)).font(MONO_MEDIUM).size(12.5).color(crate::theme::palette().ink).into()
 }
 
 /// The row's own actions: chat with the agent, cancel its work while it works, stop its session.
@@ -477,15 +477,15 @@ fn actions<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
 
 /// The web's small ghost icon button (28px), with its title as a tooltip.
 fn icon_button<'a>(icon_name: &str, tip: &str, on_press: Msg) -> Element<'a, Msg> {
-    let glyph = container(ui::icon::<Msg>(icon_name, 13.0, INK_2)).center(Length::Fill);
+    let glyph = container(ui::icon::<Msg>(icon_name, 13.0, crate::theme::palette().ink_2)).center(Length::Fill);
     let b = button(glyph)
         .on_press(on_press)
         .padding(0)
         .width(Length::Fixed(28.0))
         .height(Length::Fixed(28.0))
         .style(|_: &Theme, status: button::Status| button::Style {
-            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(Background::Color(HOVER)),
-            text_color: INK,
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed).then_some(Background::Color(crate::theme::palette().hover)),
+            text_color: crate::theme::palette().ink,
             border: Border::default(),
             ..Default::default()
         });
@@ -495,9 +495,9 @@ fn icon_button<'a>(icon_name: &str, tip: &str, on_press: Msg) -> Element<'a, Msg
 /// The web's empty state: an icon, a bold mono line, a faint serif sentence, an optional action.
 fn empty<'a>(icon_name: &str, title: &str, sentence: &str, action: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
     let mut body = column![
-        ui::icon::<Msg>(icon_name, 16.0, INK_3),
-        text(title.to_string()).font(Font { weight: Weight::Bold, ..theme::MONO }).size(13.0).color(INK),
-        text(sentence.to_string()).font(theme::SERIF).size(14.0).color(INK_3),
+        ui::icon::<Msg>(icon_name, 16.0, crate::theme::palette().ink_3),
+        text(title.to_string()).font(Font { weight: Weight::Bold, ..theme::MONO }).size(13.0).color(crate::theme::palette().ink),
+        text(sentence.to_string()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_3),
     ]
     .spacing(10)
     .align_x(Alignment::Center);
@@ -540,18 +540,18 @@ fn badge<'a>(label: &str, color: Color, filled: bool) -> Element<'a, Msg> {
 fn status_tone(status: &str) -> Color {
     match status {
         "working" => INFO,
-        "idle" => OK,
-        _ => INK_3,
+        "idle" => crate::theme::palette().ok,
+        _ => crate::theme::palette().ink_3,
     }
 }
 
 /// The badge colour and whether its marker is filled, for a work kind.
 fn work_tone(kind: &str) -> (Color, bool) {
     match kind {
-        "task" => (SIGNAL, true),
+        "task" => (crate::theme::palette().signal, true),
         "chat" => (INFO, false),
-        "motion" => (theme::WARN, false),
-        _ => (INK_2, false),
+        "motion" => (crate::theme::palette().warn, false),
+        _ => (crate::theme::palette().ink_2, false),
     }
 }
 

@@ -21,7 +21,7 @@ use crate::console::chart;
 use crate::console::client::{self, Client};
 use crate::console::lab_api::{self, JobEvent, JobEventsPage, JobPlan, JobRun, JobView, SeriesPoint};
 use crate::console::{ui, Ctx};
-use crate::theme::{CRIT, INFO, INK, INK_2, INK_3, MONO, OK, RULE, RULE_FAINT, SIGNAL, SIGNAL_INK, WARN};
+use crate::theme::{MONO};
 
 /// Live lines kept for the screen: the newest this many (the charts read them as they arrive).
 const LIVE_KEPT: usize = 2_000;
@@ -301,17 +301,23 @@ fn exp2(v: f64) -> String {
     format!("{v:.2e}")
 }
 
-const LOSS_COLOR: Color = INFO;
-const LR_COLOR: Color = OK;
+fn loss_color() -> Color {
+    crate::theme::palette().info
+}
+fn lr_color() -> Color {
+    crate::theme::palette().ok
+}
 /// The web's chart palette in its dark theme (chart-3 to chart-8).
-const PALETTE: [Color; 6] = [
-    WARN,
+fn palette() -> [Color; 6] {
+    [
+    crate::theme::palette().warn,
     Color::from_rgb8(0xb7, 0x9c, 0xf0),
     Color::from_rgb8(0x5a, 0xd6, 0xd6),
     Color::from_rgb8(0xd9, 0xa8, 0x77),
-    INK_2,
-    CRIT,
-];
+    crate::theme::palette().ink_2,
+    crate::theme::palette().crit,
+]
+}
 
 fn step_text(p: &SeriesPoint) -> String {
     p.step.map_or_else(|| "?".to_string(), |s| s.to_string())
@@ -369,15 +375,15 @@ fn chart_specs(points: &[SeriesPoint]) -> Vec<Spec> {
     }
     for isl in islands {
         let loss: Vec<&SeriesPoint> = steps.iter().copied().filter(|p| p.island == isl && p.loss.is_some()).collect();
-        push_chart(&mut out, &loss, |p| p.loss, format!("Loss · island {isl}"), "loss", fix4, LOSS_COLOR, true);
+        push_chart(&mut out, &loss, |p| p.loss, format!("Loss · island {isl}"), "loss", fix4, loss_color(), true);
         let lr: Vec<&SeriesPoint> = steps.iter().copied().filter(|p| p.island == isl && p.lr.is_some()).collect();
-        push_chart(&mut out, &lr, |p| p.lr, format!("Learning rate · island {isl}"), "lr", exp2, LR_COLOR, false);
+        push_chart(&mut out, &lr, |p| p.lr, format!("Learning rate · island {isl}"), "lr", exp2, lr_color(), false);
     }
     let evals: Vec<&SeriesPoint> = points.iter().filter(|p| p.kind == "eval" && p.metrics.is_some()).collect();
     let names: BTreeSet<&str> = evals.iter().flat_map(|p| p.metrics.iter().flat_map(|m| m.as_object()).flat_map(|o| o.keys().map(String::as_str))).collect();
     for (i, name) in names.into_iter().enumerate() {
         let pts: Vec<&SeriesPoint> = evals.iter().copied().filter(|p| metric(p, name).is_some()).collect();
-        let color = PALETTE[i % PALETTE.len()];
+        let color = palette()[i % palette().len()];
         push_chart(&mut out, &pts, |p| metric(p, name), format!("Eval · {name}"), name, fix4, color, false);
     }
     out
@@ -530,11 +536,11 @@ fn stages_of(v: &JobView) -> Vec<Stage> {
 
 fn stage_cell<'a>(stage: &Stage) -> Element<'a, Msg> {
     let bar = match stage.state {
-        StageState::Done => OK,
-        StageState::Current => SIGNAL,
-        StageState::Pending | StageState::Skipped => RULE,
+        StageState::Done => crate::theme::palette().ok,
+        StageState::Current => crate::theme::palette().signal,
+        StageState::Pending | StageState::Skipped => crate::theme::palette().rule,
     };
-    let mut lines = column![ui::mono(stage.label, 12.0, INK), ui::mono(lab_common::time(stage.at.unwrap_or(0)), 11.0, INK_3)].spacing(4);
+    let mut lines = column![ui::mono(stage.label, 12.0, crate::theme::palette().ink), ui::mono(lab_common::time(stage.at.unwrap_or(0)), 11.0, crate::theme::palette().ink_3)].spacing(4);
     if !stage.sub.is_empty() {
         lines = lines.push(ui::faint(stage.sub.clone()));
     }
@@ -550,14 +556,14 @@ fn stage_cell<'a>(stage: &Stage) -> Element<'a, Msg> {
 // ---- Shared pieces ---------------------------------------------------------------------------
 
 fn txt<'a>(content: impl Into<String>) -> Element<'a, Msg> {
-    ui::mono(content.into(), 12.5, INK).into()
+    ui::mono(content.into(), 12.5, crate::theme::palette().ink).into()
 }
 
 fn stat<'a>(label: &str, value: String) -> Element<'a, Msg> {
-    container(column![ui::label(label), ui::mono(value, 14.0, INK)].spacing(6))
+    container(column![ui::label(label), ui::mono(value, 14.0, crate::theme::palette().ink)].spacing(6))
         .padding([12, 16])
         .width(Length::Fill)
-        .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
 
@@ -581,11 +587,11 @@ fn share_cell<'a>(share: f64) -> Element<'a, Msg> {
     row![
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion(pct.max(1)))
-            .style(|_: &Theme| container::Style { background: Some(SIGNAL.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() }),
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }),
-        ui::mono(lab_common::percent(share), 11.0, INK_2).width(Length::Fixed(44.0)),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
+        ui::mono(lab_common::percent(share), 11.0, crate::theme::palette().ink_2).width(Length::Fixed(44.0)),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -622,7 +628,7 @@ fn page<'a>(state: &'a State, v: &'a JobView) -> Element<'a, Msg> {
     let cancellable = matches!(v.status.as_str(), "queued" | "running") && !state.cancelling;
     let cancel = ui::btn("Cancel job", None, ui::Kind::Danger, cancellable.then_some(Msg::AskCancel));
     let head = row![
-        ui::mono(format!("Job {}", v.id), 22.0, INK),
+        ui::mono(format!("Job {}", v.id), 22.0, crate::theme::palette().ink),
         Space::new().width(Length::Fill),
         ui::badge(&v.status, tone_of(&v.status)),
         cancel,
@@ -683,7 +689,7 @@ fn confirm_strip<'a>(id: &str) -> Element<'a, Msg> {
     )
     .padding(12)
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+    .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
     .into()
 }
 
@@ -709,10 +715,10 @@ fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
     };
     let rounds = plan.rounds.map_or_else(|| "—".to_string(), |r| r.to_string());
     let meta: Vec<Element<'a, Msg>> = vec![
-        ui::mono(format!("Devices {}", plan.devices_total), 11.0, INK_3).into(),
-        ui::mono(format!("Inner steps {}", plan.inner_steps), 11.0, INK_3).into(),
-        ui::mono(format!("Staleness {}", plan.staleness), 11.0, INK_3).into(),
-        ui::mono(format!("Rounds {rounds}"), 11.0, INK_3).into(),
+        ui::mono(format!("Devices {}", plan.devices_total), 11.0, crate::theme::palette().ink_3).into(),
+        ui::mono(format!("Inner steps {}", plan.inner_steps), 11.0, crate::theme::palette().ink_3).into(),
+        ui::mono(format!("Staleness {}", plan.staleness), 11.0, crate::theme::palette().ink_3).into(),
+        ui::mono(format!("Rounds {rounds}"), 11.0, crate::theme::palette().ink_3).into(),
     ];
     let datasets = if plan.datasets.is_empty() {
         "—".to_string()
@@ -720,7 +726,7 @@ fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
         plan.datasets.iter().map(|(name, id)| format!("{name} {id}")).collect::<Vec<_>>().join(", ")
     };
     let kv = |label: &str, value: String| -> Element<'a, Msg> {
-        row![ui::faint(label.to_string()).width(Length::Fixed(96.0)), ui::mono(value, 11.5, INK_2).width(Length::Fill)]
+        row![ui::faint(label.to_string()).width(Length::Fixed(96.0)), ui::mono(value, 11.5, crate::theme::palette().ink_2).width(Length::Fill)]
             .spacing(10)
             .align_y(Alignment::Center)
             .into()
@@ -743,12 +749,12 @@ fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
 
 /// The web's `.lab-job-back`: a mono link in the signal ink, underlined.
 fn back_link<'a>() -> Element<'a, Msg> {
-    let spans: Vec<iced::widget::text::Span<'a>> = vec![span("Back to Jobs").font(MONO).size(13.0).color(SIGNAL_INK).underline(true)];
+    let spans: Vec<iced::widget::text::Span<'a>> = vec![span("Back to Jobs").font(MONO).size(13.0).color(crate::theme::palette().signal_ink).underline(true)];
     let label: Element<'a, Msg> = rich_text(spans).into();
     button(label)
         .on_press(Msg::Go(Id::LabJobs))
         .padding(0)
-        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: SIGNAL_INK, ..Default::default() })
+        .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: crate::theme::palette().signal_ink, ..Default::default() })
         .into()
 }
 
@@ -769,16 +775,16 @@ fn island_cell<'a>(isl: &'a lab_api::Island) -> Element<'a, Msg> {
             } else {
                 m.devices
                     .iter()
-                    .map(|d| container(ui::mono(format!("dev {d}"), 11.0, INK_2)).padding([1, 6]).style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() }).into())
+                    .map(|d| container(ui::mono(format!("dev {d}"), 11.0, crate::theme::palette().ink_2)).padding([1, 6]).style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() }).into())
                     .collect()
             };
-            row![ui::mono(m.id.clone(), 12.0, INK), row(devices).spacing(8).align_y(Alignment::Center)].spacing(8).align_y(Alignment::Center).into()
+            row![ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink), row(devices).spacing(8).align_y(Alignment::Center)].spacing(8).align_y(Alignment::Center).into()
         })
         .collect();
     let mut lines = column![
-        row![ui::mono(format!("island {}", isl.id), 12.5, INK), ui::badge(non_empty(Some(isl.backend.as_str())).as_str(), ui::Tone::Signal)].spacing(8).align_y(Alignment::Center),
-        row![ui::faint("Leader"), ui::mono(non_empty(Some(isl.leader.as_str())), 11.0, INK_2)].spacing(10),
-        row![ui::faint("Rendezvous"), ui::mono(non_empty(Some(isl.rdzv.as_str())), 11.0, INK_2)].spacing(10),
+        row![ui::mono(format!("island {}", isl.id), 12.5, crate::theme::palette().ink), ui::badge(non_empty(Some(isl.backend.as_str())).as_str(), ui::Tone::Signal)].spacing(8).align_y(Alignment::Center),
+        row![ui::faint("Leader"), ui::mono(non_empty(Some(isl.leader.as_str())), 11.0, crate::theme::palette().ink_2)].spacing(10),
+        row![ui::faint("Rendezvous"), ui::mono(non_empty(Some(isl.rdzv.as_str())), 11.0, crate::theme::palette().ink_2)].spacing(10),
     ]
     .spacing(6);
     for m in machines {
@@ -787,7 +793,7 @@ fn island_cell<'a>(isl: &'a lab_api::Island) -> Element<'a, Msg> {
     container(lines)
         .padding(12)
         .width(Length::Fixed(320.0))
-        .style(|_: &Theme| container::Style { border: Border { color: RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+        .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
 
@@ -800,7 +806,7 @@ fn charts_body<'a>(points: &[SeriesPoint]) -> Element<'a, Msg> {
     for pair in specs.chunks(2) {
         let mut cells: Vec<Element<'a, Msg>> = Vec::new();
         for spec in pair {
-            let summary = ui::mono(spec.summary.clone(), 11.0, INK_2);
+            let summary = ui::mono(spec.summary.clone(), 11.0, crate::theme::palette().ink_2);
             let body: Element<'a, Msg> = if spec.values.len() < 2 {
                 summary.into()
             } else {
@@ -885,7 +891,7 @@ fn log_body<'a>(logs: &'a [JobEvent]) -> Element<'a, Msg> {
     }
     let lines: Vec<Element<'a, Msg>> = logs
         .iter()
-        .map(|e| ui::mono(format!("#{} {} {}", e.seq, e.island, log_text(&e.event)), 11.5, INK_2).width(Length::Fill).into())
+        .map(|e| ui::mono(format!("#{} {} {}", e.seq, e.island, log_text(&e.event)), 11.5, crate::theme::palette().ink_2).width(Length::Fill).into())
         .collect();
     scrollable(column(lines).spacing(2).width(Length::Fill))
         .id(WidgetId::new(LOG_ID))
@@ -899,17 +905,17 @@ fn budget_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
     let budget = v.budget_gpu_hours;
     let ratio = if budget > 0.0 { used / budget } else { 0.0 };
     let pct = (ratio.clamp(0.0, 1.0) * 100.0).round() as u16;
-    let fill = if used > budget { CRIT } else { SIGNAL };
+    let fill = if used > budget { crate::theme::palette().crit } else { crate::theme::palette().signal };
     let bar = row![
         container(Space::new().width(Length::Fill).height(10.0))
             .width(Length::FillPortion(pct.max(1)))
             .style(move |_: &Theme| container::Style { background: Some(fill.into()), ..Default::default() }),
         container(Space::new().width(Length::Fill).height(10.0))
             .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style { background: Some(RULE_FAINT.into()), ..Default::default() }),
+            .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
     ];
     column![
-        ui::mono(format!("{} of {} GPU-h used ({})", dash2(used), dash2(budget), lab_common::percent(ratio)), 12.5, INK),
+        ui::mono(format!("{} of {} GPU-h used ({})", dash2(used), dash2(budget), lab_common::percent(ratio)), 12.5, crate::theme::palette().ink),
         bar,
     ]
     .spacing(8)
@@ -932,7 +938,7 @@ fn outputs_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
         parts.push(ui::faint("No outputs yet.").into());
     } else {
         for o in &v.outputs {
-            parts.push(ui::mono(o.clone(), 12.0, INK_2).into());
+            parts.push(ui::mono(o.clone(), 12.0, crate::theme::palette().ink_2).into());
         }
     }
     if v.outputs_remote {

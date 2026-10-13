@@ -38,7 +38,6 @@ use crate::console::floor3d::world::view::Label;
 use crate::console::floor_engine::FloorProgram;
 use crate::console::floor3d::world::display_name;
 use crate::console::{client, events, ui, Ctx};
-use crate::theme::OK;
 
 /// The card's width, and the machine popup's.
 const CARD_W: f32 = 284.0;
@@ -291,7 +290,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
 
@@ -319,12 +318,12 @@ fn card<'a>(state: &'a State, l: &Label, w: f32, h: f32) -> Element<'a, Msg> {
         _ => ui::Tone::Ok,
     };
     let body = column![
-        row![ui::mono(l.name.clone(), 13.0, ui::INK), Space::new().width(Length::Fill), role_tag(&l.role, l.hue)]
+        row![ui::mono(l.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&l.role, l.hue)]
             .spacing(8)
             .align_y(Alignment::Center),
-        ui::mono(l.line.clone(), 11.0, ui::INK_3),
+        ui::mono(l.line.clone(), 11.0, crate::theme::palette().ink_3),
         row![ui::label("Status"), ui::badge(&status, tone)].spacing(10).align_y(Alignment::Center),
-        row![ui::label("Model"), ui::mono(model, 11.0, ui::INK)].spacing(10).align_y(Alignment::Center),
+        row![ui::label("Model"), ui::mono(model, 11.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center),
         ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Go(Id::Agent(l.cid)))),
     ]
     .spacing(10);
@@ -353,7 +352,7 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
     let mut facts_col = column![].spacing(5);
     for (label_text, value) in facts(m, now_millis()) {
         facts_col = facts_col.push(
-            row![container(ui::label(label_text)).width(Length::Fixed(76.0)), ui::mono(value, 10.5, ui::INK)]
+            row![container(ui::label(label_text)).width(Length::Fixed(76.0)), ui::mono(value, 10.5, crate::theme::palette().ink)]
                 .spacing(8)
                 .align_y(Alignment::Start),
         );
@@ -375,13 +374,13 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
 
     let model = format!("{} · {}", m.kind, m.model.as_deref().unwrap_or("model unknown"));
     let body = column![
-        row![ui::mono(m.name.clone(), 13.0, ui::INK), Space::new().width(Length::Fill), role_tag(&m.kind, KIND_HUE)]
+        row![ui::mono(m.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&m.kind, KIND_HUE)]
             .spacing(8)
             .align_y(Alignment::Center),
-        ui::mono(model, 11.0, ui::INK_3),
+        ui::mono(model, 11.0, crate::theme::palette().ink_3),
         row![ui::label("Status"), ui::badge(&m.status, status_tone(&m.status))].spacing(10).align_y(Alignment::Center),
         facts_col,
-        row![ui::label("Agents"), ui::mono(format!("{working} working, {idle} idle"), 11.0, ui::INK)]
+        row![ui::label("Agents"), ui::mono(format!("{working} working, {idle} idle"), 11.0, crate::theme::palette().ink)]
             .spacing(10)
             .align_y(Alignment::Center),
         names,
@@ -407,15 +406,15 @@ fn legend<'a>(machines: bool) -> Element<'a, Msg> {
             key(status_colour(Status::Revoked), "Revoked"),
         ]
     } else {
-        row![key(ui::SIGNAL, "Working"), key(OK, "Idle"), key(ui::INK_3, "Offline")]
+        row![key(crate::theme::palette().signal, "Working"), key(crate::theme::palette().ok, "Idle"), key(crate::theme::palette().ink_3, "Offline")]
     }
     .spacing(14)
     .align_y(Alignment::Center);
     container(body)
         .padding([6, 10])
         .style(|_: &Theme| container::Style {
-            background: Some(ui::SHEET.into()),
-            border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -424,10 +423,10 @@ fn legend<'a>(machines: bool) -> Element<'a, Msg> {
 fn key<'a>(colour: Color, name: &str) -> Element<'a, Msg> {
     let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
         background: Some(colour.into()),
-        border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+        border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
-    row![swatch, ui::mono(name.to_string(), 10.5, ui::INK)].spacing(6).align_y(Alignment::Center).into()
+    row![swatch, ui::mono(name.to_string(), 10.5, crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center).into()
 }
 
 /// The role as a square tag with a 3 px stripe in the district's colour.
@@ -438,10 +437,10 @@ fn role_tag<'a>(role: &str, hue: f32) -> Element<'a, Msg> {
         ..Default::default()
     });
     let text = role.replace('_', " ").to_uppercase();
-    container(row![stripe, ui::mono(text, 9.5, ui::INK)].spacing(4).align_y(Alignment::Center))
+    container(row![stripe, ui::mono(text, 9.5, crate::theme::palette().ink)].spacing(4).align_y(Alignment::Center))
         .padding([1, 5])
         .style(|_: &Theme| container::Style {
-            border: Border { color: ui::INK, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -466,11 +465,11 @@ fn status_tone(status: &str) -> ui::Tone {
 /// The print look shared by labels and the card: sheet, 1px ink border, a hard shadow.
 fn boxed_style(highlighted: bool) -> container::Style {
     container::Style {
-        background: Some(ui::SHEET.into()),
-        border: Border { color: if highlighted { ui::SIGNAL } else { ui::INK }, width: 1.0, radius: 0.0.into() },
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border { color: if highlighted { crate::theme::palette().signal } else { crate::theme::palette().ink }, width: 1.0, radius: 0.0.into() },
         // The print shadow (2px 2px 0 ink). iced drops the text of a box whose shadow has exactly
         // zero blur, so a hair of blur keeps it crisp and the text drawn.
-        shadow: Shadow { color: ui::INK, offset: iced::Vector::new(2.0, 2.0), blur_radius: 0.6 },
+        shadow: Shadow { color: crate::theme::palette().ink, offset: iced::Vector::new(2.0, 2.0), blur_radius: 0.6 },
         ..Default::default()
     }
 }

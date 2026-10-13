@@ -15,7 +15,7 @@ use super::tools::encode;
 use super::Id;
 use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::console::{client, events, Ctx};
-use crate::theme::{CRIT, HOVER, MONO, OK, PAPER, SERIF, WARN};
+use crate::theme::{MONO, SERIF};
 
 /// The tier of the constitution: switching one of its laws off needs its id typed in.
 const CONSTITUTION: &str = "constitution";
@@ -582,12 +582,12 @@ fn constitution_banner<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
     let headline = format!("{n} constitutional law{} {} switched off", if n == 1 { "" } else { "s" }, if n == 1 { "is" } else { "are" });
     let links: Vec<Element<'a, Msg>> = off.iter().map(|l| ui::link(&l.id, Msg::SelectLaw(l.id.clone()), true)).collect();
     Some(
-        container(column![text(headline).size(14.0).color(WARN), row(links).spacing(14).align_y(Alignment::Center)].spacing(8))
+        container(column![text(headline).size(14.0).color(crate::theme::palette().warn), row(links).spacing(14).align_y(Alignment::Center)].spacing(8))
             .padding(Padding { top: 12.0, right: 16.0, bottom: 12.0, left: 16.0 })
             .width(Length::Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(Color { a: 0.08, ..WARN }.into()),
-                border: Border { color: WARN, width: 1.0, radius: 0.0.into() },
+                background: Some(Color { a: 0.08, ..crate::theme::palette().warn }.into()),
+                border: Border { color: crate::theme::palette().warn, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
             })
             .into(),
@@ -996,7 +996,7 @@ fn pick_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
     move |_: &Theme, status: button::Status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
-            background: (selected || hovered).then_some(HOVER).map(Into::into),
+            background: (selected || hovered).then_some(crate::theme::palette().hover).map(Into::into),
             text_color: INK,
             border: Border { color: if selected { INK } else { RULE }, width: 1.0, radius: 0.0.into() },
             ..Default::default()
@@ -1019,7 +1019,7 @@ fn link<'a>(label: &str, msg: Msg) -> Element<'a, Msg> {
 
 /// A segmented control's segment (the web's `.rules-chip`): ink-filled when active.
 fn seg<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
-    let (color, bg) = if active { (PAPER, INK) } else { (INK_2, SHEET) };
+    let (color, bg) = if active { (crate::theme::palette().paper, INK) } else { (INK_2, SHEET) };
     button(text(label.to_string()).font(SERIF).size(13.0).color(color))
         .padding([7, 14])
         .style(move |_: &Theme, _| button::Style { background: Some(bg.into()), text_color: color, ..Default::default() })
@@ -1279,7 +1279,7 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     body.push(source_block(l, open));
 
     // The web's 4px left border: the accent shows in the strip left of the card.
-    let accent = if forbid { CRIT } else { OK };
+    let accent = if forbid { crate::theme::palette().crit } else { crate::theme::palette().ok };
     let card = container(column(body).spacing(12))
         .padding(Padding { top: 20.0, right: 22.0, bottom: 18.0, left: 22.0 })
         .width(Length::Fill)
@@ -1462,7 +1462,7 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
 
 fn diagnostics<'a>(list: &[Diagnostic]) -> Vec<Element<'a, Msg>> {
     list.iter()
-        .map(|d| ui::mono(format!("Line {}, column {}: {}", d.line, d.column, d.message), 12.0, CRIT).into())
+        .map(|d| ui::mono(format!("Line {}, column {}: {}", d.line, d.column, d.message), 12.0, crate::theme::palette().crit).into())
         .collect()
 }
 

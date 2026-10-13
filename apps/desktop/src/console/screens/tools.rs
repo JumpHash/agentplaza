@@ -715,7 +715,7 @@ fn matches(d: &Discovery, q: &str) -> bool {
 
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
-        border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
@@ -776,7 +776,7 @@ fn dot<'a>(tone: ui::Tone) -> Element<'a, Msg> {
 
 /// A section title (the web's `.prov-group-title`): small mono caps over a rule.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    column![ui::mono(title.to_uppercase(), 11.0, ui::INK), rule_line(ui::RULE)].spacing(6).width(Length::Fill).into()
+    column![ui::mono(title.to_uppercase(), 11.0, crate::theme::palette().ink), rule_line(crate::theme::palette().rule)].spacing(6).width(Length::Fill).into()
 }
 
 /// A connector's logo box (the web's 48px `.logo.lg`): its brand mark, else its initials.
@@ -785,7 +785,7 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
         ui::brand_logo(&c.brand, 26.0)
     } else {
         let letters: String = c.label.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
-        text(letters).font(ui::MONO_BOLD).size(13.0).color(ui::INK).into()
+        text(letters).font(ui::MONO_BOLD).size(13.0).color(crate::theme::palette().ink).into()
     };
     container(inner)
         .width(Length::Fixed(48.0))
@@ -798,7 +798,7 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
 
 /// A card's title in the web's serif semibold, one line.
 fn card_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(ui::INK).wrapping(Wrapping::None).into()
+    text(label.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None).into()
 }
 
 fn checks_box<'a>(checks: &[String]) -> Element<'a, Msg> {
@@ -837,7 +837,7 @@ fn connector_card<'a>(c: &Connector) -> Element<'a, Msg> {
         let chips: Vec<Element<'a, Msg>> = c
             .actions
             .iter()
-            .map(|a| chip(row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 11.0, ui::INK_2)].spacing(6).align_y(Alignment::Center)))
+            .map(|a| chip(row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 11.0, crate::theme::palette().ink_2)].spacing(6).align_y(Alignment::Center)))
             .collect();
         body = body.push(row(chips).spacing(8));
     }
@@ -924,7 +924,7 @@ fn configure_body<'a>(state: &State, id: &str, values: &BTreeMap<String, String>
         Some(Msg::CfgToggle),
     ));
     if !c.docs_url.is_empty() {
-        col = col.push(ui::mono(c.docs_url.clone(), 11.0, ui::INK_2));
+        col = col.push(ui::mono(c.docs_url.clone(), 11.0, crate::theme::palette().ink_2));
     }
     col = col.push(gated_row(vec![
         ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::Close)),
@@ -939,7 +939,7 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
     let s = &p.spec;
     let head = column![
         card_title(&s.label),
-        ui::mono(s.id.clone(), 11.5, ui::INK_3).wrapping(Wrapping::None),
+        ui::mono(s.id.clone(), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(2)
     .width(Length::Fill);
@@ -951,7 +951,7 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
             ui::badge(&auth_label(&s.auth), ui::Tone::Muted),
         ]),
         ui::faint(s.description.clone()),
-        ui::mono(s.base_url.clone(), 11.0, ui::INK_2).wrapping(Wrapping::None),
+        ui::mono(s.base_url.clone(), 11.0, crate::theme::palette().ink_2).wrapping(Wrapping::None),
     ]
     .spacing(12);
 
@@ -959,7 +959,7 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
         let chips: Vec<Element<'a, Msg>> = s
             .fields
             .iter()
-            .map(|f| chip(ui::mono(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, ui::INK_2)))
+            .map(|f| chip(ui::mono(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, crate::theme::palette().ink_2)))
             .collect();
         body = body.push(row(chips).spacing(6));
     }
@@ -970,8 +970,8 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
             .map(|a| {
                 chip(row![
                     dot(risk_tone(&a.risk)),
-                    ui::mono(a.name.clone(), 11.0, ui::INK_2),
-                    ui::mono(format!(" {} {}", a.method, a.path), 11.0, ui::INK_3),
+                    ui::mono(a.name.clone(), 11.0, crate::theme::palette().ink_2),
+                    ui::mono(format!(" {} {}", a.method, a.path), 11.0, crate::theme::palette().ink_3),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center))
@@ -993,7 +993,7 @@ fn decided_row<'a>(p: &Proposal) -> Element<'a, Msg> {
         _ => ("Pending", ui::Tone::Warn),
     };
     let mut line = row![
-        ui::mono(p.spec.id.clone(), 12.0, ui::INK),
+        ui::mono(p.spec.id.clone(), 12.0, crate::theme::palette().ink),
         ui::badge(text, tone),
         ui::faint(format!("{} · proposed by {}", p.spec.label, p.proposer)),
     ]
@@ -1034,15 +1034,15 @@ fn review_body<'a>(state: &State, id: &str, note: &str) -> Element<'a, Msg> {
     let s = &p.spec;
     let blocked = !p.checks.is_empty();
     let mut col = column![
-        ui::mono(format!("{} · {}", s.id, s.category), 12.0, ui::INK),
+        ui::mono(format!("{} · {}", s.id, s.category), 12.0, crate::theme::palette().ink),
         ui::faint(format!("Proposed by {} · auth {}", p.proposer, auth_label(&s.auth))),
         ui::faint(s.description.clone()),
-        ui::mono(s.base_url.clone(), 11.0, ui::INK_2),
+        ui::mono(s.base_url.clone(), 11.0, crate::theme::palette().ink_2),
     ]
     .spacing(10)
     .width(Length::Fill);
     if !s.docs_url.is_empty() {
-        col = col.push(ui::mono(s.docs_url.clone(), 11.0, ui::INK_2));
+        col = col.push(ui::mono(s.docs_url.clone(), 11.0, crate::theme::palette().ink_2));
     }
     if !s.fields.is_empty() {
         let summary = s
@@ -1069,12 +1069,12 @@ fn review_body<'a>(state: &State, id: &str, note: &str) -> Element<'a, Msg> {
         let schema = serde_json::to_string_pretty(&a.input_schema).unwrap_or_default();
         col = col.push(
             column![
-                row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 12.0, ui::INK), ui::faint(a.risk.clone())]
+                row![dot(risk_tone(&a.risk)), ui::mono(a.name.clone(), 12.0, crate::theme::palette().ink), ui::faint(a.risk.clone())]
                     .spacing(8)
                     .align_y(Alignment::Center),
-                ui::mono(format!("{} {}", a.method, url), 11.0, ui::INK_2),
+                ui::mono(format!("{} {}", a.method, url), 11.0, crate::theme::palette().ink_2),
                 ui::faint(a.description.clone()),
-                container(ui::mono(schema, 11.0, ui::INK_2)).padding(10).width(Length::Fill).style(boxed),
+                container(ui::mono(schema, 11.0, crate::theme::palette().ink_2)).padding(10).width(Length::Fill).style(boxed),
             ]
             .spacing(6),
         );
@@ -1114,7 +1114,7 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
     }
     actions.push(ui::btn("Remove", None, ui::Kind::Ghost, Some(Msg::OpenRemove(t.name.clone(), t.version))));
 
-    let title = iced::widget::text(format!("x_{}", t.name)).font(ui::MONO_SEMIBOLD).size(16.5).color(ui::INK).wrapping(Wrapping::None);
+    let title = iced::widget::text(format!("x_{}", t.name)).font(ui::MONO_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None);
     let mut body = column![
         card_head(None, title.into(), t.description.clone()),
         between(vec![
@@ -1122,11 +1122,11 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
             ui::badge(text, tone),
             ui::faint(format!("{} {}", t.calls, if t.calls == 1 { "call" } else { "calls" })).into(),
         ]),
-        ui::mono(t.command.join(" "), 11.0, ui::INK_2),
+        ui::mono(t.command.join(" "), 11.0, crate::theme::palette().ink_2),
     ]
     .spacing(12);
     if !t.requires.is_empty() {
-        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::mono(r.clone(), 11.0, ui::INK_2))).collect();
+        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::mono(r.clone(), 11.0, crate::theme::palette().ink_2))).collect();
         body = body.push(row(reqs).spacing(8));
     }
     if let Some(note) = &t.review_note {
@@ -1177,7 +1177,7 @@ fn files_body<'a>(state: &State, name: &str, version: u64, shown: &Option<(Strin
         Some((_, text)) => text.clone(),
         None => "Pick a file to see its content.".to_string(),
     };
-    let viewer = container(ui::mono(content, 12.0, ui::INK_2)).padding(12).width(Length::Fill).style(boxed);
+    let viewer = container(ui::mono(content, 12.0, crate::theme::palette().ink_2)).padding(12).width(Length::Fill).style(boxed);
     column![list, viewer].spacing(12).into()
 }
 
@@ -1224,8 +1224,8 @@ impl std::fmt::Display for KindChoice {
 /// One found tool, as a row over a rule (the web's `.disc-row`).
 fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
     let mut name = row![
-        text(d.name.clone()).font(SERIF_SEMIBOLD).size(15.0).color(ui::INK).wrapping(Wrapping::None),
-        chip(ui::mono(d.kind.clone(), 11.0, ui::INK_2)),
+        text(d.name.clone()).font(SERIF_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
+        chip(ui::mono(d.kind.clone(), 11.0, crate::theme::palette().ink_2)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1243,31 +1243,31 @@ fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
         ui::btn("Remove", None, ui::Kind::Danger, Some(Msg::OpenRemoveFound(d.id.clone(), d.name.clone()))),
     ]
     .spacing(8);
-    let what = container(text(d.what_for.clone()).font(theme::SERIF).size(14.0).color(ui::INK_2).wrapping(Wrapping::None))
+    let what = container(text(d.what_for.clone()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None))
         .width(Length::Fill)
         .height(Length::Fixed(18.0))
         .clip(true);
-    let by = ui::mono(format!("by {} · {} endorsements", d.by, d.endorsed_by.len()), 11.0, ui::INK_3).wrapping(Wrapping::None);
+    let by = ui::mono(format!("by {} · {} endorsements", d.by, d.endorsed_by.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None);
     let summary = column![name, row![what, by].spacing(8).align_y(Alignment::Center)].spacing(4).width(Length::Fill);
     let mut body = column![row![summary, actions].spacing(12).align_y(Alignment::Center)].spacing(10);
 
     if expanded {
         let mut details = column![
-            container(ui::mono(d.how.clone(), 12.0, ui::INK_2)).padding(10).width(Length::Fill).style(boxed),
+            container(ui::mono(d.how.clone(), 12.0, crate::theme::palette().ink_2)).padding(10).width(Length::Fill).style(boxed),
             ui::prose(d.verdict.clone()),
         ]
         .spacing(8);
         if !d.tags.is_empty() {
-            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::mono(t.clone(), 11.0, ui::INK_2))).collect();
+            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::mono(t.clone(), 11.0, crate::theme::palette().ink_2))).collect();
             details = details.push(row(tags).spacing(8));
         }
         // Agents write these URLs, so only web links are shown (as the proposal review does).
         if let Some(url) = d.url.as_ref().filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
-            details = details.push(ui::mono(url.clone(), 11.0, ui::INK_2));
+            details = details.push(ui::mono(url.clone(), 11.0, crate::theme::palette().ink_2));
         }
         body = body.push(details);
     }
-    column![container(body).padding(iced::Padding::from([10.0, 0.0])).width(Length::Fill), rule_line(ui::RULE)].width(Length::Fill).into()
+    column![container(body).padding(iced::Padding::from([10.0, 0.0])).width(Length::Fill), rule_line(crate::theme::palette().rule)].width(Length::Fill).into()
 }
 
 /// The pager, right-aligned (the web's `.disc-pager`).
@@ -1275,7 +1275,7 @@ fn pager<'a>(page: usize, pages: usize) -> Element<'a, Msg> {
     row![
         Space::new().width(Length::Fill),
         ui::btn("Previous", None, ui::Kind::Ghost, (page > 1).then_some(Msg::Page(-1))),
-        ui::mono(format!("page {page} of {pages}"), 11.0, ui::INK_3),
+        ui::mono(format!("page {page} of {pages}"), 11.0, crate::theme::palette().ink_3),
         ui::btn("Next", None, ui::Kind::Ghost, (page < pages).then_some(Msg::Page(1))),
     ]
     .spacing(10)
@@ -1307,7 +1307,7 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
     let toolbar = row![
         container(search).width(Length::Fill),
         kind,
-        ui::mono(format!("{} found", state.toolbox.len()), 11.0, ui::INK_3).wrapping(Wrapping::None),
+        ui::mono(format!("{} found", state.toolbox.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -1379,7 +1379,7 @@ fn modal_layer<'a>(state: &State) -> Option<Element<'a, Msg>> {
             .into(),
         ),
     };
-    let mut col = column![ui::mono(title, 16.0, ui::INK), body].spacing(14);
+    let mut col = column![ui::mono(title, 16.0, crate::theme::palette().ink), body].spacing(14);
     if let Some(error) = &state.modal_error {
         col = col.push(ui::error_line(error));
     }

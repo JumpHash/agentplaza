@@ -15,7 +15,7 @@ use super::Id;
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3};
 use crate::console::Ctx;
-use crate::theme::{self, CRIT, OK};
+use crate::theme::{self};
 
 /// Serif semibold: a pull request's title.
 const SERIF_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
@@ -634,8 +634,8 @@ fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
         return sheet(state, ui::view_head(&state.repo, vec![back]), ui::empty("git", "No such repository", "It may have been removed."));
     }
     let url = container(ui::mono(clone_url(state), 13.0, INK)).padding([4, 8]).style(|_: &Theme| container::Style {
-        background: Some(theme::SHEET.into()),
-        border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
     let clone = row![
@@ -765,8 +765,8 @@ fn filebox<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Ms
     container(column![head, rule_line(), body])
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(theme::SHEET.into()),
-            border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -775,7 +775,7 @@ fn filebox<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Ms
 /// A hairline rule in the web's `--rule` colour.
 fn rule_line<'a>() -> Element<'a, Msg> {
     container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(theme::RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     })
     .into()
@@ -784,7 +784,7 @@ fn rule_line<'a>() -> Element<'a, Msg> {
 /// A vertical rule, as tall as its row.
 fn rule_col<'a>() -> Element<'a, Msg> {
     container(Space::new().width(1.0).height(Length::Fill)).style(|_: &Theme| container::Style {
-        background: Some(theme::RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     })
     .into()
@@ -804,7 +804,7 @@ fn chip<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
     button(text(label_text.to_string()).font(theme::SERIF).size(12.0).color(INK_2))
         .padding([1, 8])
         .style(|_: &Theme, status: button::Status| {
-            let edge = if matches!(status, button::Status::Hovered) { INK_2 } else { theme::RULE };
+            let edge = if matches!(status, button::Status::Hovered) { INK_2 } else { crate::theme::palette().rule };
             button::Style {
                 background: None,
                 text_color: INK_2,
@@ -834,8 +834,8 @@ fn commit_row<'a>(k: &Commit) -> Element<'a, Msg> {
         cell(Length::Fill, ui::prose(first_line(&k.message).to_string()).size(14.0)),
         cell(Length::Fixed(140.0), ui::faint(k.author.clone())),
         cell(Length::Fixed(90.0), ui::faint(ago(&k.at))),
-        cell(Length::Fixed(60.0), ui::mono(format!("+{}", k.additions), 13.0, OK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("−{}", k.deletions), 13.0, CRIT)),
+        cell(Length::Fixed(60.0), ui::mono(format!("+{}", k.additions), 13.0, crate::theme::palette().ok)),
+        cell(Length::Fixed(60.0), ui::mono(format!("−{}", k.deletions), 13.0, crate::theme::palette().crit)),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -978,8 +978,8 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
 fn file_row<'a>(f: &PullFile) -> Element<'a, Msg> {
     row![
         cell(Length::Fill, ui::mono(f.path.clone(), 13.0, INK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("+{}", f.additions), 13.0, OK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("−{}", f.deletions), 13.0, CRIT)),
+        cell(Length::Fixed(60.0), ui::mono(format!("+{}", f.additions), 13.0, crate::theme::palette().ok)),
+        cell(Length::Fixed(60.0), ui::mono(format!("−{}", f.deletions), 13.0, crate::theme::palette().crit)),
     ]
     .spacing(12)
     .padding([6, 0])
@@ -1029,13 +1029,13 @@ fn diff_view<'a>(diff: &str) -> Element<'a, Msg> {
 /// A diff line's text colour, tint and font, by its marker.
 fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     if line.starts_with("@@") {
-        (INK_3, Some(Color { a: 0.06, ..INK }), theme::MONO)
+        (INK_3, Some(Color { a: 0.06, ..crate::theme::palette().ink }), theme::MONO)
     } else if line.starts_with("+++") || line.starts_with("---") {
         (INK_2, None, ui::MONO_SEMIBOLD)
     } else if line.starts_with('+') {
-        (INK, Some(Color { a: 0.12, ..OK }), theme::MONO)
+        (INK, Some(Color { a: 0.12, ..crate::theme::palette().ok }), theme::MONO)
     } else if line.starts_with('-') {
-        (INK, Some(Color { a: 0.12, ..CRIT }), theme::MONO)
+        (INK, Some(Color { a: 0.12, ..crate::theme::palette().crit }), theme::MONO)
     } else {
         (INK, None, theme::MONO)
     }

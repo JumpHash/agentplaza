@@ -314,14 +314,14 @@ fn ago(ms: i64) -> String {
 
 /// A serif semibold line in ink.
 fn semibold<'a>(content: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
-    text(content).font(SEMIBOLD).size(size).color(theme::INK)
+    text(content).font(SEMIBOLD).size(size).color(crate::theme::palette().ink)
 }
 
 /// A text link in the signal colour, mono 12 (the web's `.pj-link`).
 fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
-    button(ui::mono(label_text.to_string(), 12.0, theme::SIGNAL))
+    button(ui::mono(label_text.to_string(), 12.0, crate::theme::palette().signal))
         .padding(0)
-        .style(|_: &Theme, _| button::Style { background: None, text_color: theme::SIGNAL, ..Default::default() })
+        .style(|_: &Theme, _| button::Style { background: None, text_color: crate::theme::palette().signal, ..Default::default() })
         .on_press(msg)
         .into()
 }
@@ -332,11 +332,11 @@ fn track<'a>(stage: &str) -> Element<'a, Msg> {
     let idx = stage_index(stage);
     let segs = row(STAGES.iter().enumerate().map(|(i, _)| {
         let (fill, edge) = if i == idx {
-            (theme::SIGNAL, theme::SIGNAL)
+            (crate::theme::palette().signal, crate::theme::palette().signal)
         } else if i < idx {
-            (theme::INK_3, theme::INK_3)
+            (crate::theme::palette().ink_3, crate::theme::palette().ink_3)
         } else {
-            (Color::TRANSPARENT, theme::RULE)
+            (Color::TRANSPARENT, crate::theme::palette().rule)
         };
         container(Space::new().width(8.0).height(8.0))
             .style(move |_: &Theme| container::Style {
@@ -347,7 +347,7 @@ fn track<'a>(stage: &str) -> Element<'a, Msg> {
             .into()
     }))
     .spacing(3);
-    row![segs, text(label(stage)).font(theme::MONO).size(12.0).color(theme::INK_2)].spacing(10).align_y(Alignment::Center).into()
+    row![segs, text(label(stage)).font(theme::MONO).size(12.0).color(crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center).into()
 }
 
 /// The pipeline on the detail page: a ruled strip of eight cells. Done steps are ticked, the current
@@ -358,20 +358,20 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
     for (i, s) in STAGES.iter().enumerate() {
         if i > 0 {
             items.push(container(Space::new().width(1.0).height(Length::Fill)).style(|_: &Theme| container::Style {
-                background: Some(theme::RULE.into()),
+                background: Some(crate::theme::palette().rule.into()),
                 ..Default::default()
             }).into());
         }
         let current = i == idx;
         let (mark, filled, fg) = if i < idx {
-            ("✓".to_string(), Some(theme::INK), theme::INK)
+            ("✓".to_string(), Some(crate::theme::palette().ink), crate::theme::palette().ink)
         } else if current {
-            ((i + 1).to_string(), Some(theme::SIGNAL), theme::INK)
+            ((i + 1).to_string(), Some(crate::theme::palette().signal), crate::theme::palette().ink)
         } else {
-            ((i + 1).to_string(), None, theme::INK_3)
+            ((i + 1).to_string(), None, crate::theme::palette().ink_3)
         };
-        let edge = if i < idx { theme::INK } else if current { theme::SIGNAL } else { fg };
-        let mark_box = container(ui::mono(mark, 11.0, if filled.is_some() { theme::PAPER } else { fg }))
+        let edge = if i < idx { crate::theme::palette().ink } else if current { crate::theme::palette().signal } else { fg };
+        let mark_box = container(ui::mono(mark, 11.0, if filled.is_some() { crate::theme::palette().paper } else { fg }))
             .width(20.0)
             .height(20.0)
             .align_x(Alignment::Center)
@@ -382,7 +382,7 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
                 ..Default::default()
             });
         let name = text(label(s)).font(if current { SEMIBOLD } else { theme::SERIF }).size(12.0).color(fg);
-        let underline = if current { theme::SIGNAL } else { Color::TRANSPARENT };
+        let underline = if current { crate::theme::palette().signal } else { Color::TRANSPARENT };
         let cell = column![
             column![mark_box, name].spacing(6).padding([10, 8]),
             container(Space::new().height(3.0)).width(Length::Fill).style(move |_: &Theme| container::Style {
@@ -395,7 +395,7 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
             container(cell)
                 .width(Length::Fill)
                 .style(move |_: &Theme| container::Style {
-                    background: if current { Some(theme::SHEET.into()) } else { None },
+                    background: if current { Some(crate::theme::palette().sheet.into()) } else { None },
                     ..Default::default()
                 })
                 .into(),
@@ -404,7 +404,7 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
     container(row(items))
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
         .into()
@@ -416,11 +416,11 @@ fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
     let main = column![
         row![semibold(p.title.as_str(), 15.0), ui::badge(&p.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
         track(&p.stage),
-        ui::mono(format!("rev {} · {} docs · {} critiques · {} tasks", p.revision, p.docs.len(), p.critiques.len(), p.tasks.len()), 12.0, theme::INK_3),
+        ui::mono(format!("rev {} · {} docs · {} critiques · {} tasks", p.revision, p.docs.len(), p.critiques.len(), p.tasks.len()), 12.0, crate::theme::palette().ink_3),
     ]
     .spacing(6)
     .width(Length::Fill);
-    let side = column![ui::mono(format!("updated {}", ago(p.updated_ms)), 12.0, theme::INK_3)].align_x(Alignment::End);
+    let side = column![ui::mono(format!("updated {}", ago(p.updated_ms)), 12.0, crate::theme::palette().ink_3)].align_x(Alignment::End);
     let entry = button(row![main, side].spacing(16).align_y(Alignment::Center))
         .on_press(Msg::Open(p.id.clone()))
         .padding([14, 4])
@@ -428,7 +428,7 @@ fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
         .style(theme::register_row(false));
     // Each row is closed by a rule (the web's `.pj-row` border-bottom).
     column![entry, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-        background: Some(theme::RULE.into()),
+        background: Some(crate::theme::palette().rule.into()),
         ..Default::default()
     })]
     .into()
@@ -436,7 +436,7 @@ fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
 
 fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = vec![container(
-        ui::prose("Every goal goes through brief, research, proposal, critique and approval before anything is built.").color(theme::INK_2),
+        ui::prose("Every goal goes through brief, research, proposal, critique and approval before anything is built.").color(crate::theme::palette().ink_2),
     )
     .max_width(620)
     .into()];
@@ -451,7 +451,7 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
         Some(list) => {
             // The web's `.pj-list` ruled register: a rule above the rows, one under each.
             body.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
-                background: Some(theme::RULE.into()),
+                background: Some(crate::theme::palette().rule.into()),
                 ..Default::default()
             }).into());
             body.push(column(list.iter().map(row_item)).spacing(0).into());
@@ -572,7 +572,7 @@ fn docs_body<'a>(p: &'a Project) -> Element<'a, Msg> {
 fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
     let mut col = column![
         row![semibold(d.title.as_str(), 15.0), ui::badge(&d.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
-        ui::mono(format!("by {} · {}", d.by, ago(d.at_ms)), 12.0, theme::INK_3),
+        ui::mono(format!("by {} · {}", d.by, ago(d.at_ms)), 12.0, crate::theme::palette().ink_3),
     ]
     .spacing(6);
     if !d.summary.is_empty() {
@@ -580,7 +580,7 @@ fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
     }
     if let Some(path) = &d.repo_path {
         let commit = d.commit.as_deref().map(|c| format!(" @ {}", c.get(..7).unwrap_or(c))).unwrap_or_default();
-        col = col.push(ui::mono(format!("{path}{commit}"), 12.0, theme::INK_2));
+        col = col.push(ui::mono(format!("{path}{commit}"), 12.0, crate::theme::palette().ink_2));
     }
     col.into()
 }
@@ -601,8 +601,8 @@ fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
     let head = row![
         ui::badge(&c.verdict, tone),
         ui::prose(format!("by {}", c.by)),
-        ui::mono(format!("revision {}", c.revision), 12.0, theme::INK_3),
-        ui::mono(ago(c.at_ms), 12.0, theme::INK_3),
+        ui::mono(format!("revision {}", c.revision), 12.0, crate::theme::palette().ink_3),
+        ui::mono(ago(c.at_ms), 12.0, crate::theme::palette().ink_3),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -631,14 +631,14 @@ fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
 
 fn event_row<'a>(e: &'a Event) -> Element<'a, Msg> {
     let mut line = row![
-        ui::mono(ago(e.at_ms), 12.0, theme::INK_3),
-        text(e.by.as_str()).font(BOLD).size(13.0).color(theme::INK),
+        ui::mono(ago(e.at_ms), 12.0, crate::theme::palette().ink_3),
+        text(e.by.as_str()).font(BOLD).size(13.0).color(crate::theme::palette().ink),
         ui::prose(e.what.as_str()).size(13.0),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
     if !e.note.is_empty() {
-        line = line.push(ui::mono(format!("— {}", e.note), 12.0, theme::INK_3));
+        line = line.push(ui::mono(format!("— {}", e.note), 12.0, crate::theme::palette().ink_3));
     }
     line.into()
 }
