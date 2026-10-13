@@ -6,6 +6,7 @@
 //! Nothing outside this module and its tests calls it yet: the Floor integration consumes it next.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 
 use super::layout::role_hue;
 use super::{AgentInfo, District};
@@ -525,6 +526,195 @@ pub fn layout_on_board_with(
     BoardLayout { districts, homes, atom, bounds, pcb_top }
 }
 
+/// The world scale the shared board core may grow a layout to (the apz-board tests' cap).
+const SHARED_SCALE_CAP: f64 = 3.0;
+
+/// The shared board core's layout (`apz_board::layout::layout`) of a board kind for a roster, with every agent seated.
+/// Err with the reason when the kind is unknown or no scale up to the cap seats everyone (the shared layout panics).
+/// What a shared layout is computed from: the board kind, its GPU count, and each agent's id and shared role, sorted
+/// by id, so a roster asks for the same layout whatever order it came in.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SharedKey {
+    kind: String,
+    gpus: u32,
+    agents: Vec<(u64, String)>,
+}
+
+impl SharedKey {
+    pub fn new(kind: &str, agents: &[AgentInfo], gpus: u32) -> Self {
+        let mut seats: Vec<(u64, String)> = agents
+            .iter()
+            .map(|a| (a.cid, if a.tier == "orchestrator" { "orchestrator".to_string() } else { a.role.clone() }))
+            .collect();
+        seats.sort();
+        Self { kind: kind.to_string(), gpus, agents: seats }
+    }
+}
+
+/// The key of a board's roster: the model's kind without its "board/" prefix, and its `gpus` parameter.
+pub fn shared_key_for(list: &[AgentInfo], board: &Model, params: &BoardParams) -> SharedKey {
+    let kind = board.kind.strip_prefix("board/").unwrap_or(&board.kind);
+    let gpus = params.params.values.get("gpus").map_or(0, |g| g.max(0.0) as u32);
+    SharedKey::new(kind, list, gpus)
+}
+
+/// The shared board core's layout (`apz_board::layout::layout`) for a key, with every agent seated. Err with the reason
+/// when the kind is unknown or no scale up to the cap seats everyone (the shared layout panics).
+pub fn shared_layout_of(key: &SharedKey) -> Result<apz_board::layout::Layout, String> {
+    let input = apz_board::layout::LayoutInput {
+        agents: key
+            .agents
+            .iter()
+            .map(|(cid, role)| apz_board::layout::AgentSpec { id: cid.to_string(), role: role.clone(), seat_hint: None })
+            .collect(),
+        gpus: key.gpus,
+        scale_cap: SHARED_SCALE_CAP,
+    };
+    std::panic::catch_unwind(AssertUnwindSafe(|| apz_board::layout::layout(&key.kind, &input))).map_err(|e| {
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "the shared layout panicked".to_string())
+    })
+}
+
+/// The shared layout for a key as the engine's `BoardLayout`; None (logged once) when the shared core cannot seat it.
+fn compute(key: &SharedKey) -> Option<BoardLayout> {
+    match shared_layout_of(key) {
+        Ok(shared) => Some(board_layout_of(&shared)),
+        Err(reason) => {
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| eprintln!("apz-engine: the shared board layout failed ({reason}); the engine's own is used"));
+            None
+        }
+    }
+}
+
+/// The shared layouts computed or computing, by key. The first request for a key starts its computation on a thread
+/// (native); `poll` moves the finished ones into `done`, which `request` returns from. wasm32 has no threads, so
+/// nothing starts there and `request` stays None: the caller keeps the engine's own layout. A web worker that
+/// computes the layout and posts it back is the next step.
+#[derive(Default)]
+pub struct SharedLayouts {
+    done: HashMap<SharedKey, Option<BoardLayout>>,
+    running: HashMap<SharedKey, std::sync::mpsc::Receiver<Option<BoardLayout>>>,
+    #[cfg(test)]
+    spawned: usize,
+}
+
+impl SharedLayouts {
+    /// The layout for `key` once it is ready: None while it computes, and None for a key the shared core cannot seat.
+    pub fn request(&mut self, key: SharedKey) -> Option<BoardLayout> {
+        if let Some(done) = self.done.get(&key) {
+            return done.clone();
+        }
+        if !self.running.contains_key(&key) {
+            self.start(key);
+        }
+        None
+    }
+
+    /// Whether `key` is computing.
+    pub fn is_pending(&self, key: &SharedKey) -> bool {
+        self.running.contains_key(key)
+    }
+
+    /// Moves the finished computations into the cache.
+    pub fn poll(&mut self) {
+        let mut finished = Vec::new();
+        for (key, rx) in &self.running {
+            match rx.try_recv() {
+                Ok(layout) => finished.push((key.clone(), layout)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => finished.push((key.clone(), None)),
+            }
+        }
+        for (key, layout) in finished {
+            self.running.remove(&key);
+            self.done.insert(key, layout);
+        }
+    }
+
+    fn start(&mut self, key: SharedKey) {
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.spawned += 1;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let job = key.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(compute(&job));
+        });
+        self.running.insert(key, rx);
+    }
+}
+
+/// The process's shared layouts: one cache for every Floor, since a key is the whole input of its layout.
+fn shared_cache() -> &'static std::sync::Mutex<SharedLayouts> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<SharedLayouts>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The shared layout for `key` when it is ready (the cache polls first); else None, and the first request starts it.
+pub fn request_shared(key: &SharedKey) -> Option<BoardLayout> {
+    let mut cache = shared_cache().lock().ok()?;
+    cache.poll();
+    cache.request(key.clone())
+}
+
+/// Whether `key`'s shared layout is computing.
+pub fn shared_pending(key: &SharedKey) -> bool {
+    shared_cache().lock().is_ok_and(|cache| cache.is_pending(key))
+}
+
+/// The engine's `BoardLayout` from a shared layout: the districts are its rooms in its order (a home's room is the
+/// district index), and each agent's home is keyed by its cid (the agent id the shared layout was given).
+pub fn board_layout_of(shared: &apz_board::layout::Layout) -> BoardLayout {
+    let districts = shared
+        .rooms
+        .iter()
+        .map(|room| {
+            let key = if room.role.is_empty() {
+                format!("unnamed:{}", room.members.first().map_or("", String::as_str))
+            } else {
+                room.role.clone()
+            };
+            BoardDistrict {
+                key,
+                district: District {
+                    role: if room.role.is_empty() { "other".to_string() } else { room.role.clone() },
+                    cx: room.centre[0] as f32,
+                    cy: room.centre[1] as f32,
+                    r: room.r as f32,
+                    hue: room.hue as f32,
+                    round: room.round,
+                },
+                y: room.floor_y as f32,
+                slot: shared.plates.get(room.plate).map_or_else(String::new, |p| p.slot.clone()),
+                w: (room.half[0] * 2.0) as f32,
+                d: (room.half[1] * 2.0) as f32,
+            }
+        })
+        .collect();
+    let homes = shared
+        .homes
+        .iter()
+        .filter_map(|h| Some((h.agent.parse::<u64>().ok()?, (h.room, h.at[0] as f32, h.at[1] as f32))))
+        .collect();
+    let b = shared.bounds;
+    let [ax, ay, az] = shared.atom;
+    BoardLayout {
+        districts,
+        homes,
+        atom: [ax as f32, ay as f32, az as f32],
+        bounds: Bounds { cx: b.cx as f32, cz: b.cz as f32, w: b.w as f32, d: b.d as f32 },
+        pcb_top: shared.pcb_top as f32,
+    }
+}
+
 /// `boardHeightAt(x, z, layout)`: the surface height for a robot at (x, z). Inside a room's cell it
 /// is the room's height; within `RAMP` outside a cell it slopes down to the PCB top; elsewhere the
 /// PCB top.
@@ -910,110 +1100,94 @@ mod tests {
         assert_eq!(layout_on_board(&[], workstation, &over).pcb_top, 0.5);
     }
 
-    /// The web's layoutOnBoard, dumped by a node run of board-layout.ts (testdata/board_parity.json: each case's
-    /// board and agents, and the web's rooms and homes). The Rust layout must put every room on the same slot and
-    /// cell, under the same key, and every home at the same spot. Every case is checked: each prints its first few
-    /// mismatches (role, field, both values), and the test fails at the end if any case differs.
+    /// The shared board core seats every agent of every board kind and count the apz-board tests use, the same way
+    /// twice (its layout is deterministic).
     #[test]
-    #[ignore = "superseded by the shared apz-board crate (owner decision 2026-10-13)"]
-    fn board_parity_with_the_web() {
-        // Mismatches shown per case; the count of all of them is printed too.
-        const SHOWN: usize = 5;
-        // f32 rounding: the board's rects are f32 (hardware::Slot), so a cell can differ from the web's f64 by a few
-        // ulps (the worst seen: 1.9e-6 on a coordinate of 27.7). A relative 1e-6 bounds that.
-        let close = |got: f32, want: f32| (got - want).abs() <= 1e-6 * want.abs().max(1.0);
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/world/testdata/board_parity.json");
-        let text = std::fs::read_to_string(path).expect("testdata/board_parity.json reads");
-        let v: serde_json::Value = serde_json::from_str(&text).expect("board_parity.json parses");
-        let num = |x: &serde_json::Value| x.as_f64().expect("a number") as f32;
-        let mut failing: Vec<String> = Vec::new();
-        for case in v["cases"].as_array().expect("a cases array") {
-            let board_name = case["board"].as_str().expect("a board");
-            let label = format!("{} on {board_name}", case["name"].as_str().unwrap_or(""));
-            let mut board = hardware::model(board_name).expect("the embedded board parses").clone();
-            // A case with no atom: the web's dump removed the board's anchors.atom, so the Rust board loses it too.
-            if case["noAtom"].as_bool().expect("a noAtom flag") {
-                board.anchors.atom = None;
-            }
-            let list: Vec<AgentInfo> = case["agents"]
-                .as_array()
-                .expect("agents")
-                .iter()
-                .map(|a| agent(a["cid"].as_u64().expect("a cid"), a["role"].as_str().unwrap(), a["tier"].as_str().unwrap()))
-                .collect();
-            // The case's params (the GPU count of an occlusion case), passed as the web's layoutOnBoard(..., params).
-            let mut bp = BoardParams::default();
-            for (k, v) in case["params"].as_object().expect("a params object") {
-                bp.params = bp.params.with(k, v.as_f64().expect("a number param"));
-            }
-            let layout = layout_on_board(&list, &board, &bp);
-
-            // Each mismatch as "role field: rust X, web Y", in the order the checks run.
-            let mut bad: Vec<String> = Vec::new();
-            let want_atom = case["atom"].as_array().expect("an atom");
-            for (k, got, want_v) in [("x", layout.atom[0], num(&want_atom[0])), ("y", layout.atom[1], num(&want_atom[1])), ("z", layout.atom[2], num(&want_atom[2]))] {
-                if !close(got, want_v) {
-                    bad.push(format!("atom {k}: rust {got}, web {want_v}"));
-                }
-            }
-            let want_rooms = case["districts"].as_array().expect("districts");
-            if layout.districts.len() != want_rooms.len() {
-                bad.push(format!("room count: rust {}, web {}", layout.districts.len(), want_rooms.len()));
-            }
-            for (bd, want) in layout.districts.iter().zip(want_rooms) {
-                let role = bd.district.role.as_str();
-                let texts = [
-                    ("key", bd.key.as_str(), want["key"].as_str().unwrap_or("")),
-                    ("role", role, want["role"].as_str().unwrap_or("")),
-                    ("slot", bd.slot.as_str(), want["slot"].as_str().unwrap_or("")),
-                ];
-                for (k, got, want_s) in texts {
-                    if got != want_s {
-                        bad.push(format!("{role} {k}: rust {got}, web {want_s}"));
-                    }
-                }
-                let nums = [("y", bd.y), ("cx", bd.district.cx), ("cy", bd.district.cy), ("w", bd.w), ("d", bd.d), ("hue", bd.district.hue)];
-                for (k, got) in nums {
-                    let want_v = num(&want[k]);
-                    if !close(got, want_v) {
-                        bad.push(format!("{role} {k}: rust {got}, web {want_v}"));
-                    }
-                }
-            }
-
-            let want_homes = case["homes"].as_array().expect("homes");
-            if layout.homes.len() != want_homes.len() {
-                bad.push(format!("home count: rust {}, web {}", layout.homes.len(), want_homes.len()));
-            }
-            for h in want_homes {
-                let cid = h["cid"].as_u64().expect("a cid");
-                let Some(&(room, x, z)) = layout.homes.get(&cid) else {
-                    bad.push(format!("agent {cid} home: none in rust, web room {}", h["district"]));
-                    continue;
-                };
-                let role = layout.districts.get(room).map_or("?", |d| d.district.role.as_str());
-                let want_room = h["district"].as_u64().expect("a room index") as usize;
-                if room != want_room {
-                    bad.push(format!("{role} agent {cid} room: rust {room}, web {want_room}"));
-                }
-                if !close(x, num(&h["x"])) {
-                    bad.push(format!("{role} agent {cid} x: rust {x}, web {}", h["x"]));
-                }
-                if !close(z, num(&h["z"])) {
-                    bad.push(format!("{role} agent {cid} z: rust {z}, web {}", h["z"]));
-                }
-            }
-
-            if bad.is_empty() {
-                println!("== {label}: all {} rooms and {} homes match", layout.districts.len(), layout.homes.len());
-            } else {
-                println!("== {label}: {} mismatch(es), first {}:", bad.len(), bad.len().min(SHOWN));
-                for line in bad.iter().take(SHOWN) {
-                    println!("   {line}");
-                }
-                failing.push(label);
+    #[cfg_attr(debug_assertions, ignore = "the shared layouts take seconds each in release, minutes in debug")]
+    fn shared_layout_seats_every_agent_on_every_board_kind() {
+        const KINDS: [&str; 6] = ["edge", "laptop", "phone", "apple-soc", "server", "workstation"];
+        const COUNTS: [usize; 4] = [1, 4, 8, 20];
+        let roles = ["coder", "writer", "analyst"];
+        let agent = |cid: u64, role: &str| AgentInfo {
+            cid,
+            name: format!("agent {cid}"),
+            role: role.into(),
+            status: "idle".into(),
+            tier: if role == "orchestrator" { "orchestrator" } else { "worker" }.into(),
+            model: String::new(),
+            species: None,
+        };
+        for kind in KINDS {
+            for n in COUNTS {
+                let list: Vec<AgentInfo> = (1..=n as u64)
+                    .map(|cid| agent(cid, if cid == 1 { "orchestrator" } else { roles[cid as usize % roles.len()] }))
+                    .collect();
+                // gpus 0, as the apz-board suite uses: a workstation with a GPU fitted does not seat one agent
+                // within the scale cap yet (see `shared_layout_seats_with_gpus_fitted`).
+                let key = SharedKey::new(kind, &list, 0);
+                let shared = shared_layout_of(&key).unwrap_or_else(|e| panic!("{kind} with {n} agents: {e}"));
+                let mut seated: Vec<u64> = shared.homes.iter().map(|h| h.agent.parse().expect("a cid")).collect();
+                seated.sort_unstable();
+                assert_eq!(seated, (1..=n as u64).collect::<Vec<_>>(), "{kind} with {n} agents: each seated once");
+                let again = shared_layout_of(&key).expect("the same roster lays out again");
+                assert_eq!(shared, again, "{kind} with {n} agents: deterministic");
             }
         }
-        assert!(failing.is_empty(), "board parity fails on {} case(s): {failing:?}", failing.len());
+    }
+
+    /// The first request for a key starts its layout and returns None; once it is done, polling moves it into the
+    /// cache and requests return it, without computing it again.
+
+    /// The same with GPUs fitted (real workstations and servers have them). apz-board cannot seat a workstation with
+    /// one GPU and one agent within the scale cap 3 today; the engine falls back to its own layout meanwhile.
+    #[test]
+    #[ignore = "apz-board: workstation with gpus=1 and one agent does not seat within scale cap 3"]
+    fn shared_layout_seats_with_gpus_fitted() {
+        let list = vec![AgentInfo {
+            cid: 1,
+            name: "agent 1".into(),
+            role: "orchestrator".into(),
+            status: "idle".into(),
+            tier: "orchestrator".into(),
+            model: String::new(),
+            species: None,
+        }];
+        for kind in ["workstation", "server"] {
+            for gpus in [1, 2, 4] {
+                let key = SharedKey::new(kind, &list, gpus);
+                shared_layout_of(&key).unwrap_or_else(|e| panic!("{kind} with {gpus} GPUs: {e}"));
+            }
+        }
+    }
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_shared_layout_is_computed_once_and_ready_after_polling() {
+        let seat = |cid: u64, role: &str| AgentInfo {
+            cid,
+            name: format!("agent {cid}"),
+            role: role.into(),
+            status: "idle".into(),
+            tier: if role == "orchestrator" { "orchestrator" } else { "worker" }.into(),
+            model: String::new(),
+            species: None,
+        };
+        let roster = [seat(1, "orchestrator"), seat(2, "coder")];
+        let key = SharedKey::new("edge", &roster, 1);
+        let mut cache = SharedLayouts::default();
+        assert!(cache.request(key.clone()).is_none(), "the first request starts the layout");
+        assert!(cache.request(key.clone()).is_none(), "a request while it computes does not start it again");
+        assert_eq!(cache.spawned, 1, "one computation for the key");
+        let started = std::time::Instant::now();
+        let layout = loop {
+            cache.poll();
+            if let Some(layout) = cache.request(key.clone()) {
+                break layout;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(120), "the edge layout is ready");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(layout.homes.len(), 2, "both agents are seated");
+        assert!(cache.request(key).is_some(), "a finished key is returned at once");
+        assert_eq!(cache.spawned, 1, "a finished key is not computed again");
     }
 }

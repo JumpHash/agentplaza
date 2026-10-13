@@ -16,6 +16,7 @@ glam = { version = "0.30", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
+apz-board = { path = "../apz-board" }
 ab_glyph = "0.2"
 fancy-regex = "0.14"
 tiny-skia = "0.11"

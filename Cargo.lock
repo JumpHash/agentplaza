@@ -307,6 +307,7 @@ name = "apz-engine"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "apz-board",
  "bevy_ecs",
  "bytemuck",
  "fancy-regex 0.14.0",

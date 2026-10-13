@@ -374,7 +374,7 @@ pub fn driving(&self) -> bool {
 /// The popup's board, built while the Machines view shows: its queued rooms one district per frame, then its statics
 /// baked. Nothing draws the board in this view, so the work waits for no frame of the sequence.
 pub fn work_board(&mut self) {
-    if self.floor.rooms_pending() {
+    if self.floor.rooms_pending() || self.floor.shared_waiting() {
         self.floor.step_rooms(BOARD_STEP);
     } else if self.floor.statics_dirty && self.popup.is_some() {
         self.floor.frame(1.0);
@@ -622,9 +622,13 @@ pub fn tick(&mut self, now: Instant) -> Motion {
             }
             // Queued rooms and the popup board's bake: work still pending is motion.
             let board_busy = self.floor.rooms_pending() || (self.floor.statics_dirty && self.popup.is_some());
+            let shared_waiting = self.floor.shared_waiting();
             self.work_board();
             if board_busy {
                 motion = Motion::Active;
+            } else if shared_waiting {
+                // A shared layout computing off the frame: poll at the ambient rate until it lands.
+                motion = motion.max(Motion::Ambient);
             }
             if w > 0.0 && h > 0.0 {
                 let camera = self.machines.orbit.camera(w / h);

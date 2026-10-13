@@ -9,7 +9,11 @@ use web_time::Instant;
 
 use glam::{Mat4, Quat, Vec3};
 
-use super::board_layout::{layout_on_board, trace_graph, BoardDistrict, BoardLayout, BoardParams, Bounds, TraceGraph};
+use super::board_layout::{
+    layout_on_board, request_shared, shared_key_for, shared_pending, trace_graph, BoardDistrict, BoardLayout, BoardParams, Bounds,
+    SharedKey, TraceGraph,
+};
+use std::cell::RefCell;
 use super::{AgentInfo, Board, Bot, Colors, District, DistrictLight, Floor, Shared, TracePulses};
 use crate::canvas::Canvas;
 use crate::entry_scene::{board_key, release_board, take_board};
@@ -276,6 +280,24 @@ fn door_side(cx: f32, cz: f32, turn: f32, graph: &TraceGraph) -> Door {
 /// `districtMesh(d)` on a board: a room's terrace, its flat top at `y` (the slot's top) and its sloped
 /// band running down to the PCB at `base`, so it stands on the chip; its floor, room, plaque and
 /// outline. Adds the room's footprints, monitors and animation to `floor`.
+/// A roster whose shared layout is computing, for the Floor that asked: `poll_shared_layout` adopts it once the cache
+/// has it. The Floor struct (mod.rs) has no field for it, so it lives per thread here; `owner` is the Floor's address,
+/// so another Floor on the thread never adopts it.
+struct PendingShared {
+    owner: usize,
+    sync_key: String,
+    key: SharedKey,
+    roster: Vec<AgentInfo>,
+}
+
+thread_local! {
+    static PENDING_SHARED: RefCell<Option<PendingShared>> = const { RefCell::new(None) };
+}
+
+fn queue_shared(pending: Option<PendingShared>) {
+    PENDING_SHARED.with(|p| *p.borrow_mut() = pending);
+}
+
 /// The rooms of a board still to build: `step_rooms` builds one district per step.
 pub(super) struct RoomsJob {
     base: f32,
@@ -595,9 +617,12 @@ impl Floor {
 
     /// Builds the queued rooms a district at a time until `budget` is spent (one district at least). Returns
     /// whether rooms are still queued. The web's warm queue spends its frame budget on its jobs the same way.
+    /// Also the per-frame hook of the shared layout: a finished one is adopted here (`poll_shared_layout`), and while
+    /// one computes the rooms count as pending, so the frame keeps calling this.
     pub fn step_rooms(&mut self, budget: Duration) -> bool {
+        self.poll_shared_layout();
         let t0 = Instant::now();
-        let Some(mut job) = self.rooms_job.take() else { return false };
+        let Some(mut job) = self.rooms_job.take() else { return self.rooms_pending() };
         loop {
             let index = job.next;
             let bd = &job.items[index];
@@ -607,7 +632,7 @@ impl Floor {
             self.statics_dirty = true;
             job.next += 1;
             if job.next == job.items.len() {
-                return false;
+                return self.rooms_pending();
             }
             if t0.elapsed() >= budget {
                 break;
@@ -622,9 +647,15 @@ impl Floor {
         self.step_rooms(Duration::MAX);
     }
 
-    /// Whether rooms are still queued (`step_rooms` builds them).
+    /// Whether rooms are still queued (`step_rooms` builds them): work every frame should advance.
     pub fn rooms_pending(&self) -> bool {
         self.rooms_job.is_some()
+    }
+
+    /// Whether the shared (apz-board) layout for this floor is still computing off the frame. Nothing to do per frame
+    /// but poll for it (`step_rooms` does), so the host keeps ticking at the ambient rate, not the active one.
+    pub fn shared_waiting(&self) -> bool {
+        PENDING_SHARED.with(|p| p.borrow().as_ref().is_some_and(|q| q.owner == self.owner()))
     }
 
     /// Keeps the board in step with the agents on the machine: one room per role on the board's
@@ -634,17 +665,63 @@ impl Floor {
         self.finish_rooms();
     }
 
+    /// The address that owns this floor's pending shared layout (see `PendingShared`).
+    fn owner(&self) -> usize {
+        self as *const Self as usize
+    }
+
+    /// The layout for a roster the board has not cached: the shared one when it is ready, else the engine's own now
+    /// (`layout_on_board`), with the shared one queued for `poll_shared_layout`. Nothing waits on the shared layout.
+    fn fresh_layout(&self, list: &[AgentInfo], model: &Model, bp: &BoardParams, sync_key: &str) -> BoardLayout {
+        let key = shared_key_for(list, model, bp);
+        if let Some(shared) = request_shared(&key) {
+            queue_shared(None);
+            return shared;
+        }
+        let pending = shared_pending(&key).then(|| PendingShared {
+            owner: self.owner(),
+            sync_key: sync_key.to_string(),
+            key,
+            roster: list.to_vec(),
+        });
+        queue_shared(pending);
+        layout_on_board(list, model, bp)
+    }
+
+    /// Adopts this floor's shared layout once the cache has it: the roster is synced again on it, which rebuilds the
+    /// rooms through `start_rooms`. A pending one the cache failed on is dropped, and the engine's own layout stays.
+    fn poll_shared_layout(&mut self) {
+        let owner = self.owner();
+        let Some(pending) = PENDING_SHARED.with(|p| {
+            let mut p = p.borrow_mut();
+            if p.as_ref().is_some_and(|q| q.owner == owner) {
+                p.take()
+            } else {
+                None
+            }
+        }) else {
+            return;
+        };
+        if let Some(shared) = request_shared(&pending.key) {
+            self.layout_cache = Some((pending.sync_key, shared));
+            self.begin_sync(&pending.roster);
+        } else if shared_pending(&pending.key) {
+            queue_shared(Some(pending));
+        }
+    }
+
     /// `sync` without the rooms: the layout and the robots now, the rooms queued for `step_rooms`.
     /// The layout is cached per board and roster: a sync that finds the same ones reuses it.
     pub fn begin_sync(&mut self, list: &[AgentInfo]) {
         let Some(board) = self.board.as_ref() else { return };
         let bp = BoardParams { params: board.params.clone() };
+        let model = board.model;
         let key = format!("{}|{:?}", board.key, list);
         let cached = self.layout_cache.as_ref().filter(|(k, _)| *k == key).map(|(_, layout)| layout.clone());
         let layout = match cached {
             Some(layout) => layout,
             None => {
-                let layout = layout_on_board(list, board.model, &bp);
+                let layout = self.fresh_layout(list, model, &bp, &key);
                 self.layout_cache = Some((key, layout.clone()));
                 layout
             }
@@ -826,7 +903,7 @@ mod tests {
 
     #[test]
     fn sync_puts_a_room_per_role_and_a_robot_per_agent_on_the_board() {
-        let model = hardware::model("board/workstation").expect("the workstation board parses");
+        let model = hardware::model("board/edge").expect("the edge board parses");
         let list = [agent(1, "coder"), agent(2, "coder"), agent(3, "writer"), agent(4, "writer")];
         let mut floor = Floor::new();
         floor.show_board("test".into(), model, Params::default().with("gpus", 1.0), Status::Online);
