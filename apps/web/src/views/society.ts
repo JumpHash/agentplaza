@@ -10,9 +10,14 @@ import { h, replace } from '../ui/dom';
 import { agentHue } from './floor';
 import type { Cleanup } from './index';
 
-const W = 960;
-const H = 600;
-const PAD = 90;
+// The layout's world box: the first layout spreads the agents over all of it, and the view
+// shows the box, so the graph grows and shrinks with the panel.
+const W = 760;
+const H = 700;
+/** Clear space kept between two agents' footprints. */
+const GAP = 10;
+/** Collision passes; a box too crowded to clear in this many keeps the overlap it has. */
+const PASSES = 400;
 const POLL_MS = 5000;
 const FIRST_STEPS = 300;
 const LATER_STEPS = 150;
@@ -25,7 +30,16 @@ type Band = keyof typeof COLOUR;
 const KIND_TONE: Record<Bond['kind'], Tone> = { met: 'muted', hired: 'accent', 'was-hired': 'info', added: 'ok' };
 
 interface Pt { x: number; y: number }
-interface Body extends Pt { cid: number; vx: number; vy: number; fixed: boolean }
+/** What an agent takes up around its centre, in world units. */
+interface Foot {
+  /** Half the width: the robot, or its name tag when that is wider. */
+  half: number;
+  /** The room above the centre: the antenna and its tip. */
+  up: number;
+  /** The room below the centre: the name tag. */
+  down: number;
+}
+interface Body extends Pt { cid: number; vx: number; vy: number; fixed: boolean; fp: Foot }
 interface Actions { pick: (cid: number | null) => void; rate: (cid: number, value: number) => Promise<void> }
 type Kid = SVGElement | null | undefined | false;
 
@@ -99,8 +113,115 @@ export function mount(root: HTMLElement): Cleanup {
 
 // ---- Layout ----------------------------------------------------------------
 
-/** Places the agents. Agents already placed stay where they are; only new ones
- *  move, under the springs and repulsion of the whole graph. Departed agents are dropped. */
+/** The room an agent takes up, from its centre; the name tag is part of it. */
+const foot = (a: SocietyAgent): Foot => {
+  const half = side(a) / 2;
+  const tag = Math.max(56, clip(agentName(a), 16).length * 7.4 + 16);
+  return { half: Math.max(half, tag / 2), up: half + 18, down: half + 30 };
+};
+
+/** How far two footprints overlap on each axis; they clash only when both are positive. */
+function overlap(p: Pt, fp: Foot, q: Pt, fq: Foot): [number, number] {
+  const dx = q.x - p.x;
+  const dy = q.y - p.y;
+  // Stacked vertically, the lower agent's name tag must clear the upper agent's antenna.
+  const stack = dy >= 0 ? fp.down + fq.up : fq.down + fp.up;
+  return [fp.half + fq.half + GAP - Math.abs(dx), stack + GAP - Math.abs(dy)];
+}
+
+/** The clearest spot for a newcomer: free room to the nearest agent (capped, so any spot with
+ *  room is as good as another), then the spot nearest its contacts among those. */
+function clearest(a: SocietyAgent, agents: SocietyAgent[], bonds: Bond[], pos: Map<number, Pt>): Pt {
+  const fp = foot(a);
+  const others: Array<Pt & { fp: Foot }> = [];
+  for (const o of agents) {
+    const p = pos.get(o.cid);
+    if (p && o.cid !== a.cid) others.push({ x: p.x, y: p.y, fp: foot(o) });
+  }
+  const peers: Pt[] = [];
+  for (const b of bonds) {
+    const other = b.from === a.cid ? b.to : b.to === a.cid ? b.from : null;
+    const p = other === null ? undefined : pos.get(other);
+    if (p) peers.push(p);
+  }
+  const target = peers.length
+    ? { x: peers.reduce((s, p) => s + p.x, 0) / peers.length, y: peers.reduce((s, p) => s + p.y, 0) / peers.length }
+    : { x: W / 2, y: H / 2 };
+  let best = target;
+  let bestScore = -Infinity;
+  for (let x = fp.half; x <= W - fp.half; x += 6) {
+    for (let y = fp.up; y <= H - fp.down; y += 6) {
+      let room = 40;
+      for (const o of others) {
+        const [ox, oy] = overlap({ x, y }, fp, o, o.fp);
+        room = Math.min(room, Math.max(-ox, -oy));
+      }
+      const score = room - 0.02 * Math.hypot(x - target.x, y - target.y);
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x, y };
+      }
+    }
+  }
+  return best;
+}
+
+/** Stretches the agents over the box, each axis on its own, so a first layout uses all of it. */
+function stretch(bodies: Body[]): void {
+  const xs = bodies.map((b) => b.x);
+  const ys = bodies.map((b) => b.y);
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  // A single row or column of agents goes to the middle of its axis.
+  const map = (v: number, lo: number, hi: number, outLo: number, outHi: number): number =>
+    hi - lo < 1 ? (outLo + outHi) / 2 : outLo + ((v - lo) / (hi - lo)) * (outHi - outLo);
+  for (const b of bodies) {
+    b.x = map(b.x, x0, x1, 60, W - 60);
+    b.y = map(b.y, y0, y1, 70, H - 70);
+  }
+}
+
+/** Pushes footprints apart until none clash, or the passes run out. A clash moves both agents
+ *  along the axis where they overlap least; a placed agent stays put. Agents stay in the box. */
+function separate(bodies: Body[]): void {
+  for (let pass = 0; pass < PASSES; pass++) {
+    let clashed = false;
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        const p = bodies[i];
+        const q = bodies[j];
+        if (!p || !q) continue;
+        const [ox, oy] = overlap(p, p.fp, q, q.fp);
+        if (ox <= 0 || oy <= 0) continue;
+        // Who gives way: a placed agent holds still, so a free one takes the whole push.
+        const [wi, wj]: [number, number] = p.fixed && q.fixed ? [0, 0] : p.fixed ? [0, 1] : q.fixed ? [1, 0] : [0.5, 0.5];
+        if (wi === 0 && wj === 0) continue;
+        clashed = true;
+        if (ox < oy) {
+          const s = q.x < p.x ? -1 : 1;
+          q.x += s * (ox + 0.5) * wj;
+          p.x -= s * (ox + 0.5) * wi;
+        } else {
+          const s = q.y < p.y ? -1 : 1;
+          q.y += s * (oy + 0.5) * wj;
+          p.y -= s * (oy + 0.5) * wi;
+        }
+      }
+    }
+    for (const b of bodies) {
+      if (b.fixed) continue;
+      b.x = clamp(b.x, b.fp.half, W - b.fp.half);
+      b.y = clamp(b.y, b.fp.up, H - b.fp.down);
+    }
+    if (!clashed) break;
+  }
+}
+
+/** Places the agents. Agents already placed stay where they are; only new ones move, under
+ *  the springs and repulsion of the whole graph, and then clear of everyone's footprint.
+ *  Departed agents are dropped. */
 function layout(agents: SocietyAgent[], bonds: Bond[], pos: Map<number, Pt>): void {
   const live = new Set(agents.map((a) => a.cid));
   for (const cid of Array.from(pos.keys())) if (!live.has(cid)) pos.delete(cid);
@@ -109,15 +230,20 @@ function layout(agents: SocietyAgent[], bonds: Bond[], pos: Map<number, Pt>): vo
 
   const isFresh = new Set(fresh);
   const placed = pos.size > 0;
-  fresh.forEach((cid, i) => {
-    const angle = i * 2.39996; // golden angle, so a crowd fans out evenly
-    const r = placed ? 40 : 70 + 26 * Math.sqrt(i);
-    pos.set(cid, { x: W / 2 + Math.cos(angle) * r, y: H / 2 + Math.sin(angle) * r });
-  });
+  if (placed) {
+    // A newcomer takes the clearest spot near its contacts; the agents already placed do not move.
+    for (const a of agents) if (isFresh.has(a.cid)) pos.set(a.cid, clearest(a, agents, bonds, pos));
+  } else {
+    fresh.forEach((cid, i) => {
+      const angle = i * 2.39996; // golden angle, so a crowd fans out evenly
+      const r = 70 + 26 * Math.sqrt(i);
+      pos.set(cid, { x: W / 2 + Math.cos(angle) * r, y: H / 2 + Math.sin(angle) * r });
+    });
+  }
 
   const bodies: Body[] = agents.map((a) => {
     const p = pos.get(a.cid) ?? { x: W / 2, y: H / 2 };
-    return { cid: a.cid, x: p.x, y: p.y, vx: 0, vy: 0, fixed: !isFresh.has(a.cid) };
+    return { cid: a.cid, x: p.x, y: p.y, vx: 0, vy: 0, fixed: !isFresh.has(a.cid), fp: foot(a) };
   });
   const index = new Map(bodies.map((b, i) => [b.cid, i] as const));
 
@@ -173,10 +299,12 @@ function layout(agents: SocietyAgent[], bonds: Bond[], pos: Map<number, Pt>): vo
       p.vx = clamp((p.vx + (W / 2 - p.x) * 0.004) * 0.8, -25, 25);
       p.vy = clamp((p.vy + (H / 2 - p.y) * 0.004) * 0.8, -25, 25);
       if (p.fixed) continue;
-      p.x = clamp(p.x + p.vx, PAD, W - PAD);
-      p.y = clamp(p.y + p.vy, PAD, H - PAD);
+      p.x = clamp(p.x + p.vx, p.fp.half, W - p.fp.half);
+      p.y = clamp(p.y + p.vy, p.fp.up, H - p.fp.down);
     }
   }
+  if (!placed) stretch(bodies);
+  separate(bodies);
   for (const p of bodies) pos.set(p.cid, { x: p.x, y: p.y });
 }
 
@@ -295,12 +423,8 @@ function drawGraph(d: Society, selected: number | null, pos: Map<number, Pt>, pi
     nodes.appendChild(node);
   }
 
-  // Frame the agents: the view box is their bounds plus room for heads and name tags.
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const p of pos.values()) {
-    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
-  }
-  const box = Number.isFinite(x0) ? `${x0 - 90} ${y0 - 80} ${x1 - x0 + 180} ${y1 - y0 + 170}` : `0 0 ${W} ${H}`;
+  // Frame the layout box: the agents are spread over all of it, footprints included.
+  const box = `0 0 ${W} ${H}`;
   return s('svg', { class: 'soc-svg', viewBox: box, preserveAspectRatio: 'xMidYMid meet', 'aria-label': 'Society graph' }, defs, bg, dots, edges, nodes);
 }
 

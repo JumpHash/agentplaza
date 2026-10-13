@@ -13,9 +13,17 @@ use crate::console::floor3d::world::layout::agent_hue;
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::{client, Ctx};
 
-const W: f32 = 960.0;
-const H: f32 = 600.0;
-const PAD: f32 = 90.0;
+/// The layout's world box. The first layout spreads the agents over all of it, and the view maps
+/// the box onto the graph area, so the graph grows and shrinks with the panel.
+const LW: f32 = 760.0;
+const LH: f32 = 700.0;
+/// The least scale the graph is drawn at. Name tags are a fixed size in pixels, so the room they
+/// take is reserved in world units at this scale.
+const TAG_SCALE: f32 = 0.7;
+/// Clear space kept between two agents' footprints.
+const GAP: f32 = 10.0;
+/// Collision passes. A box too crowded to clear in this many is left with the overlap it has.
+const PASSES: usize = 400;
 const FIRST_STEPS: usize = 300;
 const LATER_STEPS: usize = 150;
 const REST: f32 = 150.0;
@@ -189,12 +197,39 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 
 // ---- Layout ----------------------------------------------------------------
 
+/// What an agent takes up around its centre, in world units.
+#[derive(Clone, Copy)]
+struct Foot {
+    /// Half the width: the robot, or its name tag when that is wider.
+    half: f32,
+    /// The room above the centre: the antenna and its tip.
+    up: f32,
+    /// The room below the centre: the name tag.
+    down: f32,
+}
+
+fn foot(a: &Agent) -> Foot {
+    let half = side(a.reputation) / 2.0;
+    let tag = tag_width(&label_of(a));
+    Foot { half: half.max(tag / (2.0 * TAG_SCALE)), up: half + 18.0, down: half + 8.0 + 22.0 / TAG_SCALE }
+}
+
+/// How far two footprints overlap on each axis, with their centres at `p` and `q`. They clash
+/// only when both are positive.
+fn overlap(p: Pt, fp: Foot, q: Pt, fq: Foot) -> (f32, f32) {
+    let (dx, dy) = (q.x - p.x, q.y - p.y);
+    // Stacked vertically, the lower agent's name tag must clear the upper agent's antenna.
+    let stack = if dy >= 0.0 { fp.down + fq.up } else { fq.down + fp.up };
+    (fp.half + fq.half + GAP - dx.abs(), stack + GAP - dy.abs())
+}
+
 struct Body {
     x: f32,
     y: f32,
     vx: f32,
     vy: f32,
     fixed: bool,
+    fp: Foot,
 }
 
 fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
@@ -202,7 +237,8 @@ fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
 }
 
 /// Places the agents. Agents already placed stay where they are; only new ones move, under the
-/// springs and repulsion of the whole graph. Departed agents are dropped.
+/// springs and repulsion of the whole graph, and then clear of everyone's footprint. Departed
+/// agents are dropped.
 fn layout(agents: &[Agent], bonds: &[Bond], pos: &mut HashMap<u64, Pt>) {
     let live: HashSet<u64> = agents.iter().map(|a| a.cid).collect();
     pos.retain(|cid, _| live.contains(cid));
@@ -211,18 +247,26 @@ fn layout(agents: &[Agent], bonds: &[Bond], pos: &mut HashMap<u64, Pt>) {
         return;
     }
     let placed = !pos.is_empty();
-    for (i, cid) in fresh.iter().enumerate() {
-        let angle = i as f32 * 2.39996; // golden angle, so a crowd fans out evenly
-        let r = if placed { 40.0 } else { 70.0 + 26.0 * (i as f32).sqrt() };
-        pos.insert(*cid, Pt { x: W / 2.0 + angle.cos() * r, y: H / 2.0 + angle.sin() * r });
+    if placed {
+        // A newcomer takes the clearest spot near its contacts; the agents already placed do not move.
+        for a in agents.iter().filter(|a| fresh.contains(&a.cid)) {
+            let spot = clearest(a, agents, bonds, pos);
+            pos.insert(a.cid, spot);
+        }
+    } else {
+        for (i, cid) in fresh.iter().enumerate() {
+            let angle = i as f32 * 2.39996; // golden angle, so a crowd fans out evenly
+            let r = 70.0 + 26.0 * (i as f32).sqrt();
+            pos.insert(*cid, Pt { x: LW / 2.0 + angle.cos() * r, y: LH / 2.0 + angle.sin() * r });
+        }
     }
 
     let is_fresh: HashSet<u64> = fresh.iter().copied().collect();
     let mut bodies: Vec<Body> = agents
         .iter()
         .map(|a| {
-            let p = pos.get(&a.cid).copied().unwrap_or(Pt { x: W / 2.0, y: H / 2.0 });
-            Body { x: p.x, y: p.y, vx: 0.0, vy: 0.0, fixed: !is_fresh.contains(&a.cid) }
+            let p = pos.get(&a.cid).copied().unwrap_or(Pt { x: LW / 2.0, y: LH / 2.0 });
+            Body { x: p.x, y: p.y, vx: 0.0, vy: 0.0, fixed: !is_fresh.contains(&a.cid), fp: foot(a) }
         })
         .collect();
     let index: HashMap<u64, usize> = agents.iter().enumerate().map(|(i, a)| (a.cid, i)).collect();
@@ -268,17 +312,136 @@ fn layout(agents: &[Agent], bonds: &[Bond], pos: &mut HashMap<u64, Pt>) {
         }
         for b in &mut bodies {
             // Centring, then damping; placed agents keep their coordinates.
-            b.vx = clamp((b.vx + (W / 2.0 - b.x) * 0.004) * 0.8, -25.0, 25.0);
-            b.vy = clamp((b.vy + (H / 2.0 - b.y) * 0.004) * 0.8, -25.0, 25.0);
+            b.vx = clamp((b.vx + (LW / 2.0 - b.x) * 0.004) * 0.8, -25.0, 25.0);
+            b.vy = clamp((b.vy + (LH / 2.0 - b.y) * 0.004) * 0.8, -25.0, 25.0);
             if b.fixed {
                 continue;
             }
-            b.x = clamp(b.x + b.vx, PAD, W - PAD);
-            b.y = clamp(b.y + b.vy, PAD, H - PAD);
+            b.x = clamp(b.x + b.vx, b.fp.half, LW - b.fp.half);
+            b.y = clamp(b.y + b.vy, b.fp.up, LH - b.fp.down);
         }
     }
+    if !placed {
+        stretch(&mut bodies);
+    }
+    separate(&mut bodies);
     for (a, b) in agents.iter().zip(&bodies) {
         pos.insert(a.cid, Pt { x: b.x, y: b.y });
+    }
+}
+
+/// The clearest spot for a newcomer: the free room to its nearest agent, capped so that any spot
+/// with room is as good as another, then the spot nearest its contacts among those.
+fn clearest(a: &Agent, agents: &[Agent], bonds: &[Bond], pos: &HashMap<u64, Pt>) -> Pt {
+    let fp = foot(a);
+    let others: Vec<(Pt, Foot)> = agents
+        .iter()
+        .filter(|o| o.cid != a.cid)
+        .filter_map(|o| pos.get(&o.cid).map(|p| (*p, foot(o))))
+        .collect();
+    let peers: Vec<Pt> = bonds
+        .iter()
+        .filter_map(|b| {
+            let other = if b.from == a.cid {
+                b.to
+            } else if b.to == a.cid {
+                b.from
+            } else {
+                return None;
+            };
+            pos.get(&other).copied()
+        })
+        .collect();
+    let target = if peers.is_empty() {
+        Pt { x: LW / 2.0, y: LH / 2.0 }
+    } else {
+        let n = peers.len() as f32;
+        Pt { x: peers.iter().map(|p| p.x).sum::<f32>() / n, y: peers.iter().map(|p| p.y).sum::<f32>() / n }
+    };
+    let mut best = target;
+    let mut best_score = f32::MIN;
+    let mut x = fp.half;
+    while x <= LW - fp.half {
+        let mut y = fp.up;
+        while y <= LH - fp.down {
+            let c = Pt { x, y };
+            let room = others.iter().fold(40.0_f32, |room, (q, fq)| {
+                let (ox, oy) = overlap(c, fp, *q, *fq);
+                room.min((-ox).max(-oy))
+            });
+            let score = room - 0.02 * ((x - target.x).powi(2) + (y - target.y).powi(2)).sqrt();
+            if score > best_score {
+                best_score = score;
+                best = c;
+            }
+            y += 6.0;
+        }
+        x += 6.0;
+    }
+    best
+}
+
+/// Stretches the agents over the box, each axis on its own, so a first layout uses all of it.
+/// A single row or column of agents goes to the middle of its axis.
+fn stretch(bodies: &mut [Body]) {
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for b in bodies.iter() {
+        x0 = x0.min(b.x);
+        y0 = y0.min(b.y);
+        x1 = x1.max(b.x);
+        y1 = y1.max(b.y);
+    }
+    let map = |v: f32, lo: f32, hi: f32, out_lo: f32, out_hi: f32| {
+        if hi - lo < 1.0 {
+            (out_lo + out_hi) / 2.0
+        } else {
+            out_lo + (v - lo) / (hi - lo) * (out_hi - out_lo)
+        }
+    };
+    for b in bodies.iter_mut() {
+        b.x = map(b.x, x0, x1, 60.0, LW - 60.0);
+        b.y = map(b.y, y0, y1, 70.0, LH - 70.0);
+    }
+}
+
+/// Pushes the footprints apart until none clash, or the passes run out. A clash moves both agents
+/// along the axis where they overlap least; a placed agent stays put. Agents are kept in the box.
+fn separate(bodies: &mut [Body]) {
+    for _ in 0..PASSES {
+        let mut clashed = false;
+        for i in 0..bodies.len() {
+            for j in (i + 1)..bodies.len() {
+                let p = Pt { x: bodies[i].x, y: bodies[i].y };
+                let q = Pt { x: bodies[j].x, y: bodies[j].y };
+                let (ox, oy) = overlap(p, bodies[i].fp, q, bodies[j].fp);
+                if ox <= 0.0 || oy <= 0.0 {
+                    continue;
+                }
+                let (wi, wj) = match (bodies[i].fixed, bodies[j].fixed) {
+                    (true, true) => continue,
+                    (true, false) => (0.0, 1.0),
+                    (false, true) => (1.0, 0.0),
+                    (false, false) => (0.5, 0.5),
+                };
+                clashed = true;
+                if ox < oy {
+                    let s = if q.x < p.x { -1.0 } else { 1.0 };
+                    bodies[j].x += s * (ox + 0.5) * wj;
+                    bodies[i].x -= s * (ox + 0.5) * wi;
+                } else {
+                    let s = if q.y < p.y { -1.0 } else { 1.0 };
+                    bodies[j].y += s * (oy + 0.5) * wj;
+                    bodies[i].y -= s * (oy + 0.5) * wi;
+                }
+            }
+        }
+        for b in bodies.iter_mut().filter(|b| !b.fixed) {
+            b.x = clamp(b.x, b.fp.half, LW - b.fp.half);
+            b.y = clamp(b.y, b.fp.up, LH - b.fp.down);
+        }
+        if !clashed {
+            break;
+        }
     }
 }
 
@@ -328,34 +491,39 @@ fn hsl(h: f32, s: f32, l: f32) -> Color {
     Color::from_rgb(channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0))
 }
 
-/// Maps world coordinates to the canvas: the agents' bounds plus room for heads and name tags,
-/// fitted and centred (the web's `preserveAspectRatio` meet).
+/// Maps the layout's box onto the canvas: the whole box, fitted and centred (the web's
+/// `preserveAspectRatio` meet).
 #[derive(Clone, Copy)]
 struct Xf {
-    x0: f32,
-    y0: f32,
     s: f32,
     dx: f32,
     dy: f32,
 }
 
 impl Xf {
-    fn fit(pos: &HashMap<u64, Pt>, size: Size) -> Self {
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for p in pos.values() {
-            x0 = x0.min(p.x);
-            y0 = y0.min(p.y);
-            x1 = x1.max(p.x);
-            y1 = y1.max(p.y);
-        }
-        let (bx, by, bw, bh) = if pos.is_empty() { (0.0, 0.0, W, H) } else { (x0 - 90.0, y0 - 80.0, x1 - x0 + 180.0, y1 - y0 + 170.0) };
-        let s = (size.width / bw).min(size.height / bh).max(0.01);
-        Self { x0: bx, y0: by, s, dx: (size.width - bw * s) / 2.0, dy: (size.height - bh * s) / 2.0 }
+    fn fit(size: Size) -> Self {
+        let s = (size.width / LW).min(size.height / LH).max(0.01);
+        Self { s, dx: (size.width - LW * s) / 2.0, dy: (size.height - LH * s) / 2.0 }
     }
 
     fn map(&self, p: Pt) -> Point {
-        Point::new((p.x - self.x0) * self.s + self.dx, (p.y - self.y0) * self.s + self.dy)
+        Point::new(p.x * self.s + self.dx, p.y * self.s + self.dy)
     }
+}
+
+/// The name tag's text: the name, cut to 16 characters.
+fn label_of(a: &Agent) -> String {
+    let name = name_of(a);
+    if name.chars().count() > 16 {
+        name.chars().take(15).chain(std::iter::once('…')).collect()
+    } else {
+        name
+    }
+}
+
+/// The name tag's width in pixels for a label.
+fn tag_width(label: &str) -> f32 {
+    (label.chars().count() as f32 * 7.4 + 16.0).max(56.0)
 }
 
 /// A curve from a's edge to z's edge, bowed to one side. Reversed bonds bow apart.
@@ -378,7 +546,7 @@ struct Graph<'a> {
 impl Graph<'_> {
     /// The agent under a point of the canvas, if any: its body or its name tag.
     fn hit(&self, at: Point, size: Size) -> Option<u64> {
-        let xf = Xf::fit(self.pos, size);
+        let xf = Xf::fit(size);
         for a in self.data.agents.iter().rev() {
             let Some(p) = self.pos.get(&a.cid) else { continue };
             let c = xf.map(*p);
@@ -403,7 +571,7 @@ impl canvas::Program<Msg> for Graph<'_> {
 
     fn draw(&self, _state: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let xf = Xf::fit(self.pos, bounds.size());
+        let xf = Xf::fit(bounds.size());
         let k = xf.s;
         let agents: HashMap<u64, &Agent> = self.data.agents.iter().map(|a| (a.cid, a)).collect();
         let bonds: HashSet<(u64, u64)> = self.data.bonds.iter().map(|b| (b.from, b.to)).collect();
@@ -504,15 +672,8 @@ impl canvas::Program<Msg> for Graph<'_> {
             frame.stroke(&mouth, canvas::Stroke::default().with_color(ink).with_width(2.5 * k).with_line_cap(canvas::LineCap::Round));
 
             // The name tag, under the body.
-            let label: String = {
-                let name = name_of(a);
-                if name.chars().count() > 16 {
-                    name.chars().take(15).chain(std::iter::once('…')).collect()
-                } else {
-                    name
-                }
-            };
-            let tag_w = (label.chars().count() as f32 * 7.4 + 16.0).max(56.0);
+            let label = label_of(a);
+            let tag_w = tag_width(&label);
             let tag_top = c.y + half + 8.0 * k;
             let tag = canvas::Path::rectangle(Point::new(c.x - tag_w / 2.0, tag_top), Size::new(tag_w, 22.0));
             frame.fill(&tag, ui::PAPER.scale_alpha(alpha));
@@ -720,5 +881,68 @@ fn compact(value: f64) -> String {
         format!("{sign}{:.1}k", v / 1_000.0)
     } else {
         format!("{sign}{:.0}", v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(cid: u64, reputation: f32, name: &str) -> Agent {
+        Agent { cid, name: name.to_string(), role: String::new(), reputation, confidence: 0.0, wallet: 0.0 }
+    }
+
+    fn bond(from: u64, to: u64, strength: f32) -> Bond {
+        Bond { from, to, kind: "met".into(), strength, note: None, opinion: Opinion { e: 0.5, u: 0.0 } }
+    }
+
+    /// Sixteen agents, ring and cross bonds, names of mixed length.
+    fn crowd() -> (Vec<Agent>, Vec<Bond>) {
+        let names = ["Ada", "Marlowe", "Alexandria Quillbottom", "Vance", "Nadia", "Ingrid", "Mira", "Vera", "Rowan", "Marisol", "Alden", "Tally", "Della", "Quill", "Marco", "Alder"];
+        let agents = (0..16).map(|i| agent(i, (i * 37 % 100) as f32, names[i as usize])).collect();
+        let bonds = (0..16).flat_map(|i| [bond(i, (i + 1) % 16, 8.0), bond(i, (i + 5) % 16, 3.0)]).collect();
+        (agents, bonds)
+    }
+
+    /// Every agent lies inside the box, and no two footprints clash.
+    fn assert_clear(agents: &[Agent], pos: &HashMap<u64, Pt>) {
+        for a in agents {
+            let (p, f) = (pos[&a.cid], foot(a));
+            assert!(p.x - f.half >= 0.0 && p.x + f.half <= LW, "agent {} leaves the box sideways", a.cid);
+            assert!(p.y - f.up >= 0.0 && p.y + f.down <= LH, "agent {} leaves the box vertically", a.cid);
+        }
+        for (i, a) in agents.iter().enumerate() {
+            for b in &agents[i + 1..] {
+                let (ox, oy) = overlap(pos[&a.cid], foot(a), pos[&b.cid], foot(b));
+                assert!(ox <= 0.0 || oy <= 0.0, "agents {} and {} clash: {ox:.1} by {oy:.1}", a.cid, b.cid);
+            }
+        }
+    }
+
+    #[test]
+    fn layout_spreads_agents_over_the_box_without_clashes() {
+        let (agents, bonds) = crowd();
+        let mut pos = HashMap::new();
+        layout(&agents, &bonds, &mut pos);
+        assert_clear(&agents, &pos);
+        let xs: Vec<f32> = agents.iter().map(|a| pos[&a.cid].x).collect();
+        let ys: Vec<f32> = agents.iter().map(|a| pos[&a.cid].y).collect();
+        let span = |v: &[f32]| v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min);
+        assert!(span(&xs) > 0.6 * LW, "the graph is not spread across the width");
+        assert!(span(&ys) > 0.6 * LH, "the graph is not spread across the height");
+    }
+
+    #[test]
+    fn a_new_agent_joins_without_moving_the_placed_ones() {
+        let (mut agents, bonds) = crowd();
+        let mut pos = HashMap::new();
+        layout(&agents, &bonds, &mut pos);
+        let before = pos.clone();
+        agents.push(agent(99, 50.0, "Newcomer"));
+        layout(&agents, &bonds, &mut pos);
+        for (cid, p) in &before {
+            assert_eq!(pos[cid], *p, "agent {cid} moved");
+        }
+        assert_clear(&agents, &pos);
     }
 }
