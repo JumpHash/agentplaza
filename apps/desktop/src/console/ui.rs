@@ -2,11 +2,20 @@
 //! sheets, ink rules, the orange signal for the owner's hand, square corners, mono for titles,
 //! labels and figures, serif for prose. Screens build from these, never from raw colours.
 
+use iced::font::{Style as FontStyle, Weight};
 use iced::widget::{button, column, container, rich_text, row, scrollable, span, svg, text, Space};
 use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Theme};
 
 pub use crate::theme::{INK, INK_2, INK_3, PAPER, RULE, RULE_FAINT, SHEET, SIGNAL};
-use crate::theme::{CRIT, HOVER, MONO, OK, SERIF, WARN};
+use crate::theme::{CRIT, HOVER, INFO, MONO, OK, SERIF, SIGNAL_INK, WARN};
+
+/// Martian Mono at the web's chrome weights: 500 for badges, 600 for card heads and tabs, 700 for
+/// empty-state titles. The console embeds Regular, Medium and Bold, so 600 renders as Bold.
+const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..MONO };
+const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
+const MONO_BOLD: Font = Font { weight: Weight::Bold, ..MONO };
+/// Source Serif 4 in italic: the error line.
+const SERIF_ITALIC: Font = Font { style: FontStyle::Italic, ..SERIF };
 
 /// A semantic tone for badges, notices and buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +32,7 @@ impl Tone {
     pub fn color(self) -> Color {
         match self {
             Tone::Muted => INK_3,
-            Tone::Info => Color::from_rgb8(0x2d, 0x5f, 0x8a),
+            Tone::Info => INFO,
             Tone::Ok => OK,
             Tone::Warn => WARN,
             Tone::Danger => CRIT,
@@ -47,9 +56,9 @@ pub fn faint<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
     text(content).font(SERIF).size(13.0).color(INK_3)
 }
 
-/// A small uppercase mono label.
+/// A small uppercase mono label (10.5px, as the web's `.stat .label` and `.kv dt`).
 pub fn label<'a>(content: &str) -> text::Text<'a> {
-    text(content.to_uppercase()).font(MONO).size(11.0).color(INK_3)
+    text(content.to_uppercase()).font(MONO).size(10.5).color(INK_3)
 }
 
 /// A lucide icon at `size`, tinted `color`.
@@ -99,7 +108,20 @@ pub fn sheet<'a, M: 'a>(head: Element<'a, M>, body: Element<'a, M>) -> Element<'
 
 /// A sheet's head: the title (uppercase mono) left, actions right, a 2px ink rule under it.
 pub fn view_head<'a, M: 'a>(title: &str, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
-    let mut line = row![text(title.to_uppercase()).font(MONO).size(28.0).color(INK)].align_y(Alignment::End).spacing(16);
+    head_line(title, None, actions)
+}
+
+/// A sheet's head with an intro line under the title, in serif ink-2: the web's `.view-head` with a lede.
+pub fn view_head_with_intro<'a, M: 'a>(title: &str, intro: &str, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
+    head_line(title, Some(intro), actions)
+}
+
+fn head_line<'a, M: 'a>(title: &str, intro: Option<&str>, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let mut heading = column![text(title.to_uppercase()).font(MONO).size(28.0).color(INK)].spacing(6);
+    if let Some(intro) = intro {
+        heading = heading.push(text(intro.to_string()).font(SERIF).size(14.0).color(INK_2));
+    }
+    let mut line = row![heading].align_y(Alignment::End).spacing(16);
     line = line.push(Space::new().width(Length::Fill));
     for action in actions {
         line = line.push(action);
@@ -111,30 +133,52 @@ pub fn view_head<'a, M: 'a>(title: &str, actions: Vec<Element<'a, M>>) -> Elemen
     .into()
 }
 
-/// A card: a mono header row over its body, 1px rule borders.
+/// A card: a ruled section of the sheet. Its mono head (600, 11.5px, ink, caps) sits over a rule;
+/// the body is padded 16, as the web's `.card-head` and `.card-body`.
 pub fn card<'a, M: 'a>(title: &str, body: Element<'a, M>) -> Element<'a, M> {
-    column![
-        container(label(title)).padding([8, 12]).width(Length::Fill).style(|_: &Theme| container::Style {
+    let head = container(text(title.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(INK))
+        .padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 })
+        .width(Length::Fill);
+    let under_head = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+        background: Some(RULE.into()),
+        ..Default::default()
+    });
+    container(column![head, under_head, container(body).padding(16).width(Length::Fill)])
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
             border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        }),
-        container(body).padding(12).width(Length::Fill).style(|_: &Theme| container::Style {
-            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        }),
-    ]
-    .into()
-}
-
-/// A square tag: mono uppercase text in a tone, with a 1px border in that tone.
-pub fn badge<'a, M: 'a>(content: &str, tone: Tone) -> Element<'a, M> {
-    let c = tone.color();
-    container(text(content.to_uppercase()).font(MONO).size(10.5).color(c))
-        .padding([2, 6])
-        .style(move |_: &Theme| container::Style {
-            border: Border { color: c, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })
+        .into()
+}
+
+/// A badge's marker and label colours, and whether the marker is filled. As the web's `.badge`:
+/// ok, danger and signal are filled squares; warn, info and neutral are hollow.
+fn badge_marker(tone: Tone) -> (Color, Color, bool) {
+    match tone {
+        Tone::Muted => (INK_3, INK_2, false),
+        Tone::Info => (INFO, INFO, false),
+        Tone::Ok => (OK, OK, true),
+        Tone::Warn => (WARN, WARN, false),
+        Tone::Danger => (CRIT, CRIT, true),
+        Tone::Signal => (SIGNAL, SIGNAL_INK, true),
+    }
+}
+
+/// A badge: a small square marker in the tone, then the label in mono caps. Not a bordered pill.
+pub fn badge<'a, M: 'a>(content: &str, tone: Tone) -> Element<'a, M> {
+    let (marker, ink, filled) = badge_marker(tone);
+    let square = container(Space::new())
+        .width(Length::Fixed(8.0))
+        .height(Length::Fixed(8.0))
+        .style(move |_: &Theme| container::Style {
+            background: if filled { Some(marker.into()) } else { None },
+            border: Border { color: marker, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        });
+    row![square, text(content.to_uppercase()).font(MONO_MEDIUM).size(11.0).color(ink)]
+        .spacing(7)
+        .align_y(Alignment::Center)
         .into()
 }
 
@@ -183,12 +227,139 @@ pub fn btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind: K
     }
 }
 
-/// An empty state: an icon, a bold mono line, a faint sentence; centred.
+/// A text link: underlined in ink-3, ink on the sheet, signal-ink under the pointer. Not uppercased,
+/// for a line's own action ("Reply", "Show more", "see usage"); `mono` sets it in the mono voice,
+/// otherwise serif.
+pub fn link<'a, M: Clone + 'a>(label_text: &str, msg: M, mono: bool) -> Element<'a, M> {
+    let body = if mono {
+        text(label_text.to_string()).font(MONO).size(12.0)
+    } else {
+        text(label_text.to_string()).font(SERIF).size(14.0)
+    };
+    let underline = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+        background: Some(INK_3.into()),
+        ..Default::default()
+    });
+    // The text carries no colour of its own: it takes the button's, so the hover signal reaches it.
+    button(column![body, underline].spacing(1))
+        .padding(0.0)
+        .style(|_: &Theme, status: button::Status| button::Style {
+            background: None,
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) { SIGNAL_INK } else { INK },
+            border: Border::default(),
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// The height of a segmented control's cells, and of the rule between them.
+const SEG_HEIGHT: f32 = 28.0;
+
+/// A segmented control, as the web's range control: a ruled strip of mono caps cells, the chosen one
+/// printed in ink. Each option pairs a value with its label; a press sends `on_select(value)`.
+pub fn seg<'a, T, M>(options: &[(T, &str)], selected: T, on_select: impl Fn(T) -> M) -> Element<'a, M>
+where
+    T: Copy + PartialEq,
+    M: Clone + 'a,
+{
+    let mut strip = row![].align_y(Alignment::Center);
+    for (i, (value, name)) in options.iter().enumerate() {
+        if i > 0 {
+            strip = strip.push(container(Space::new()).width(Length::Fixed(1.0)).height(Length::Fixed(SEG_HEIGHT)).style(|_: &Theme| {
+                container::Style { background: Some(RULE.into()), ..Default::default() }
+            }));
+        }
+        let on = *value == selected;
+        let cell = button(text(name.to_uppercase()).font(MONO).size(11.0))
+            .padding([6, 11])
+            .height(Length::Fixed(SEG_HEIGHT))
+            .style(move |_: &Theme, status: button::Status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                let (background, text_color) = if on {
+                    (Some(INK), PAPER)
+                } else if hovered {
+                    (Some(HOVER), INK)
+                } else {
+                    (None, INK_2)
+                };
+                button::Style {
+                    background: background.map(Into::into),
+                    text_color,
+                    border: Border::default(),
+                    ..Default::default()
+                }
+            })
+            .on_press(on_select(*value));
+        strip = strip.push(cell);
+    }
+    container(strip)
+        .style(|_: &Theme| container::Style {
+            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Underline tabs, as the web's `.tabs`: mono caps, ink-3 until the pointer or the choice reaches
+/// them; the chosen tab is underlined in signal, and a rule runs under the strip. A press sends
+/// `on_select(value)`.
+pub fn tabs<'a, T, M>(options: &[(T, &str)], selected: T, on_select: impl Fn(T) -> M) -> Element<'a, M>
+where
+    T: Copy + PartialEq,
+    M: Clone + 'a,
+{
+    let mut strip = row![].spacing(22);
+    for (value, name) in options.iter() {
+        let on = *value == selected;
+        let bar = if on { SIGNAL } else { Color::TRANSPARENT };
+        // The text carries no colour of its own: it takes the button's state colour.
+        let body = column![
+            container(text(name.to_uppercase()).font(MONO_SEMIBOLD).size(11.5)).padding(Padding {
+                top: 10.0,
+                right: 0.0,
+                bottom: 8.0,
+                left: 0.0,
+            }),
+            container(Space::new().height(2.0)).width(Length::Fill).style(move |_: &Theme| container::Style {
+                background: Some(bar.into()),
+                ..Default::default()
+            }),
+        ];
+        let cell = button(body)
+            .padding(0.0)
+            .style(move |_: &Theme, status: button::Status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: None,
+                    text_color: if on || hovered { INK } else { INK_3 },
+                    border: Border::default(),
+                    ..Default::default()
+                }
+            })
+            .on_press(on_select(*value));
+        strip = strip.push(cell);
+    }
+    column![
+        strip,
+        container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+            background: Some(RULE.into()),
+            ..Default::default()
+        }),
+    ]
+    .into()
+}
+
+/// An empty state, as the web's `.empty`: a small icon, a bold mono line, a faint serif sentence; centred.
 pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, M> {
     container(
-        column![icon(icon_name, 18.0, INK_3), mono(title.to_string(), 13.0, INK), faint(sentence.to_string())]
-            .spacing(6)
-            .align_x(Alignment::Center),
+        column![
+            icon(icon_name, 16.0, INK_3),
+            text(title.to_string()).font(MONO_BOLD).size(13.0).color(INK),
+            text(sentence.to_string()).font(SERIF).size(14.0).color(INK_3),
+        ]
+        .spacing(10)
+        .align_x(Alignment::Center),
     )
     .padding([40, 16])
     .width(Length::Fill)
@@ -196,9 +367,9 @@ pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element
     .into()
 }
 
-/// An inline error line (crit).
+/// An inline error line: serif italic in crit, as the web's `.error-text`.
 pub fn error_line<'a, M: 'a>(message: &str) -> Element<'a, M> {
-    text(message.to_string()).font(SERIF).size(13.0).color(CRIT).into()
+    text(message.to_string()).font(SERIF_ITALIC).size(14.0).color(CRIT).into()
 }
 
 /// A faint "Loading…" line.
@@ -566,5 +737,32 @@ mod tests {
     #[test]
     fn unterminated_fence_keeps_its_text() {
         assert_eq!(parse_blocks("```\nfoo\nbar"), vec![Block::Code("foo\nbar".into())]);
+    }
+
+    #[test]
+    fn info_is_the_night_info_blue() {
+        assert_eq!(INFO, Color::from_rgb8(0x6c, 0xc8, 0xff));
+        assert_eq!(Tone::Info.color(), INFO);
+    }
+
+    #[test]
+    fn badge_markers_follow_the_web() {
+        // Filled: ok, danger, signal. Hollow: warn, info, neutral.
+        assert!(badge_marker(Tone::Ok).2 && badge_marker(Tone::Danger).2 && badge_marker(Tone::Signal).2);
+        assert!(!badge_marker(Tone::Warn).2 && !badge_marker(Tone::Info).2 && !badge_marker(Tone::Muted).2);
+        assert_eq!(badge_marker(Tone::Muted).1, INK_2);
+    }
+
+    #[test]
+    fn helpers_build() {
+        let _: Element<'_, u8> = link("Reply", 1, false);
+        let _: Element<'_, u8> = link("see usage", 1, true);
+        let _: Element<'_, u8> = seg(&[(1u8, "Day"), (2u8, "Week")], 1u8, |v| v);
+        let _: Element<'_, u8> = tabs(&[(1u8, "Agents"), (2u8, "Rules")], 2u8, |v| v);
+        let _: Element<'_, u8> = view_head_with_intro("Overview", "What the plaza is doing.", vec![]);
+        let _: Element<'_, u8> = card("Activity", Space::new().into());
+        let _: Element<'_, u8> = badge("ok", Tone::Ok);
+        let _: Element<'_, u8> = empty("inbox", "Nothing here", "Nothing has happened yet.");
+        let _: Element<'_, u8> = error_line("It broke.");
     }
 }

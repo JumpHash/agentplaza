@@ -24,6 +24,11 @@ pub const INK_2: Color = Color::from_rgb8(0xa3, 0xad, 0xc4);
 pub const INK_3: Color = Color::from_rgb8(0x6c, 0x77, 0x90);
 /// The one hot signal.
 pub const SIGNAL: Color = Color::from_rgb8(0xff, 0x7a, 0x2e);
+/// The signal's ink: a link or a lit label under the pointer (the web's `--signal-ink`, night theme).
+pub const SIGNAL_INK: Color = Color::from_rgb8(0xff, 0x9a, 0x5c);
+/// Information: a note, a passive state (the web's `--info-ink`, night theme). The register is
+/// dark only, so there is no light value.
+pub const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
 /// A refusal, a kill, a failure.
 pub const CRIT: Color = Color::from_rgb8(0xff, 0x7c, 0x86);
 /// A caution.
