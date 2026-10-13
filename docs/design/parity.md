@@ -22,7 +22,7 @@ Audited on 2026-10-13 against the code (each row checked by the hub endpoints bo
 | 6 | MCP | *This hub as a server*: modes, tokens, call log | done |
 | 7 | Git | Code browser: branches, commits, tree, file viewer | done |
 | 8 | Git | PR list and detail | done |
-| 9 | Nodes | Node link: status, join by code, leave; per-node machine and runs | done: status, join and leave through `/v1/node-link` (845a960); per-node detail from `/v1/machines`, as on the web. Start and Stop still act on the local node service |
+| 9 | Nodes | Node link: status, join by code, leave; per-node machine and runs | done: status, join and leave through `/v1/node-link` (845a960); per-node detail from `/v1/machines`, as on the web. on a remote hub Start and Stop are left to the node's own machine |
 | 10 | Sign-in | Remote hub: owner-token paste, hub identity, sign-out, identity pinned on first use | done in both apps (845a960) |
 | 11 | Machines | Row expands into the live 3D orbit view (engine) | done |
 | 12 | Memory | Memory graph view | done (845a960); both apps seed the layout alike |
