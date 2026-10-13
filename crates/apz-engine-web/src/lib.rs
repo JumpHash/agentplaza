@@ -221,9 +221,32 @@ impl WebEngine {
         s.text.clear();
     }
 
-    /// The flat `[cid, x, y, visible]` per label of the last frame, in logical px (visible is 0 or 1).
+    /// The flat `[cid, x, y, visible]` per label of the last frame, in logical px (visible is 0 or 1). A view onto the
+    /// engine's own buffer, not a copy: it is invalid after the next call that writes the labels (the next frame) or
+    /// after wasm memory grows, so the host reads it at once.
     pub fn label_positions(&self) -> Float32Array {
-        Float32Array::from(self.shared.borrow().positions.as_slice())
+        let s = self.shared.borrow();
+        // SAFETY: the view borrows `s.positions`, which only `frame_tick` writes, and never while this call runs; the
+        // host reads the view before the next engine call, as the doc above says.
+        unsafe { Float32Array::view(&s.positions) }
+    }
+
+    /// The screen point of a machine's label ('machine', its id) or a robot's label ('robot', its cid as text), as
+    /// [x, y] in logical px from the canvas's top-left. Empty when it is not on screen, or the kind or id is unknown.
+    pub fn screen_of(&self, kind: &str, id: &str) -> Float32Array {
+        let pick = match kind {
+            "machine" => Pick::Machine(id.to_string()),
+            "robot" => match id.parse::<u64>() {
+                Ok(cid) => Pick::Robot(cid),
+                Err(_) => return Float32Array::new_with_length(0),
+            },
+            _ => return Float32Array::new_with_length(0),
+        };
+        let at = self.shared.borrow().engine.screen_of(&pick);
+        match at {
+            Some((x, y)) => Float32Array::from(&[x, y][..]),
+            None => Float32Array::new_with_length(0),
+        }
     }
 
     /// Whether the engine wants another frame.

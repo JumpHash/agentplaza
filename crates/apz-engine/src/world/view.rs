@@ -169,6 +169,11 @@ impl Floor {
         out
     }
 
+    /// The world point of a robot's label anchor on this view, or None when no robot of it has that cid.
+    pub fn anchor_of(&self, cid: u64) -> Option<glam::Vec3> {
+        self.bots.iter().find(|b| b.agent.cid == cid).map(|b| b.robot.label_anchor())
+    }
+
     /// The robot under the pointer (`pick`): the nearest whose bounding sphere the ray hits. The
     /// sphere is centred 0.6 above the robot's position, radius 0.75.
     pub fn pick(&self, x: f32, y: f32, width: f32, height: f32) -> Option<u64> {

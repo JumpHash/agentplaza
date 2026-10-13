@@ -310,6 +310,25 @@ impl Engine {
         }
     }
 
+    /// Where a pick's label sits on the shown view, as (x, y) in logical px from the top-left, or None when it is not on
+    /// screen. A machine's label is projected with the Machines' camera, a robot's with the shown board's.
+    pub fn screen_of(&self, pick: &Pick) -> Option<(f32, f32)> {
+        let (w, h) = self.stage.size;
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        match pick {
+            Pick::Machine(id) => {
+                let anchor = self.stage.fleet.as_ref()?.label_of(id)?;
+                self.stage.machines.orbit.camera(w / h).to_screen(glam::Vec3::from_array(anchor), w, h)
+            }
+            Pick::Robot(cid) => {
+                let floor = &self.stage.floor;
+                floor.orbit.camera(w / h).to_screen(floor.anchor_of(*cid)?, w, h)
+            }
+        }
+    }
+
     /// Frames drawn with the GPU so far.
     pub fn frames_drawn(&self) -> u64 {
         self.frames

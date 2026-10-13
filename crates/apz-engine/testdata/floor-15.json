@@ -1,0 +1,4709 @@
+{
+  "name": "floor-15",
+  "note": "Synthetic fleet for the landing-page clip. Every name and number is made up; nothing here comes from a real hub.",
+  "hub": "n0",
+  "plaza": {
+    "paused": false,
+    "since_ago_ms": 86400000,
+    "by": "owner",
+    "reason": "",
+    "cancelled": 0
+  },
+  "settings": {
+    "default_model": "claude-sonnet-5",
+    "orchestrator_model": "claude-opus-5",
+    "dev_models": false,
+    "effort": null,
+    "fetch_block": [],
+    "foundry": {
+      "hf_max_gb": 20
+    },
+    "laws": {
+      "strict_permits": false
+    },
+    "max_tokens": 0,
+    "max_turns": 24,
+    "memory_autoscale": true,
+    "model_policy": {
+      "orchestrator": [
+        "claude-opus-5",
+        "claude-sonnet-5"
+      ],
+      "worker": [
+        "claude-sonnet-5",
+        "claude-haiku-5-5"
+      ]
+    },
+    "outreach_minutes": 20,
+    "payments": {
+      "approve_over": 500,
+      "charge_models": true
+    },
+    "prices": {},
+    "role_models": {},
+    "retention": {
+      "conversations_days": 30,
+      "conversations_max": 4096,
+      "posts_days": 0,
+      "posts_max": 1024,
+      "usage_calls_max": 20000,
+      "usage_days": 365
+    },
+    "sanctions": {
+      "enabled": true,
+      "fines": true,
+      "max_fine": 300,
+      "suspensions": true
+    }
+  },
+  "links": [
+    {
+      "a": "n0",
+      "b": "n1",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n2",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n3",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n4",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n5",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n6",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n7",
+      "online": false
+    },
+    {
+      "a": "n0",
+      "b": "n8",
+      "online": false
+    },
+    {
+      "a": "n0",
+      "b": "n9",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n10",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n11",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n12",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n13",
+      "online": true
+    },
+    {
+      "a": "n0",
+      "b": "n14",
+      "online": true
+    }
+  ],
+  "machines": [
+    {
+      "id": "n0",
+      "name": "lumen",
+      "role": "hub",
+      "kind": "workstation",
+      "vendor": "asus",
+      "model": "ProArt Workstation",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "AMD Ryzen 9 7950X",
+        "cores": 16,
+        "threads": 32
+      },
+      "memory_mib": 65536,
+      "gpus": [
+        {
+          "name": "NVIDIA GeForce RTX 4090",
+          "vendor": "NVIDIA",
+          "memory_mib": 24576
+        },
+        {
+          "name": "NVIDIA GeForce RTX 4090",
+          "vendor": "NVIDIA",
+          "memory_mib": 24576
+        }
+      ],
+      "storage_gib": 4000,
+      "agents": [
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        207,
+        208,
+        209,
+        210,
+        211,
+        212,
+        213
+      ],
+      "working": 5,
+      "stats": {
+        "cpu_pct": 38.4,
+        "mem_used_mib": 27800
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n1",
+      "name": "atlas",
+      "role": "node",
+      "kind": "server",
+      "vendor": "supermicro",
+      "model": "SYS-421GE",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "AMD EPYC 9654",
+        "cores": 96,
+        "threads": 192
+      },
+      "memory_mib": 2097152,
+      "gpus": [
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        },
+        {
+          "name": "NVIDIA H100 80GB HBM3",
+          "vendor": "NVIDIA",
+          "memory_mib": 81920
+        }
+      ],
+      "storage_gib": 30000,
+      "agents": [
+        214,
+        215,
+        216,
+        217,
+        218,
+        219,
+        220,
+        221,
+        222,
+        223,
+        224,
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        231,
+        232,
+        233
+      ],
+      "working": 12,
+      "stats": {
+        "cpu_pct": 64.2,
+        "mem_used_mib": 1310720
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n2",
+      "name": "quill",
+      "role": "node",
+      "kind": "laptop",
+      "vendor": "apple",
+      "model": "MacBook Pro 14-inch",
+      "apple": {
+        "chip": "M3 Pro",
+        "p_cores": 6,
+        "e_cores": 6,
+        "gpu_cores": 14,
+        "neural_cores": 16,
+        "unified_memory_gib": 36
+      },
+      "status": "online",
+      "arch": "aarch64",
+      "os": "macos",
+      "backend": "hvf",
+      "cpu": {
+        "model": "Apple M3 Pro",
+        "cores": 12,
+        "threads": 12
+      },
+      "memory_mib": 36864,
+      "gpus": [
+        {
+          "name": "Apple M3 Pro GPU (14-core)",
+          "vendor": "Apple",
+          "memory_mib": null
+        }
+      ],
+      "storage_gib": 1000,
+      "agents": [
+        234,
+        235,
+        236,
+        237,
+        238,
+        239,
+        240
+      ],
+      "working": 2,
+      "stats": {
+        "cpu_pct": 21.7,
+        "mem_used_mib": 14200
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n3",
+      "name": "sable",
+      "role": "node",
+      "kind": "edge",
+      "vendor": "apple",
+      "model": "Mac mini",
+      "apple": {
+        "chip": "M4",
+        "p_cores": 4,
+        "e_cores": 6,
+        "gpu_cores": 10,
+        "neural_cores": 16,
+        "unified_memory_gib": 16
+      },
+      "status": "online",
+      "arch": "aarch64",
+      "os": "macos",
+      "backend": "hvf",
+      "cpu": {
+        "model": "Apple M4",
+        "cores": 10,
+        "threads": 10
+      },
+      "memory_mib": 16384,
+      "gpus": [
+        {
+          "name": "Apple M4 GPU (10-core)",
+          "vendor": "Apple",
+          "memory_mib": null
+        }
+      ],
+      "storage_gib": 512,
+      "agents": [
+        241,
+        242,
+        243
+      ],
+      "working": 1,
+      "stats": {
+        "cpu_pct": 12.3,
+        "mem_used_mib": 6100
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n4",
+      "name": "thimble",
+      "role": "node",
+      "kind": "laptop",
+      "vendor": "dell",
+      "model": "XPS 13",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "Intel Core Ultra 7 155H",
+        "cores": 16,
+        "threads": 22
+      },
+      "memory_mib": 32768,
+      "gpus": [
+        {
+          "name": "Intel Arc Graphics",
+          "vendor": "Intel",
+          "memory_mib": null
+        }
+      ],
+      "storage_gib": 1024,
+      "agents": [
+        244,
+        245,
+        246,
+        247
+      ],
+      "working": 0,
+      "stats": {
+        "cpu_pct": 6.5,
+        "mem_used_mib": 9800
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n5",
+      "name": "cinder",
+      "role": "node",
+      "kind": "laptop",
+      "vendor": "lenovo",
+      "model": "ThinkPad P1 Gen 7",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "windows",
+      "backend": "hyper-v",
+      "cpu": {
+        "model": "Intel Core i9-14900HX",
+        "cores": 24,
+        "threads": 32
+      },
+      "memory_mib": 65536,
+      "gpus": [
+        {
+          "name": "NVIDIA RTX 3500 Ada",
+          "vendor": "NVIDIA",
+          "memory_mib": 12288
+        }
+      ],
+      "storage_gib": 2048,
+      "agents": [
+        248,
+        249,
+        250,
+        251,
+        252
+      ],
+      "working": 2,
+      "stats": {
+        "cpu_pct": 44.9,
+        "mem_used_mib": 31000
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n6",
+      "name": "cobalt",
+      "role": "node",
+      "kind": "laptop",
+      "vendor": "framework",
+      "model": "Laptop 16",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "AMD Ryzen AI 9 HX 370",
+        "cores": 12,
+        "threads": 24
+      },
+      "memory_mib": 65536,
+      "gpus": [
+        {
+          "name": "AMD Radeon 890M",
+          "vendor": "AMD",
+          "memory_mib": null
+        }
+      ],
+      "storage_gib": 2000,
+      "agents": [
+        253,
+        254,
+        255,
+        256,
+        257,
+        258
+      ],
+      "working": 2,
+      "stats": {
+        "cpu_pct": 29,
+        "mem_used_mib": 22400
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n7",
+      "name": "pebble",
+      "role": "node",
+      "kind": "phone",
+      "vendor": "samsung",
+      "model": "Galaxy S24",
+      "status": "offline",
+      "arch": "aarch64",
+      "os": "linux",
+      "backend": "android",
+      "cpu": {
+        "model": "Snapdragon 8 Gen 3",
+        "cores": 8,
+        "threads": 8
+      },
+      "memory_mib": 8192,
+      "gpus": [],
+      "storage_gib": 256,
+      "agents": [
+        259
+      ],
+      "working": 0,
+      "stats": null,
+      "last_seen_ago_ms": 10800000
+    },
+    {
+      "id": "n8",
+      "name": "ridge",
+      "role": "node",
+      "kind": "edge",
+      "vendor": "raspberrypi",
+      "model": "Raspberry Pi 5",
+      "status": "offline",
+      "arch": "aarch64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "Cortex-A76",
+        "cores": 4,
+        "threads": 4
+      },
+      "memory_mib": 8192,
+      "gpus": [],
+      "storage_gib": 256,
+      "agents": [
+        260,
+        261
+      ],
+      "working": 0,
+      "stats": null,
+      "last_seen_ago_ms": 7200000
+    },
+    {
+      "id": "n9",
+      "name": "spire",
+      "role": "node",
+      "kind": "workstation",
+      "vendor": "lenovo",
+      "model": "ThinkStation P620",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "AMD Ryzen Threadripper 7960X",
+        "cores": 24,
+        "threads": 48
+      },
+      "memory_mib": 131072,
+      "gpus": [
+        {
+          "name": "AMD Radeon RX 7900 XTX",
+          "vendor": "AMD",
+          "memory_mib": 24576
+        }
+      ],
+      "storage_gib": 4096,
+      "agents": [
+        262,
+        263,
+        264,
+        265,
+        266,
+        267,
+        268,
+        269
+      ],
+      "working": 3,
+      "stats": {
+        "cpu_pct": 33.1,
+        "mem_used_mib": 48000
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n10",
+      "name": "kestrel",
+      "role": "node",
+      "kind": "workstation",
+      "vendor": "apple",
+      "model": "Mac Studio",
+      "apple": {
+        "chip": "M2 Ultra",
+        "p_cores": 16,
+        "e_cores": 8,
+        "gpu_cores": 60,
+        "neural_cores": 32,
+        "unified_memory_gib": 64
+      },
+      "status": "online",
+      "arch": "aarch64",
+      "os": "macos",
+      "backend": "hvf",
+      "cpu": {
+        "model": "Apple M2 Ultra",
+        "cores": 24,
+        "threads": 24
+      },
+      "memory_mib": 65536,
+      "gpus": [
+        {
+          "name": "Apple M2 Ultra GPU (60-core)",
+          "vendor": "Apple",
+          "memory_mib": null
+        }
+      ],
+      "storage_gib": 2000,
+      "agents": [
+        270,
+        271,
+        272,
+        273,
+        274,
+        275,
+        276,
+        277,
+        278
+      ],
+      "working": 4,
+      "stats": {
+        "cpu_pct": 47.5,
+        "mem_used_mib": 40100
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n11",
+      "name": "gale",
+      "role": "node",
+      "kind": "workstation",
+      "vendor": "dell",
+      "model": "Precision 7875",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "windows",
+      "backend": "hyper-v",
+      "cpu": {
+        "model": "Intel Xeon w7-2495X",
+        "cores": 24,
+        "threads": 48
+      },
+      "memory_mib": 131072,
+      "gpus": [
+        {
+          "name": "AMD Radeon Pro W7800",
+          "vendor": "AMD",
+          "memory_mib": 32768
+        },
+        {
+          "name": "AMD Radeon Pro W7800",
+          "vendor": "AMD",
+          "memory_mib": 32768
+        },
+        {
+          "name": "AMD Radeon Pro W7800",
+          "vendor": "AMD",
+          "memory_mib": 32768
+        },
+        {
+          "name": "AMD Radeon Pro W7800",
+          "vendor": "AMD",
+          "memory_mib": 32768
+        }
+      ],
+      "storage_gib": 4096,
+      "agents": [
+        279,
+        280,
+        281,
+        282,
+        283,
+        284,
+        285,
+        286,
+        287,
+        288
+      ],
+      "working": 4,
+      "stats": {
+        "cpu_pct": 52.8,
+        "mem_used_mib": 77000
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n12",
+      "name": "harbor",
+      "role": "node",
+      "kind": "server",
+      "vendor": "dell",
+      "model": "PowerEdge R760xa",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "windows",
+      "backend": "hyper-v",
+      "cpu": {
+        "model": "Intel Xeon Gold 6526Y",
+        "cores": 16,
+        "threads": 32
+      },
+      "memory_mib": 262144,
+      "gpus": [
+        {
+          "name": "NVIDIA L4",
+          "vendor": "NVIDIA",
+          "memory_mib": 24576
+        },
+        {
+          "name": "NVIDIA L4",
+          "vendor": "NVIDIA",
+          "memory_mib": 24576
+        }
+      ],
+      "storage_gib": 8000,
+      "agents": [
+        289,
+        290,
+        291,
+        292,
+        293,
+        294,
+        295,
+        296,
+        297,
+        298,
+        299
+      ],
+      "working": 4,
+      "stats": {
+        "cpu_pct": 58,
+        "mem_used_mib": 150000
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n13",
+      "name": "tundra",
+      "role": "node",
+      "kind": "server",
+      "vendor": "hpe",
+      "model": "ProLiant DL380 Gen11",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "Intel Xeon Gold 6430",
+        "cores": 32,
+        "threads": 64
+      },
+      "memory_mib": 524288,
+      "gpus": [
+        {
+          "name": "NVIDIA L40S",
+          "vendor": "NVIDIA",
+          "memory_mib": 49152
+        },
+        {
+          "name": "NVIDIA L40S",
+          "vendor": "NVIDIA",
+          "memory_mib": 49152
+        },
+        {
+          "name": "NVIDIA L40S",
+          "vendor": "NVIDIA",
+          "memory_mib": 49152
+        },
+        {
+          "name": "NVIDIA L40S",
+          "vendor": "NVIDIA",
+          "memory_mib": 49152
+        }
+      ],
+      "storage_gib": 12000,
+      "agents": [
+        300,
+        301,
+        302,
+        303,
+        304,
+        305,
+        306,
+        307,
+        308,
+        309,
+        310,
+        311
+      ],
+      "working": 6,
+      "stats": {
+        "cpu_pct": 71.3,
+        "mem_used_mib": 310000
+      },
+      "last_seen_ago_ms": 2000
+    },
+    {
+      "id": "n14",
+      "name": "fjord",
+      "role": "node",
+      "kind": "workstation",
+      "vendor": "intel",
+      "model": "Arc Pro B60 reference",
+      "status": "online",
+      "arch": "x86_64",
+      "os": "linux",
+      "backend": "kvm",
+      "cpu": {
+        "model": "Intel Core i9-14900K",
+        "cores": 24,
+        "threads": 32
+      },
+      "memory_mib": 65536,
+      "gpus": [
+        {
+          "name": "Intel Arc Pro B60",
+          "vendor": "Intel",
+          "memory_mib": 24576
+        },
+        {
+          "name": "Intel Arc Pro B60",
+          "vendor": "Intel",
+          "memory_mib": 24576
+        }
+      ],
+      "storage_gib": 6000,
+      "agents": [
+        312,
+        313,
+        314,
+        315,
+        316,
+        317,
+        318,
+        319,
+        320,
+        321,
+        322,
+        323,
+        324,
+        325,
+        326,
+        327
+      ],
+      "working": 7,
+      "stats": {
+        "cpu_pct": 61.4,
+        "mem_used_mib": 42000
+      },
+      "last_seen_ago_ms": 2000
+    }
+  ],
+  "agents": [
+    {
+      "cid": 201,
+      "name": "Ada",
+      "role": "orchestrator",
+      "role_label": "Orchestrator",
+      "tier": "orchestrator",
+      "status": "idle",
+      "kind": "llm",
+      "species": "duck",
+      "model": "claude-opus-5",
+      "model_override": null,
+      "model_source": "role",
+      "connected_ago_ms": 3801000,
+      "last_seen_ago_ms": 7000,
+      "run": "r201",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 163213,
+        "output_tokens": 28497,
+        "cache_read_tokens": 200601,
+        "cache_write_tokens": 25653
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 202,
+      "name": "Bram",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "ghost",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3802000,
+      "last_seen_ago_ms": 8000,
+      "run": "r202",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 163826,
+        "output_tokens": 28594,
+        "cache_read_tokens": 201002,
+        "cache_write_tokens": 25706
+      },
+      "queue": 1,
+      "work": {
+        "id": 5202,
+        "cid": 202,
+        "kind": "task",
+        "thread": "thread-202",
+        "prompt": "Refresh the connector kit docs",
+        "origin": {
+          "task": "task-302",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 543000,
+        "started_ago_ms": 422400
+      }
+    },
+    {
+      "cid": 203,
+      "name": "Cass",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "ladybug",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3803000,
+      "last_seen_ago_ms": 2000,
+      "run": "r203",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 164439,
+        "output_tokens": 28691,
+        "cache_read_tokens": 201403,
+        "cache_write_tokens": 25759
+      },
+      "queue": 2,
+      "work": {
+        "id": 5203,
+        "cid": 203,
+        "kind": "task",
+        "thread": "thread-203",
+        "prompt": "Audit the sanctions log for stale entries",
+        "origin": {
+          "task": "task-303",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 544500,
+        "started_ago_ms": 423600
+      }
+    },
+    {
+      "cid": 204,
+      "name": "Dario",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "astro",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3804000,
+      "last_seen_ago_ms": 3000,
+      "run": "r204",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 165052,
+        "output_tokens": 28788,
+        "cache_read_tokens": 201804,
+        "cache_write_tokens": 25812
+      },
+      "queue": 0,
+      "work": {
+        "id": 5204,
+        "cid": 204,
+        "kind": "task",
+        "thread": "thread-204",
+        "prompt": "Plan Q4 capacity for the edge fleet",
+        "origin": {
+          "task": "task-304",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 546000,
+        "started_ago_ms": 424800
+      }
+    },
+    {
+      "cid": 205,
+      "name": "Esme",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "mushroom",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3805000,
+      "last_seen_ago_ms": 4000,
+      "run": "r205",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 165665,
+        "output_tokens": 28885,
+        "cache_read_tokens": 202205,
+        "cache_write_tokens": 25865
+      },
+      "queue": 1,
+      "work": {
+        "id": 5205,
+        "cid": 205,
+        "kind": "chat",
+        "thread": "thread-205",
+        "prompt": "Write release notes for the next build",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 547500,
+        "started_ago_ms": 426000
+      }
+    },
+    {
+      "cid": 206,
+      "name": "Finn",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "penguin",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3806000,
+      "last_seen_ago_ms": 5000,
+      "run": "r206",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 166278,
+        "output_tokens": 28982,
+        "cache_read_tokens": 202606,
+        "cache_write_tokens": 25918
+      },
+      "queue": 2,
+      "work": {
+        "id": 5206,
+        "cid": 206,
+        "kind": "task",
+        "thread": "thread-206",
+        "prompt": "Check certificate rotation on the mail relay",
+        "origin": {
+          "task": "task-306",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 549000,
+        "started_ago_ms": 427200
+      }
+    },
+    {
+      "cid": 207,
+      "name": "Greta",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "turtle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3807000,
+      "last_seen_ago_ms": 6000,
+      "run": "r207",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 166891,
+        "output_tokens": 29079,
+        "cache_read_tokens": 203007,
+        "cache_write_tokens": 25971
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 208,
+      "name": "Hugo",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "pup",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3808000,
+      "last_seen_ago_ms": 7000,
+      "run": "r208",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 167504,
+        "output_tokens": 29176,
+        "cache_read_tokens": 203408,
+        "cache_write_tokens": 26024
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 209,
+      "name": "Ines",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "cube",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3809000,
+      "last_seen_ago_ms": 8000,
+      "run": "r209",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 168117,
+        "output_tokens": 29273,
+        "cache_read_tokens": 203809,
+        "cache_write_tokens": 26077
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 210,
+      "name": "Jules",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "jelly",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3810000,
+      "last_seen_ago_ms": 2000,
+      "run": "r210",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 168730,
+        "output_tokens": 29370,
+        "cache_read_tokens": 204210,
+        "cache_write_tokens": 26130
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 211,
+      "name": "Kai",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bunny",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3811000,
+      "last_seen_ago_ms": 3000,
+      "run": "r211",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 169343,
+        "output_tokens": 29467,
+        "cache_read_tokens": 204611,
+        "cache_write_tokens": 26183
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 212,
+      "name": "Lea",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "rover",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3812000,
+      "last_seen_ago_ms": 4000,
+      "run": "r212",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 169956,
+        "output_tokens": 29564,
+        "cache_read_tokens": 205012,
+        "cache_write_tokens": 26236
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 213,
+      "name": "Mateo",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "hover",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3813000,
+      "last_seen_ago_ms": 5000,
+      "run": "r213",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 170569,
+        "output_tokens": 29661,
+        "cache_read_tokens": 205413,
+        "cache_write_tokens": 26289
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 214,
+      "name": "Nell",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "kitty",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3814000,
+      "last_seen_ago_ms": 6000,
+      "run": "r214",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 171182,
+        "output_tokens": 29758,
+        "cache_read_tokens": 205814,
+        "cache_write_tokens": 26342
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 215,
+      "name": "Orla",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "tv",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3815000,
+      "last_seen_ago_ms": 7000,
+      "run": "r215",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 171795,
+        "output_tokens": 29855,
+        "cache_read_tokens": 206215,
+        "cache_write_tokens": 26395
+      },
+      "queue": 2,
+      "work": {
+        "id": 5215,
+        "cid": 215,
+        "kind": "chat",
+        "thread": "thread-215",
+        "prompt": "Benchmark the 8-bit checkpoint on the new cards",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 562500,
+        "started_ago_ms": 438000
+      }
+    },
+    {
+      "cid": 216,
+      "name": "Priya",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "can",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3816000,
+      "last_seen_ago_ms": 8000,
+      "run": "r216",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 172408,
+        "output_tokens": 29952,
+        "cache_read_tokens": 206616,
+        "cache_write_tokens": 26448
+      },
+      "queue": 0,
+      "work": {
+        "id": 5216,
+        "cid": 216,
+        "kind": "task",
+        "thread": "thread-216",
+        "prompt": "Patch the flaky scheduler test",
+        "origin": {
+          "task": "task-316",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 564000,
+        "started_ago_ms": 439200
+      }
+    },
+    {
+      "cid": 217,
+      "name": "Ravi",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "lamp",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3817000,
+      "last_seen_ago_ms": 2000,
+      "run": "r217",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 173021,
+        "output_tokens": 30049,
+        "cache_read_tokens": 207017,
+        "cache_write_tokens": 26501
+      },
+      "queue": 1,
+      "work": {
+        "id": 5217,
+        "cid": 217,
+        "kind": "task",
+        "thread": "thread-217",
+        "prompt": "Refresh the connector kit docs",
+        "origin": {
+          "task": "task-317",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 565500,
+        "started_ago_ms": 440400
+      }
+    },
+    {
+      "cid": 218,
+      "name": "Sol",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "teapot",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3818000,
+      "last_seen_ago_ms": 3000,
+      "run": "r218",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 173634,
+        "output_tokens": 30146,
+        "cache_read_tokens": 207418,
+        "cache_write_tokens": 26554
+      },
+      "queue": 2,
+      "work": {
+        "id": 5218,
+        "cid": 218,
+        "kind": "task",
+        "thread": "thread-218",
+        "prompt": "Audit the sanctions log for stale entries",
+        "origin": {
+          "task": "task-318",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 567000,
+        "started_ago_ms": 441600
+      }
+    },
+    {
+      "cid": 219,
+      "name": "Teo",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "unicycle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3819000,
+      "last_seen_ago_ms": 4000,
+      "run": "r219",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 174247,
+        "output_tokens": 30243,
+        "cache_read_tokens": 207819,
+        "cache_write_tokens": 26607
+      },
+      "queue": 0,
+      "work": {
+        "id": 5219,
+        "cid": 219,
+        "kind": "task",
+        "thread": "thread-219",
+        "prompt": "Plan Q4 capacity for the edge fleet",
+        "origin": {
+          "task": "task-319",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 568500,
+        "started_ago_ms": 442800
+      }
+    },
+    {
+      "cid": 220,
+      "name": "Uma",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "pogo",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3820000,
+      "last_seen_ago_ms": 5000,
+      "run": "r220",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 174860,
+        "output_tokens": 30340,
+        "cache_read_tokens": 208220,
+        "cache_write_tokens": 26660
+      },
+      "queue": 1,
+      "work": {
+        "id": 5220,
+        "cid": 220,
+        "kind": "chat",
+        "thread": "thread-220",
+        "prompt": "Write release notes for the next build",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 570000,
+        "started_ago_ms": 444000
+      }
+    },
+    {
+      "cid": 221,
+      "name": "Viggo",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "mole",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3821000,
+      "last_seen_ago_ms": 6000,
+      "run": "r221",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 175473,
+        "output_tokens": 30437,
+        "cache_read_tokens": 208621,
+        "cache_write_tokens": 26713
+      },
+      "queue": 2,
+      "work": {
+        "id": 5221,
+        "cid": 221,
+        "kind": "task",
+        "thread": "thread-221",
+        "prompt": "Check certificate rotation on the mail relay",
+        "origin": {
+          "task": "task-321",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 571500,
+        "started_ago_ms": 445200
+      }
+    },
+    {
+      "cid": 222,
+      "name": "Willa",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "snail",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3822000,
+      "last_seen_ago_ms": 7000,
+      "run": "r222",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 176086,
+        "output_tokens": 30534,
+        "cache_read_tokens": 209022,
+        "cache_write_tokens": 26766
+      },
+      "queue": 0,
+      "work": {
+        "id": 5222,
+        "cid": 222,
+        "kind": "task",
+        "thread": "thread-222",
+        "prompt": "Compare two candidate embedding models",
+        "origin": {
+          "task": "task-322",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 573000,
+        "started_ago_ms": 446400
+      }
+    },
+    {
+      "cid": 223,
+      "name": "Yusuf",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "ufo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3823000,
+      "last_seen_ago_ms": 8000,
+      "run": "r223",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 176699,
+        "output_tokens": 30631,
+        "cache_read_tokens": 209423,
+        "cache_write_tokens": 26819
+      },
+      "queue": 1,
+      "work": {
+        "id": 5223,
+        "cid": 223,
+        "kind": "task",
+        "thread": "thread-223",
+        "prompt": "Re-verify the lab job manifests",
+        "origin": {
+          "task": "task-323",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 574500,
+        "started_ago_ms": 447600
+      }
+    },
+    {
+      "cid": 224,
+      "name": "Zoe",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "owl",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3824000,
+      "last_seen_ago_ms": 2000,
+      "run": "r224",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 177312,
+        "output_tokens": 30728,
+        "cache_read_tokens": 209824,
+        "cache_write_tokens": 26872
+      },
+      "queue": 2,
+      "work": {
+        "id": 5224,
+        "cid": 224,
+        "kind": "task",
+        "thread": "thread-224",
+        "prompt": "Summarise the incident timeline for the storage stall",
+        "origin": {
+          "task": "task-324",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 576000,
+        "started_ago_ms": 448800
+      }
+    },
+    {
+      "cid": 225,
+      "name": "Aster",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "crab",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3825000,
+      "last_seen_ago_ms": 3000,
+      "run": "r225",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 177925,
+        "output_tokens": 30825,
+        "cache_read_tokens": 210225,
+        "cache_write_tokens": 26925
+      },
+      "queue": 0,
+      "work": {
+        "id": 5225,
+        "cid": 225,
+        "kind": "chat",
+        "thread": "thread-225",
+        "prompt": "Triage the overnight alert backlog",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 577500,
+        "started_ago_ms": 450000
+      }
+    },
+    {
+      "cid": 226,
+      "name": "Briar",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "octo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3826000,
+      "last_seen_ago_ms": 4000,
+      "run": "r226",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 178538,
+        "output_tokens": 30922,
+        "cache_read_tokens": 210626,
+        "cache_write_tokens": 26978
+      },
+      "queue": 1,
+      "work": {
+        "id": 5226,
+        "cid": 226,
+        "kind": "task",
+        "thread": "thread-226",
+        "prompt": "Draft the migration plan for the ledger tables",
+        "origin": {
+          "task": "task-326",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 579000,
+        "started_ago_ms": 451200
+      }
+    },
+    {
+      "cid": 227,
+      "name": "Corin",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bee",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3827000,
+      "last_seen_ago_ms": 5000,
+      "run": "r227",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 179151,
+        "output_tokens": 31019,
+        "cache_read_tokens": 211027,
+        "cache_write_tokens": 27031
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 228,
+      "name": "Delphine",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "frog",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3828000,
+      "last_seen_ago_ms": 6000,
+      "run": "r228",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 179764,
+        "output_tokens": 31116,
+        "cache_read_tokens": 211428,
+        "cache_write_tokens": 27084
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 229,
+      "name": "Ezra",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "duck",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3829000,
+      "last_seen_ago_ms": 7000,
+      "run": "r229",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 180377,
+        "output_tokens": 31213,
+        "cache_read_tokens": 211829,
+        "cache_write_tokens": 27137
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 230,
+      "name": "Fleur",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ghost",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3830000,
+      "last_seen_ago_ms": 8000,
+      "run": "r230",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 180990,
+        "output_tokens": 31310,
+        "cache_read_tokens": 212230,
+        "cache_write_tokens": 27190
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 231,
+      "name": "Gideon",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ladybug",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3831000,
+      "last_seen_ago_ms": 2000,
+      "run": "r231",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 181603,
+        "output_tokens": 31407,
+        "cache_read_tokens": 212631,
+        "cache_write_tokens": 27243
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 232,
+      "name": "Hollis",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "astro",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3832000,
+      "last_seen_ago_ms": 3000,
+      "run": "r232",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 182216,
+        "output_tokens": 31504,
+        "cache_read_tokens": 213032,
+        "cache_write_tokens": 27296
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 233,
+      "name": "Iva",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "mushroom",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3833000,
+      "last_seen_ago_ms": 4000,
+      "run": "r233",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 182829,
+        "output_tokens": 31601,
+        "cache_read_tokens": 213433,
+        "cache_write_tokens": 27349
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 234,
+      "name": "Juno",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "penguin",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3834000,
+      "last_seen_ago_ms": 5000,
+      "run": "r234",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 183442,
+        "output_tokens": 31698,
+        "cache_read_tokens": 213834,
+        "cache_write_tokens": 27402
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 235,
+      "name": "Kenji",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "turtle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3835000,
+      "last_seen_ago_ms": 6000,
+      "run": "r235",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 184055,
+        "output_tokens": 31795,
+        "cache_read_tokens": 214235,
+        "cache_write_tokens": 27455
+      },
+      "queue": 1,
+      "work": {
+        "id": 5235,
+        "cid": 235,
+        "kind": "chat",
+        "thread": "thread-235",
+        "prompt": "Write release notes for the next build",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 592500,
+        "started_ago_ms": 462000
+      }
+    },
+    {
+      "cid": 236,
+      "name": "Linnea",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "pup",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3836000,
+      "last_seen_ago_ms": 7000,
+      "run": "r236",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 184668,
+        "output_tokens": 31892,
+        "cache_read_tokens": 214636,
+        "cache_write_tokens": 27508
+      },
+      "queue": 2,
+      "work": {
+        "id": 5236,
+        "cid": 236,
+        "kind": "task",
+        "thread": "thread-236",
+        "prompt": "Check certificate rotation on the mail relay",
+        "origin": {
+          "task": "task-336",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 594000,
+        "started_ago_ms": 463200
+      }
+    },
+    {
+      "cid": 237,
+      "name": "Marlo",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "cube",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3837000,
+      "last_seen_ago_ms": 8000,
+      "run": "r237",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 185281,
+        "output_tokens": 31989,
+        "cache_read_tokens": 215037,
+        "cache_write_tokens": 27561
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 238,
+      "name": "Nico",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "jelly",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3838000,
+      "last_seen_ago_ms": 2000,
+      "run": "r238",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 185894,
+        "output_tokens": 32086,
+        "cache_read_tokens": 215438,
+        "cache_write_tokens": 27614
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 239,
+      "name": "Opal",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bunny",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3839000,
+      "last_seen_ago_ms": 3000,
+      "run": "r239",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 186507,
+        "output_tokens": 32183,
+        "cache_read_tokens": 215839,
+        "cache_write_tokens": 27667
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 240,
+      "name": "Pavel",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "rover",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3840000,
+      "last_seen_ago_ms": 4000,
+      "run": "r240",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 187120,
+        "output_tokens": 32280,
+        "cache_read_tokens": 216240,
+        "cache_write_tokens": 27720
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 241,
+      "name": "Rafa",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "hover",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3841000,
+      "last_seen_ago_ms": 5000,
+      "run": "r241",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 187733,
+        "output_tokens": 32377,
+        "cache_read_tokens": 216641,
+        "cache_write_tokens": 27773
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 242,
+      "name": "Talia",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "kitty",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3842000,
+      "last_seen_ago_ms": 6000,
+      "run": "r242",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 188346,
+        "output_tokens": 32474,
+        "cache_read_tokens": 217042,
+        "cache_write_tokens": 27826
+      },
+      "queue": 2,
+      "work": {
+        "id": 5242,
+        "cid": 242,
+        "kind": "task",
+        "thread": "thread-242",
+        "prompt": "Review retry logic in the ingest worker",
+        "origin": {
+          "task": "task-342",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 603000,
+        "started_ago_ms": 470400
+      }
+    },
+    {
+      "cid": 243,
+      "name": "Usha",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "tv",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3843000,
+      "last_seen_ago_ms": 7000,
+      "run": "r243",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 188959,
+        "output_tokens": 32571,
+        "cache_read_tokens": 217443,
+        "cache_write_tokens": 27879
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 244,
+      "name": "Vance",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "can",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3844000,
+      "last_seen_ago_ms": 8000,
+      "run": "r244",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 189572,
+        "output_tokens": 32668,
+        "cache_read_tokens": 217844,
+        "cache_write_tokens": 27932
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 245,
+      "name": "Wynn",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "lamp",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3845000,
+      "last_seen_ago_ms": 2000,
+      "run": "r245",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 190185,
+        "output_tokens": 32765,
+        "cache_read_tokens": 218245,
+        "cache_write_tokens": 27985
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 246,
+      "name": "Xenia",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "teapot",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3846000,
+      "last_seen_ago_ms": 3000,
+      "run": "r246",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 190798,
+        "output_tokens": 32862,
+        "cache_read_tokens": 218646,
+        "cache_write_tokens": 28038
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 247,
+      "name": "Yorick",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "unicycle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3847000,
+      "last_seen_ago_ms": 4000,
+      "run": "r247",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 191411,
+        "output_tokens": 32959,
+        "cache_read_tokens": 219047,
+        "cache_write_tokens": 28091
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 248,
+      "name": "Zanna",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "pogo",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3848000,
+      "last_seen_ago_ms": 5000,
+      "run": "r248",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 192024,
+        "output_tokens": 33056,
+        "cache_read_tokens": 219448,
+        "cache_write_tokens": 28144
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 249,
+      "name": "Ansel",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "mole",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3849000,
+      "last_seen_ago_ms": 6000,
+      "run": "r249",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 192637,
+        "output_tokens": 33153,
+        "cache_read_tokens": 219849,
+        "cache_write_tokens": 28197
+      },
+      "queue": 0,
+      "work": {
+        "id": 5249,
+        "cid": 249,
+        "kind": "task",
+        "thread": "thread-249",
+        "prompt": "Plan Q4 capacity for the edge fleet",
+        "origin": {
+          "task": "task-349",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 613500,
+        "started_ago_ms": 478800
+      }
+    },
+    {
+      "cid": 250,
+      "name": "Bodhi",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "snail",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3850000,
+      "last_seen_ago_ms": 7000,
+      "run": "r250",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 193250,
+        "output_tokens": 33250,
+        "cache_read_tokens": 220250,
+        "cache_write_tokens": 28250
+      },
+      "queue": 1,
+      "work": {
+        "id": 5250,
+        "cid": 250,
+        "kind": "chat",
+        "thread": "thread-250",
+        "prompt": "Write release notes for the next build",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 615000,
+        "started_ago_ms": 480000
+      }
+    },
+    {
+      "cid": 251,
+      "name": "Calla",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ufo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3851000,
+      "last_seen_ago_ms": 8000,
+      "run": "r251",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 193863,
+        "output_tokens": 33347,
+        "cache_read_tokens": 220651,
+        "cache_write_tokens": 28303
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 252,
+      "name": "Dara",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "owl",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3852000,
+      "last_seen_ago_ms": 2000,
+      "run": "r252",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 194476,
+        "output_tokens": 33444,
+        "cache_read_tokens": 221052,
+        "cache_write_tokens": 28356
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 253,
+      "name": "Emil",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "crab",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3853000,
+      "last_seen_ago_ms": 3000,
+      "run": "r253",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 195089,
+        "output_tokens": 33541,
+        "cache_read_tokens": 221453,
+        "cache_write_tokens": 28409
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 254,
+      "name": "Freya",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "octo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3854000,
+      "last_seen_ago_ms": 4000,
+      "run": "r254",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 195702,
+        "output_tokens": 33638,
+        "cache_read_tokens": 221854,
+        "cache_write_tokens": 28462
+      },
+      "queue": 2,
+      "work": {
+        "id": 5254,
+        "cid": 254,
+        "kind": "task",
+        "thread": "thread-254",
+        "prompt": "Summarise the incident timeline for the storage stall",
+        "origin": {
+          "task": "task-354",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 621000,
+        "started_ago_ms": 484800
+      }
+    },
+    {
+      "cid": 255,
+      "name": "Gustav",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "bee",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3855000,
+      "last_seen_ago_ms": 5000,
+      "run": "r255",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 196315,
+        "output_tokens": 33735,
+        "cache_read_tokens": 222255,
+        "cache_write_tokens": 28515
+      },
+      "queue": 0,
+      "work": {
+        "id": 5255,
+        "cid": 255,
+        "kind": "chat",
+        "thread": "thread-255",
+        "prompt": "Triage the overnight alert backlog",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 622500,
+        "started_ago_ms": 486000
+      }
+    },
+    {
+      "cid": 256,
+      "name": "Hattie",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "frog",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3856000,
+      "last_seen_ago_ms": 6000,
+      "run": "r256",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 196928,
+        "output_tokens": 33832,
+        "cache_read_tokens": 222656,
+        "cache_write_tokens": 28568
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 257,
+      "name": "Ilse",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "duck",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3857000,
+      "last_seen_ago_ms": 7000,
+      "run": "r257",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 197541,
+        "output_tokens": 33929,
+        "cache_read_tokens": 223057,
+        "cache_write_tokens": 28621
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 258,
+      "name": "Jasper",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ghost",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3858000,
+      "last_seen_ago_ms": 8000,
+      "run": "r258",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 198154,
+        "output_tokens": 34026,
+        "cache_read_tokens": 223458,
+        "cache_write_tokens": 28674
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 259,
+      "name": "Kaia",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "offline",
+      "kind": "llm",
+      "species": "ladybug",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3859000,
+      "last_seen_ago_ms": 10800000,
+      "run": null,
+      "vm": null,
+      "usage": {
+        "input_tokens": 198767,
+        "output_tokens": 34123,
+        "cache_read_tokens": 223859,
+        "cache_write_tokens": 28727
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 260,
+      "name": "Lorcan",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "offline",
+      "kind": "llm",
+      "species": "astro",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3860000,
+      "last_seen_ago_ms": 7200000,
+      "run": null,
+      "vm": null,
+      "usage": {
+        "input_tokens": 199380,
+        "output_tokens": 34220,
+        "cache_read_tokens": 224260,
+        "cache_write_tokens": 28780
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 261,
+      "name": "Mira",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "offline",
+      "kind": "llm",
+      "species": "mushroom",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3861000,
+      "last_seen_ago_ms": 7200000,
+      "run": null,
+      "vm": null,
+      "usage": {
+        "input_tokens": 199993,
+        "output_tokens": 34317,
+        "cache_read_tokens": 224661,
+        "cache_write_tokens": 28833
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 262,
+      "name": "Niall",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "penguin",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3862000,
+      "last_seen_ago_ms": 5000,
+      "run": "r262",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 200606,
+        "output_tokens": 34414,
+        "cache_read_tokens": 225062,
+        "cache_write_tokens": 28886
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 263,
+      "name": "Odile",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "turtle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3863000,
+      "last_seen_ago_ms": 6000,
+      "run": "r263",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 201219,
+        "output_tokens": 34511,
+        "cache_read_tokens": 225463,
+        "cache_write_tokens": 28939
+      },
+      "queue": 2,
+      "work": {
+        "id": 5263,
+        "cid": 263,
+        "kind": "task",
+        "thread": "thread-263",
+        "prompt": "Audit the sanctions log for stale entries",
+        "origin": {
+          "task": "task-363",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 634500,
+        "started_ago_ms": 495600
+      }
+    },
+    {
+      "cid": 264,
+      "name": "Piper",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "pup",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3864000,
+      "last_seen_ago_ms": 7000,
+      "run": "r264",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 201832,
+        "output_tokens": 34608,
+        "cache_read_tokens": 225864,
+        "cache_write_tokens": 28992
+      },
+      "queue": 0,
+      "work": {
+        "id": 5264,
+        "cid": 264,
+        "kind": "task",
+        "thread": "thread-264",
+        "prompt": "Plan Q4 capacity for the edge fleet",
+        "origin": {
+          "task": "task-364",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 636000,
+        "started_ago_ms": 496800
+      }
+    },
+    {
+      "cid": 265,
+      "name": "Rune",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "cube",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3865000,
+      "last_seen_ago_ms": 8000,
+      "run": "r265",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 202445,
+        "output_tokens": 34705,
+        "cache_read_tokens": 226265,
+        "cache_write_tokens": 29045
+      },
+      "queue": 1,
+      "work": {
+        "id": 5265,
+        "cid": 265,
+        "kind": "chat",
+        "thread": "thread-265",
+        "prompt": "Write release notes for the next build",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 637500,
+        "started_ago_ms": 498000
+      }
+    },
+    {
+      "cid": 266,
+      "name": "Sefa",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "jelly",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3866000,
+      "last_seen_ago_ms": 2000,
+      "run": "r266",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 203058,
+        "output_tokens": 34802,
+        "cache_read_tokens": 226666,
+        "cache_write_tokens": 29098
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 267,
+      "name": "Thea",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bunny",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3867000,
+      "last_seen_ago_ms": 3000,
+      "run": "r267",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 203671,
+        "output_tokens": 34899,
+        "cache_read_tokens": 227067,
+        "cache_write_tokens": 29151
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 268,
+      "name": "Ulla",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "rover",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3868000,
+      "last_seen_ago_ms": 4000,
+      "run": "r268",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 204284,
+        "output_tokens": 34996,
+        "cache_read_tokens": 227468,
+        "cache_write_tokens": 29204
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 269,
+      "name": "Vito",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "hover",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3869000,
+      "last_seen_ago_ms": 5000,
+      "run": "r269",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 204897,
+        "output_tokens": 35093,
+        "cache_read_tokens": 227869,
+        "cache_write_tokens": 29257
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 270,
+      "name": "Wiebke",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "kitty",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3870000,
+      "last_seen_ago_ms": 6000,
+      "run": "r270",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 205510,
+        "output_tokens": 35190,
+        "cache_read_tokens": 228270,
+        "cache_write_tokens": 29310
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 271,
+      "name": "Yael",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "tv",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3871000,
+      "last_seen_ago_ms": 7000,
+      "run": "r271",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 206123,
+        "output_tokens": 35287,
+        "cache_read_tokens": 228671,
+        "cache_write_tokens": 29363
+      },
+      "queue": 1,
+      "work": {
+        "id": 5271,
+        "cid": 271,
+        "kind": "task",
+        "thread": "thread-271",
+        "prompt": "Draft the migration plan for the ledger tables",
+        "origin": {
+          "task": "task-371",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 646500,
+        "started_ago_ms": 505200
+      }
+    },
+    {
+      "cid": 272,
+      "name": "Anka",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "can",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3872000,
+      "last_seen_ago_ms": 8000,
+      "run": "r272",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 206736,
+        "output_tokens": 35384,
+        "cache_read_tokens": 229072,
+        "cache_write_tokens": 29416
+      },
+      "queue": 2,
+      "work": {
+        "id": 5272,
+        "cid": 272,
+        "kind": "task",
+        "thread": "thread-272",
+        "prompt": "Review retry logic in the ingest worker",
+        "origin": {
+          "task": "task-372",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 648000,
+        "started_ago_ms": 506400
+      }
+    },
+    {
+      "cid": 273,
+      "name": "Bastien",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "lamp",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3873000,
+      "last_seen_ago_ms": 2000,
+      "run": "r273",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 207349,
+        "output_tokens": 35481,
+        "cache_read_tokens": 229473,
+        "cache_write_tokens": 29469
+      },
+      "queue": 0,
+      "work": {
+        "id": 5273,
+        "cid": 273,
+        "kind": "task",
+        "thread": "thread-273",
+        "prompt": "Summarise last week of board comments",
+        "origin": {
+          "task": "task-373",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 649500,
+        "started_ago_ms": 507600
+      }
+    },
+    {
+      "cid": 274,
+      "name": "Cosima",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "teapot",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3874000,
+      "last_seen_ago_ms": 3000,
+      "run": "r274",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 207962,
+        "output_tokens": 35578,
+        "cache_read_tokens": 229874,
+        "cache_write_tokens": 29522
+      },
+      "queue": 1,
+      "work": {
+        "id": 5274,
+        "cid": 274,
+        "kind": "task",
+        "thread": "thread-274",
+        "prompt": "Reconcile the treasury journal against invoices",
+        "origin": {
+          "task": "task-374",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 651000,
+        "started_ago_ms": 508800
+      }
+    },
+    {
+      "cid": 275,
+      "name": "Dorian",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "unicycle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3875000,
+      "last_seen_ago_ms": 4000,
+      "run": "r275",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 208575,
+        "output_tokens": 35675,
+        "cache_read_tokens": 230275,
+        "cache_write_tokens": 29575
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 276,
+      "name": "Elin",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "pogo",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3876000,
+      "last_seen_ago_ms": 5000,
+      "run": "r276",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 209188,
+        "output_tokens": 35772,
+        "cache_read_tokens": 230676,
+        "cache_write_tokens": 29628
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 277,
+      "name": "Faris",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "mole",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3877000,
+      "last_seen_ago_ms": 6000,
+      "run": "r277",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 209801,
+        "output_tokens": 35869,
+        "cache_read_tokens": 231077,
+        "cache_write_tokens": 29681
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 278,
+      "name": "Gwen",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "snail",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3878000,
+      "last_seen_ago_ms": 7000,
+      "run": "r278",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 210414,
+        "output_tokens": 35966,
+        "cache_read_tokens": 231478,
+        "cache_write_tokens": 29734
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 279,
+      "name": "Hamid",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ufo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3879000,
+      "last_seen_ago_ms": 8000,
+      "run": "r279",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 211027,
+        "output_tokens": 36063,
+        "cache_read_tokens": 231879,
+        "cache_write_tokens": 29787
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 280,
+      "name": "Ingrid",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "owl",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3880000,
+      "last_seen_ago_ms": 2000,
+      "run": "r280",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 211640,
+        "output_tokens": 36160,
+        "cache_read_tokens": 232280,
+        "cache_write_tokens": 29840
+      },
+      "queue": 1,
+      "work": {
+        "id": 5280,
+        "cid": 280,
+        "kind": "chat",
+        "thread": "thread-280",
+        "prompt": "Write release notes for the next build",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 660000,
+        "started_ago_ms": 516000
+      }
+    },
+    {
+      "cid": 281,
+      "name": "Joaquin",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "crab",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3881000,
+      "last_seen_ago_ms": 3000,
+      "run": "r281",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 212253,
+        "output_tokens": 36257,
+        "cache_read_tokens": 232681,
+        "cache_write_tokens": 29893
+      },
+      "queue": 2,
+      "work": {
+        "id": 5281,
+        "cid": 281,
+        "kind": "task",
+        "thread": "thread-281",
+        "prompt": "Check certificate rotation on the mail relay",
+        "origin": {
+          "task": "task-381",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 661500,
+        "started_ago_ms": 517200
+      }
+    },
+    {
+      "cid": 282,
+      "name": "Kalani",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "octo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3882000,
+      "last_seen_ago_ms": 4000,
+      "run": "r282",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 212866,
+        "output_tokens": 36354,
+        "cache_read_tokens": 233082,
+        "cache_write_tokens": 29946
+      },
+      "queue": 0,
+      "work": {
+        "id": 5282,
+        "cid": 282,
+        "kind": "task",
+        "thread": "thread-282",
+        "prompt": "Compare two candidate embedding models",
+        "origin": {
+          "task": "task-382",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 663000,
+        "started_ago_ms": 518400
+      }
+    },
+    {
+      "cid": 283,
+      "name": "Leoni",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "bee",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3883000,
+      "last_seen_ago_ms": 5000,
+      "run": "r283",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 213479,
+        "output_tokens": 36451,
+        "cache_read_tokens": 233483,
+        "cache_write_tokens": 29999
+      },
+      "queue": 1,
+      "work": {
+        "id": 5283,
+        "cid": 283,
+        "kind": "task",
+        "thread": "thread-283",
+        "prompt": "Re-verify the lab job manifests",
+        "origin": {
+          "task": "task-383",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 664500,
+        "started_ago_ms": 519600
+      }
+    },
+    {
+      "cid": 284,
+      "name": "Mikko",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "frog",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3884000,
+      "last_seen_ago_ms": 6000,
+      "run": "r284",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 214092,
+        "output_tokens": 36548,
+        "cache_read_tokens": 233884,
+        "cache_write_tokens": 30052
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 285,
+      "name": "Noor",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "duck",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3885000,
+      "last_seen_ago_ms": 7000,
+      "run": "r285",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 214705,
+        "output_tokens": 36645,
+        "cache_read_tokens": 234285,
+        "cache_write_tokens": 30105
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 286,
+      "name": "Otto",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ghost",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3886000,
+      "last_seen_ago_ms": 8000,
+      "run": "r286",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 215318,
+        "output_tokens": 36742,
+        "cache_read_tokens": 234686,
+        "cache_write_tokens": 30158
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 287,
+      "name": "Palmer",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ladybug",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3887000,
+      "last_seen_ago_ms": 2000,
+      "run": "r287",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 215931,
+        "output_tokens": 36839,
+        "cache_read_tokens": 235087,
+        "cache_write_tokens": 30211
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 288,
+      "name": "Quinta",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "astro",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3888000,
+      "last_seen_ago_ms": 3000,
+      "run": "r288",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 216544,
+        "output_tokens": 36936,
+        "cache_read_tokens": 235488,
+        "cache_write_tokens": 30264
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 289,
+      "name": "Renzo",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "mushroom",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3889000,
+      "last_seen_ago_ms": 4000,
+      "run": "r289",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 217157,
+        "output_tokens": 37033,
+        "cache_read_tokens": 235889,
+        "cache_write_tokens": 30317
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 290,
+      "name": "Saskia",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "penguin",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3890000,
+      "last_seen_ago_ms": 5000,
+      "run": "r290",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 217770,
+        "output_tokens": 37130,
+        "cache_read_tokens": 236290,
+        "cache_write_tokens": 30370
+      },
+      "queue": 2,
+      "work": {
+        "id": 5290,
+        "cid": 290,
+        "kind": "chat",
+        "thread": "thread-290",
+        "prompt": "Benchmark the 8-bit checkpoint on the new cards",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 675000,
+        "started_ago_ms": 528000
+      }
+    },
+    {
+      "cid": 291,
+      "name": "Tobin",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "turtle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3891000,
+      "last_seen_ago_ms": 6000,
+      "run": "r291",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 218383,
+        "output_tokens": 37227,
+        "cache_read_tokens": 236691,
+        "cache_write_tokens": 30423
+      },
+      "queue": 0,
+      "work": {
+        "id": 5291,
+        "cid": 291,
+        "kind": "task",
+        "thread": "thread-291",
+        "prompt": "Patch the flaky scheduler test",
+        "origin": {
+          "task": "task-391",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 676500,
+        "started_ago_ms": 529200
+      }
+    },
+    {
+      "cid": 292,
+      "name": "Ulrika",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "pup",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3892000,
+      "last_seen_ago_ms": 7000,
+      "run": "r292",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 218996,
+        "output_tokens": 37324,
+        "cache_read_tokens": 237092,
+        "cache_write_tokens": 30476
+      },
+      "queue": 1,
+      "work": {
+        "id": 5292,
+        "cid": 292,
+        "kind": "task",
+        "thread": "thread-292",
+        "prompt": "Refresh the connector kit docs",
+        "origin": {
+          "task": "task-392",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 678000,
+        "started_ago_ms": 530400
+      }
+    },
+    {
+      "cid": 293,
+      "name": "Vesna",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "cube",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3893000,
+      "last_seen_ago_ms": 8000,
+      "run": "r293",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 219609,
+        "output_tokens": 37421,
+        "cache_read_tokens": 237493,
+        "cache_write_tokens": 30529
+      },
+      "queue": 2,
+      "work": {
+        "id": 5293,
+        "cid": 293,
+        "kind": "task",
+        "thread": "thread-293",
+        "prompt": "Audit the sanctions log for stale entries",
+        "origin": {
+          "task": "task-393",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 679500,
+        "started_ago_ms": 531600
+      }
+    },
+    {
+      "cid": 294,
+      "name": "Wilhelm",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "jelly",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3894000,
+      "last_seen_ago_ms": 2000,
+      "run": "r294",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 220222,
+        "output_tokens": 37518,
+        "cache_read_tokens": 237894,
+        "cache_write_tokens": 30582
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 295,
+      "name": "Xiomara",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bunny",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3895000,
+      "last_seen_ago_ms": 3000,
+      "run": "r295",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 220835,
+        "output_tokens": 37615,
+        "cache_read_tokens": 238295,
+        "cache_write_tokens": 30635
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 296,
+      "name": "Yuki",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "rover",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3896000,
+      "last_seen_ago_ms": 4000,
+      "run": "r296",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 221448,
+        "output_tokens": 37712,
+        "cache_read_tokens": 238696,
+        "cache_write_tokens": 30688
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 297,
+      "name": "Zosia",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "hover",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3897000,
+      "last_seen_ago_ms": 5000,
+      "run": "r297",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 222061,
+        "output_tokens": 37809,
+        "cache_read_tokens": 239097,
+        "cache_write_tokens": 30741
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 298,
+      "name": "Arlo",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "kitty",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3898000,
+      "last_seen_ago_ms": 6000,
+      "run": "r298",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 222674,
+        "output_tokens": 37906,
+        "cache_read_tokens": 239498,
+        "cache_write_tokens": 30794
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 299,
+      "name": "Brisa",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "tv",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3899000,
+      "last_seen_ago_ms": 7000,
+      "run": "r299",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 223287,
+        "output_tokens": 38003,
+        "cache_read_tokens": 239899,
+        "cache_write_tokens": 30847
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 300,
+      "name": "Cyrus",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "can",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3900000,
+      "last_seen_ago_ms": 8000,
+      "run": "r300",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 223900,
+        "output_tokens": 38100,
+        "cache_read_tokens": 240300,
+        "cache_write_tokens": 30900
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 301,
+      "name": "Dina",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "lamp",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3901000,
+      "last_seen_ago_ms": 2000,
+      "run": "r301",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 224513,
+        "output_tokens": 38197,
+        "cache_read_tokens": 240701,
+        "cache_write_tokens": 30953
+      },
+      "queue": 1,
+      "work": {
+        "id": 5301,
+        "cid": 301,
+        "kind": "task",
+        "thread": "thread-301",
+        "prompt": "Draft the migration plan for the ledger tables",
+        "origin": {
+          "task": "task-401",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 691500,
+        "started_ago_ms": 541200
+      }
+    },
+    {
+      "cid": 302,
+      "name": "Eero",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "teapot",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3902000,
+      "last_seen_ago_ms": 3000,
+      "run": "r302",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 225126,
+        "output_tokens": 38294,
+        "cache_read_tokens": 241102,
+        "cache_write_tokens": 31006
+      },
+      "queue": 2,
+      "work": {
+        "id": 5302,
+        "cid": 302,
+        "kind": "task",
+        "thread": "thread-302",
+        "prompt": "Review retry logic in the ingest worker",
+        "origin": {
+          "task": "task-402",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 693000,
+        "started_ago_ms": 542400
+      }
+    },
+    {
+      "cid": 303,
+      "name": "Fiora",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "unicycle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3903000,
+      "last_seen_ago_ms": 4000,
+      "run": "r303",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 225739,
+        "output_tokens": 38391,
+        "cache_read_tokens": 241503,
+        "cache_write_tokens": 31059
+      },
+      "queue": 0,
+      "work": {
+        "id": 5303,
+        "cid": 303,
+        "kind": "task",
+        "thread": "thread-303",
+        "prompt": "Summarise last week of board comments",
+        "origin": {
+          "task": "task-403",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 694500,
+        "started_ago_ms": 543600
+      }
+    },
+    {
+      "cid": 304,
+      "name": "Gabe",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "pogo",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3904000,
+      "last_seen_ago_ms": 5000,
+      "run": "r304",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 226352,
+        "output_tokens": 38488,
+        "cache_read_tokens": 241904,
+        "cache_write_tokens": 31112
+      },
+      "queue": 1,
+      "work": {
+        "id": 5304,
+        "cid": 304,
+        "kind": "task",
+        "thread": "thread-304",
+        "prompt": "Reconcile the treasury journal against invoices",
+        "origin": {
+          "task": "task-404",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 696000,
+        "started_ago_ms": 544800
+      }
+    },
+    {
+      "cid": 305,
+      "name": "Hedda",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "mole",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3905000,
+      "last_seen_ago_ms": 6000,
+      "run": "r305",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 226965,
+        "output_tokens": 38585,
+        "cache_read_tokens": 242305,
+        "cache_write_tokens": 31165
+      },
+      "queue": 2,
+      "work": {
+        "id": 5305,
+        "cid": 305,
+        "kind": "chat",
+        "thread": "thread-305",
+        "prompt": "Benchmark the 8-bit checkpoint on the new cards",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 697500,
+        "started_ago_ms": 546000
+      }
+    },
+    {
+      "cid": 306,
+      "name": "Ilan",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "snail",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3906000,
+      "last_seen_ago_ms": 7000,
+      "run": "r306",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 227578,
+        "output_tokens": 38682,
+        "cache_read_tokens": 242706,
+        "cache_write_tokens": 31218
+      },
+      "queue": 0,
+      "work": {
+        "id": 5306,
+        "cid": 306,
+        "kind": "task",
+        "thread": "thread-306",
+        "prompt": "Patch the flaky scheduler test",
+        "origin": {
+          "task": "task-406",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 699000,
+        "started_ago_ms": 547200
+      }
+    },
+    {
+      "cid": 307,
+      "name": "Jolene",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "ufo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3907000,
+      "last_seen_ago_ms": 8000,
+      "run": "r307",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 228191,
+        "output_tokens": 38779,
+        "cache_read_tokens": 243107,
+        "cache_write_tokens": 31271
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 308,
+      "name": "Karim",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "owl",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3908000,
+      "last_seen_ago_ms": 2000,
+      "run": "r308",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 228804,
+        "output_tokens": 38876,
+        "cache_read_tokens": 243508,
+        "cache_write_tokens": 31324
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 309,
+      "name": "Liesl",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "crab",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3909000,
+      "last_seen_ago_ms": 3000,
+      "run": "r309",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 229417,
+        "output_tokens": 38973,
+        "cache_read_tokens": 243909,
+        "cache_write_tokens": 31377
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 310,
+      "name": "Maren",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "octo",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3910000,
+      "last_seen_ago_ms": 4000,
+      "run": "r310",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 230030,
+        "output_tokens": 39070,
+        "cache_read_tokens": 244310,
+        "cache_write_tokens": 31430
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 311,
+      "name": "Neve",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bee",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3911000,
+      "last_seen_ago_ms": 5000,
+      "run": "r311",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 230643,
+        "output_tokens": 39167,
+        "cache_read_tokens": 244711,
+        "cache_write_tokens": 31483
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 312,
+      "name": "Oskar",
+      "role": "breeder",
+      "role_label": "Breeder",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "frog",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3912000,
+      "last_seen_ago_ms": 6000,
+      "run": "r312",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 231256,
+        "output_tokens": 39264,
+        "cache_read_tokens": 245112,
+        "cache_write_tokens": 31536
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 313,
+      "name": "Petra",
+      "role": "architect",
+      "role_label": "Architect",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "duck",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3913000,
+      "last_seen_ago_ms": 7000,
+      "run": "r313",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 231869,
+        "output_tokens": 39361,
+        "cache_read_tokens": 245513,
+        "cache_write_tokens": 31589
+      },
+      "queue": 1,
+      "work": {
+        "id": 5313,
+        "cid": 313,
+        "kind": "task",
+        "thread": "thread-313",
+        "prompt": "Re-verify the lab job manifests",
+        "origin": {
+          "task": "task-413",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 709500,
+        "started_ago_ms": 555600
+      }
+    },
+    {
+      "cid": 314,
+      "name": "Rowan",
+      "role": "auditor",
+      "role_label": "Auditor",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "ghost",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3914000,
+      "last_seen_ago_ms": 8000,
+      "run": "r314",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 232482,
+        "output_tokens": 39458,
+        "cache_read_tokens": 245914,
+        "cache_write_tokens": 31642
+      },
+      "queue": 2,
+      "work": {
+        "id": 5314,
+        "cid": 314,
+        "kind": "task",
+        "thread": "thread-314",
+        "prompt": "Summarise the incident timeline for the storage stall",
+        "origin": {
+          "task": "task-414",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 711000,
+        "started_ago_ms": 556800
+      }
+    },
+    {
+      "cid": 315,
+      "name": "Selma",
+      "role": "builder",
+      "role_label": "Builder",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "ladybug",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3915000,
+      "last_seen_ago_ms": 2000,
+      "run": "r315",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 233095,
+        "output_tokens": 39555,
+        "cache_read_tokens": 246315,
+        "cache_write_tokens": 31695
+      },
+      "queue": 0,
+      "work": {
+        "id": 5315,
+        "cid": 315,
+        "kind": "chat",
+        "thread": "thread-315",
+        "prompt": "Triage the overnight alert backlog",
+        "origin": {
+          "task": null,
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 712500,
+        "started_ago_ms": 558000
+      }
+    },
+    {
+      "cid": 316,
+      "name": "Tamsin",
+      "role": "edge-operator",
+      "role_label": "Edge operator",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "astro",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3916000,
+      "last_seen_ago_ms": 3000,
+      "run": "r316",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 233708,
+        "output_tokens": 39652,
+        "cache_read_tokens": 246716,
+        "cache_write_tokens": 31748
+      },
+      "queue": 1,
+      "work": {
+        "id": 5316,
+        "cid": 316,
+        "kind": "task",
+        "thread": "thread-316",
+        "prompt": "Draft the migration plan for the ledger tables",
+        "origin": {
+          "task": "task-416",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 714000,
+        "started_ago_ms": 559200
+      }
+    },
+    {
+      "cid": 317,
+      "name": "Urban",
+      "role": "finance",
+      "role_label": "Finance",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "mushroom",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3917000,
+      "last_seen_ago_ms": 4000,
+      "run": "r317",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 234321,
+        "output_tokens": 39749,
+        "cache_read_tokens": 247117,
+        "cache_write_tokens": 31801
+      },
+      "queue": 2,
+      "work": {
+        "id": 5317,
+        "cid": 317,
+        "kind": "task",
+        "thread": "thread-317",
+        "prompt": "Review retry logic in the ingest worker",
+        "origin": {
+          "task": "task-417",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 715500,
+        "started_ago_ms": 560400
+      }
+    },
+    {
+      "cid": 318,
+      "name": "Verity",
+      "role": "incident",
+      "role_label": "Incident",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "penguin",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3918000,
+      "last_seen_ago_ms": 5000,
+      "run": "r318",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 234934,
+        "output_tokens": 39846,
+        "cache_read_tokens": 247518,
+        "cache_write_tokens": 31854
+      },
+      "queue": 0,
+      "work": {
+        "id": 5318,
+        "cid": 318,
+        "kind": "task",
+        "thread": "thread-318",
+        "prompt": "Summarise last week of board comments",
+        "origin": {
+          "task": "task-418",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 717000,
+        "started_ago_ms": 561600
+      }
+    },
+    {
+      "cid": 319,
+      "name": "Wes",
+      "role": "librarian",
+      "role_label": "Librarian",
+      "tier": "worker",
+      "status": "working",
+      "kind": "llm",
+      "species": "turtle",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3919000,
+      "last_seen_ago_ms": 6000,
+      "run": "r319",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 235547,
+        "output_tokens": 39943,
+        "cache_read_tokens": 247919,
+        "cache_write_tokens": 31907
+      },
+      "queue": 1,
+      "work": {
+        "id": 5319,
+        "cid": 319,
+        "kind": "task",
+        "thread": "thread-319",
+        "prompt": "Reconcile the treasury journal against invoices",
+        "origin": {
+          "task": "task-419",
+          "motion": null,
+          "from_cid": null
+        },
+        "created_ago_ms": 718500,
+        "started_ago_ms": 562800
+      }
+    },
+    {
+      "cid": 320,
+      "name": "Yara",
+      "role": "mayor",
+      "role_label": "Mayor",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "pup",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3920000,
+      "last_seen_ago_ms": 7000,
+      "run": "r320",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 236160,
+        "output_tokens": 40040,
+        "cache_read_tokens": 248320,
+        "cache_write_tokens": 31960
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 321,
+      "name": "Ada",
+      "role": "mayor-office",
+      "role_label": "Mayor · office",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "cube",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3921000,
+      "last_seen_ago_ms": 8000,
+      "run": "r321",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 236773,
+        "output_tokens": 40137,
+        "cache_read_tokens": 248721,
+        "cache_write_tokens": 32013
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 322,
+      "name": "Bram",
+      "role": "planner",
+      "role_label": "Planner",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "jelly",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3922000,
+      "last_seen_ago_ms": 2000,
+      "run": "r322",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 237386,
+        "output_tokens": 40234,
+        "cache_read_tokens": 249122,
+        "cache_write_tokens": 32066
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 323,
+      "name": "Cass",
+      "role": "qa",
+      "role_label": "QA",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "bunny",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3923000,
+      "last_seen_ago_ms": 3000,
+      "run": "r323",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 237999,
+        "output_tokens": 40331,
+        "cache_read_tokens": 249523,
+        "cache_write_tokens": 32119
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 324,
+      "name": "Dario",
+      "role": "release",
+      "role_label": "Release",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "rover",
+      "model": "claude-haiku-5-5",
+      "model_override": "claude-haiku-5-5",
+      "model_source": "agent",
+      "connected_ago_ms": 3924000,
+      "last_seen_ago_ms": 4000,
+      "run": "r324",
+      "vm": 0,
+      "usage": {
+        "input_tokens": 238612,
+        "output_tokens": 40428,
+        "cache_read_tokens": 249924,
+        "cache_write_tokens": 32172
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 325,
+      "name": "Esme",
+      "role": "researcher",
+      "role_label": "Researcher",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "hover",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3925000,
+      "last_seen_ago_ms": 5000,
+      "run": "r325",
+      "vm": 1,
+      "usage": {
+        "input_tokens": 239225,
+        "output_tokens": 40525,
+        "cache_read_tokens": 250325,
+        "cache_write_tokens": 32225
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 326,
+      "name": "Finn",
+      "role": "reviewer",
+      "role_label": "Reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "kitty",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3926000,
+      "last_seen_ago_ms": 6000,
+      "run": "r326",
+      "vm": 2,
+      "usage": {
+        "input_tokens": 239838,
+        "output_tokens": 40622,
+        "cache_read_tokens": 250726,
+        "cache_write_tokens": 32278
+      },
+      "queue": 0,
+      "work": null
+    },
+    {
+      "cid": 327,
+      "name": "Greta",
+      "role": "security-reviewer",
+      "role_label": "Security reviewer",
+      "tier": "worker",
+      "status": "idle",
+      "kind": "llm",
+      "species": "tv",
+      "model": "claude-sonnet-5",
+      "model_override": null,
+      "model_source": "default",
+      "connected_ago_ms": 3927000,
+      "last_seen_ago_ms": 7000,
+      "run": "r327",
+      "vm": 3,
+      "usage": {
+        "input_tokens": 240451,
+        "output_tokens": 40719,
+        "cache_read_tokens": 251127,
+        "cache_write_tokens": 32331
+      },
+      "queue": 0,
+      "work": null
+    }
+  ]
+}

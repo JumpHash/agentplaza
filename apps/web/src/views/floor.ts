@@ -12,7 +12,7 @@ import { go, href } from '../router';
 import { agents, on } from '../store';
 import { ago, button, clip } from '../ui/components';
 import { plazaPaused } from '../ui/plaza-control';
-import { floorName, roleLabel } from '../roles';
+import { floorName } from '../roles';
 import { h } from '../ui/dom';
 import { makeRobot, ROBOT_PALETTE, speciesOf, type Robot, type RobotState } from './floor3d/robot';
 import { buildBackdropSteps } from './floor3d/outskirts';
@@ -42,7 +42,7 @@ import { prewarmFx } from './floor3d/robots/fx';
 import { DIRECT_START, EntrySequence, beginEntry, ownRoomMaterials, prepareFade, setReturn, takeEntry, takeReturn, type EntryContext, type Exterior, type Handoff, type Pose } from './floor3d/entry';
 import type { Cleanup } from './index';
 import { engineWanted, mountEngine } from './engine-mount';
-import { LABEL_CSS, agentTally, machineCard, machineFacts, machineSubtitle } from './floor-popup';
+import { LABEL_CSS, agentCardChildren, agentTally, machineCard, machineFacts, machineSubtitle } from './floor-popup';
 
 export { agentTally, gibText, gpuLines, machineFacts, machineSubtitle } from './floor-popup';
 
@@ -1436,15 +1436,6 @@ function mountPlaza(root: HTMLElement, machineId: string | null, warm: { fleet: 
     }
   }
 
-  /** The role as a square tag, striped in the district's colour as on the robot's label. */
-  function roleTag(role: string, hue: number): HTMLElement {
-    const t = document.createElement('span');
-    t.className = 'floor-tag';
-    t.style.borderLeftColor = `hsl(${hue} 55% 34%)`;
-    t.textContent = roleLabel(role);
-    return t;
-  }
-
   function renderCard(): void {
     if (!selected) {
       card.hidden = true;
@@ -1458,10 +1449,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null, warm: { fleet: 
     const sig = [name, line].join('|');
     if (sig === cardSig) return;
     cardSig = sig;
-    card.replaceChildren(
-      h('header.floor-card-head', null, h('strong', null, name), roleTag(a.role, selected.district.hue)),
-      h('div.floor-card-activity', null, line),
-    );
+    card.replaceChildren(...agentCardChildren(name, a.role, selected.district.hue, line));
   }
 
   function positionCard(): void {

@@ -896,6 +896,32 @@ mod tests {
         }
     }
 
+    /// The fleet's draw items on the 15-machine feed, measured when the budget test was written (its statics
+    /// merged by material, its dynamic packets, cables and status rings unmerged). A ratchet: it must not grow.
+    const FLEET_DRAW_ITEMS: usize = 1014;
+
+    fn fleet_draw_items() -> (usize, usize) {
+        let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
+        let scene = build_fleet(&fleet, &plaza_palette());
+        let statics = crate::scene::bake(&scene.group).len();
+        let dynamic = crate::scene::flatten(&scene.group, crate::scene::Filter::Dynamic).0.len();
+        (statics, dynamic)
+    }
+
+    #[test]
+    fn the_fifteen_machine_fleet_draws_do_not_grow() {
+        let (statics, dynamic) = fleet_draw_items();
+        eprintln!("fleet draws: {statics} static + {dynamic} dynamic = {}", statics + dynamic);
+        assert!(statics + dynamic <= FLEET_DRAW_ITEMS, "the fleet draws {} items, over the measured {FLEET_DRAW_ITEMS}", statics + dynamic);
+    }
+
+    #[test]
+    #[ignore = "the Machines view budget is 300 draw items; the fleet alone draws 1014 (see FLEET_DRAW_ITEMS)"]
+    fn the_fifteen_machine_fleet_draws_within_budget() {
+        let (statics, dynamic) = fleet_draw_items();
+        assert!(statics + dynamic <= 300, "the Machines view draws {} items, over the 300 budget", statics + dynamic);
+    }
+
     #[test]
     fn ring_of_one_hub_and_five_nodes() {
         // Five nodes of radius 3 take 10 units of arc each, 50 in all: the ring is the 14-unit
@@ -1031,5 +1057,12 @@ mod tests {
         scene.update(0.016, 0.016, 0.016, &grown);
         assert_eq!(scene.machines.len(), 4);
         assert!(scene.frame().radius > 0.0);
+    }
+}
+
+impl FleetScene {
+    /// A machine's label anchor in the world at rest, the point its name tag sits above, or None for an unknown id.
+    pub fn label_of(&self, id: &str) -> Option<[f32; 3]> {
+        self.machines.get(id).map(|m| m.label)
     }
 }

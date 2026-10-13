@@ -2,7 +2,7 @@ import { api, type Agent, type FleetResponse } from '../api';
 import { floorName } from '../roles';
 import { button } from '../ui/components';
 import type { Cleanup } from './index';
-import { LABEL_CSS, machineCard } from './floor-popup';
+import { agentCardChildren, LABEL_CSS, machineCard } from './floor-popup';
 
 /** The wasm glue's file name at the dist root: esbuild replaces this at build time (null when the wasm crate is missing). */
 declare const __APZ_ENGINE_JS__: string | null;
@@ -29,6 +29,7 @@ interface WebEngine {
   on_pick(cb: (kind: 'machine' | 'robot' | 'none', id: string) => void): void;
   on_labels(cb: (labels: LabelMeta[]) => void): void;
   label_positions(): Float32Array;
+  screen_of(kind: 'machine' | 'robot', id: string): Float32Array;
   busy(): boolean;
   frames_drawn(): number;
   draw_calls(): number;
@@ -68,10 +69,13 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   const name = glueName();
   if (name === '') return () => undefined; // no engine in this build: show nothing
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'position:relative;width:100%;height:100%;overflow:hidden';
+  // The three.js Floor's stage (floor.css): the canvas is sized as there.
+  wrap.className = 'floor-stage floor-stage-3d';
+  wrap.style.cssText = 'position:relative;overflow:hidden';
   const canvas = document.createElement('canvas');
+  canvas.className = 'floor-canvas';
   // touch-action none: the pointer drives the orbit on touch screens too, so the page does not pan or zoom under it.
-  canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
+  canvas.style.cssText = 'touch-action:none';
   const labelLayer = document.createElement('div');
   labelLayer.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
   const status = document.createElement('div');
@@ -88,6 +92,9 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   card.hidden = true;
   wrap.append(canvas, labelLayer, status, crumb, card);
   root.append(wrap);
+  // The Floor fills the window (floor.css): the view and the page take the three.js Floor's floor mode.
+  root.classList.add('floor-view');
+  document.body.classList.add('floor-mode');
 
   let closed = false;
   let engine: WebEngine | null = null;
@@ -96,6 +103,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   let agents: Agent[] | null = null;
   let agentNames = new Map<number, string>();
   let popupId: string | null = null; // the machine the popup shows, or null
+  let pickedRobot: number | null = null; // the robot whose agent card shows (in a board), or null
   let cardKey = ''; // what the popup last rendered, so a poll that changes nothing does not rebuild it
   let entered: string | null = null; // the machine whose board is shown, or null for the Machines view
   let pendingEnter: string | null = initialId; // a direct load's machine, entered once the fleet is in the engine
@@ -114,6 +122,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
 
   const hideCard = (): void => {
     popupId = null;
+    pickedRobot = null;
     cardKey = '';
     card.hidden = true;
     card.replaceChildren();
@@ -148,6 +157,35 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     cardKey = key;
     const built = machineCard(m, agentName, () => enterMachine(m.id), Date.now());
     card.replaceChildren(bar, ...built.children);
+  };
+
+  /** A robot's agent card (the three.js Floor's): its floor name and role, and its activity line from the engine's label. */
+  const renderRobot = (): void => {
+    const cid = pickedRobot;
+    if (cid === null) return;
+    const meta = labels.find((l) => l.cid === cid);
+    const a = agents?.find((x) => x.cid === cid);
+    const name = a ? floorName(a) : (meta?.name ?? `agent ${cid}`);
+    const role = a?.role ?? meta?.role ?? '';
+    const line = meta?.line ?? '';
+    const hue = meta?.hue ?? 0;
+    card.hidden = false;
+    const key = JSON.stringify([name, role, line, hue]);
+    if (key === cardKey) return;
+    cardKey = key;
+    card.replaceChildren(...agentCardChildren(name, role, hue, line));
+  };
+
+  /** The popup or the robot's card beside its point on the stage (the three.js cards' placement, kept on the stage). */
+  const anchorCard = (): void => {
+    if (engine === null || card.hidden) return;
+    const at = popupId !== null ? engine.screen_of('machine', popupId) : pickedRobot !== null ? engine.screen_of('robot', String(pickedRobot)) : null;
+    if (at === null || at.length < 2) return;
+    const left = Math.min(Math.max(at[0]! + 24, 8), Math.max(8, wrap.clientWidth - 308));
+    const top = Math.min(Math.max(at[1]! - 120, 8), Math.max(8, wrap.clientHeight - card.offsetHeight - 8));
+    card.style.right = 'auto';
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
   };
 
   const enterMachine = (id: string): void => {
@@ -206,6 +244,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     api.agents().then(
       (list) => {
         agents = list;
+        if (pickedRobot !== null) renderRobot();
         agentNames = new Map(list.map((a) => [a.cid, floorName(a)] as [number, string]));
         pushFeed();
       },
@@ -234,6 +273,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   /** The engine's label text changed (`on_labels`): the names and the status squares, in the engine's order. */
   const setLabels = (list: LabelMeta[]): void => {
     labels = list;
+    if (pickedRobot !== null) renderRobot();
     list.forEach((meta, i) => {
       const p = labelAt(i);
       if (p.name.textContent !== meta.name) p.name.textContent = meta.name;
@@ -281,6 +321,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
         placeLabels();
       }
     }
+    anchorCard();
     raf = requestAnimationFrame(frame);
   };
 
@@ -289,9 +330,19 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     if (ev.key !== 'Escape' || closed) return;
     ev.stopImmediatePropagation();
     if (popupId !== null) closePopup();
+    else if (pickedRobot !== null) hideCard();
     else if (entered !== null) backToMachines();
   };
   window.addEventListener('keydown', onKey, true);
+
+  // Browser Back from a board (#/floor/<id> to #/floor) is the engine's Back, not a remount: this capture listener on
+  // the window runs before the router's hashchange listener, and stops it there.
+  const onHash = (ev: HashChangeEvent): void => {
+    if (closed || entered === null || location.hash !== '#/floor') return;
+    ev.stopImmediatePropagation();
+    backToMachines();
+  };
+  window.addEventListener('hashchange', onHash, true);
 
   const glueUrl = new URL('./' + name, document.baseURI).href;
   const backend: 'auto' | 'webgl2' = new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto';
@@ -307,8 +358,16 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
       if (closed) return;
       if (kind === 'machine') {
         if (entered === null) {
+          pickedRobot = null;
           popupId = id;
           renderPopup();
+        }
+      } else if (kind === 'robot') {
+        if (entered !== null) {
+          popupId = null;
+          cardKey = '';
+          pickedRobot = Number(id);
+          renderRobot();
         }
       } else if (kind === 'none') hideCard();
     });
@@ -333,9 +392,12 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
 
   return () => {
     closed = true;
+    root.classList.remove('floor-view');
+    document.body.classList.remove('floor-mode');
     for (const t of timers) window.clearInterval(t);
     if (raf !== 0) cancelAnimationFrame(raf);
     window.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('hashchange', onHash, true);
     const e = engine;
     engine = null;
     e?.destroy();

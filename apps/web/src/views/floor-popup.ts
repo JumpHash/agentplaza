@@ -4,6 +4,7 @@ import type { FleetMachine } from '../api';
 import { href } from '../router';
 import { ago, button } from '../ui/components';
 import { h } from '../ui/dom';
+import { roleLabel } from '../roles';
 
 /** How many agent names the popup lists before "+N more". */
 export const FLEET_CARD_AGENTS = 6;
@@ -101,4 +102,16 @@ export function machineCard(
     h('footer.machine-card-foot', null, button('ENTER', onEnter, { kind: 'primary' })),
   ];
   return { children, seen };
+}
+
+/** The role as a square tag, striped in the district's colour as on the robot's label. */
+export function roleTag(role: string, hue: number): HTMLElement {
+  const t = h('span.floor-tag', null, roleLabel(role));
+  t.style.borderLeftColor = `hsl(${hue} 55% 34%)`;
+  return t;
+}
+
+/** The robot's agent card: the name and role tag, then the activity line. The three.js Floor and the engine share it. */
+export function agentCardChildren(name: string, role: string, hue: number, line: string): HTMLElement[] {
+  return [h('header.floor-card-head', null, h('strong', null, name), roleTag(role, hue)), h('div.floor-card-activity', null, line)];
 }

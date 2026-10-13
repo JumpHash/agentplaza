@@ -988,6 +988,12 @@ pub fn bake(root: &Obj) -> Vec<Draw> {
             DrawKind::Mesh if d.material.shading == Shading::Toon => {
                 (format!("c|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod), Some(d.material.color.to_array()))
             }
+            // Basic meshes tint the same way (their program multiplies in the vertex colour too), but only plain
+            // geometry: a batch cannot carry another part's vertex colours or slots, and needs one uv and normal layout.
+            DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.colors.is_empty() && d.geo.slots.is_empty() => (
+                format!("b|{}|{}|{}|{}|{}|{}|{}", class_of(&d.material), d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.geo.uvs.is_empty(), d.geo.normals.is_empty()),
+                Some(d.material.color.to_array()),
+            ),
             DrawKind::Mesh => (format!("m|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod), None),
             // Outlines share one ink: key them by nothing but their kind.
             DrawKind::Outline => (format!("o|{}|{}", d.render_order, d.lod), None),
