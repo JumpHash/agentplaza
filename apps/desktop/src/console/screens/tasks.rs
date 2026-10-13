@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, mouse_area, pick_list, row, text_editor, text_input, Space};
-use iced::{Alignment, Color, Element, Length, Task};
+use iced::widget::text::Wrapping;
+use iced::widget::{button, column, container, mouse_area, pick_list, row, scrollable, text, text_editor, text_input, Space};
+use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -16,6 +17,13 @@ use super::Id;
 use crate::console::ui::{self, Tone};
 use crate::console::{client, Ctx};
 use crate::theme::{self, CRIT, OK};
+
+/// A card's goal: serif semibold, as the web's task title.
+const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+/// Bold mono, for lane counts and the elapsed time.
+const MONO_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
+/// Serif italic, for the line an empty lane shows.
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
 
 /// The four lanes: their label and the line an empty lane shows.
 const LANES: [(&str, &str); 4] = [
@@ -422,12 +430,19 @@ fn title_of(goal: &str) -> String {
     goal.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled task").to_string()
 }
 
+/// Text for a card, held to about `n` characters: whitespace is flattened, the cut falls at a
+/// word boundary where there is one, and an ellipsis ends it. The full text stays in the task page.
 fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() > n {
-        format!("{}…", s.chars().take(n).collect::<String>())
-    } else {
-        s.to_string()
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= n {
+        return flat;
     }
+    let cut: String = flat.chars().take(n).collect();
+    let head = match cut.rfind(' ') {
+        Some(i) if i * 2 > n => &cut[..i],
+        _ => cut.as_str(),
+    };
+    format!("{}…", head.trim_end())
 }
 
 fn now_ms() -> i64 {
@@ -598,7 +613,10 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(summary(state));
         parts.push(board(state));
     }
-    ui::sheet(ui::view_head("Tasks", actions), column(parts).spacing(22).into())
+    // The page scrolls under its head: the lanes are as tall as their cards, not the window.
+    // The right padding keeps the scrollbar clear of the last lane.
+    let page = column(parts).spacing(22).padding(Padding { top: 0.0, right: 14.0, bottom: 0.0, left: 0.0 });
+    ui::sheet(ui::view_head("Tasks", actions), scrollable(page).into())
 }
 
 /// The head strip: a figure for each lane, and how many agents are working now.
@@ -630,7 +648,11 @@ fn board<'a>(state: &'a State) -> Element<'a, Msg> {
         .map(|(i, (label, idle))| {
             let items: Vec<Element<'a, Msg>> = sorted.iter().filter(|t| lane_of(&t.state) == i).map(|t| task_card(state, *t)).collect();
             let count = items.len();
-            let body: Element<'a, Msg> = if items.is_empty() { ui::faint(*idle).into() } else { column(items).spacing(10).into() };
+            let body: Element<'a, Msg> = if items.is_empty() {
+                text(*idle).font(ITALIC).size(15.0).color(ui::INK_3).into()
+            } else {
+                column(items).spacing(10).into()
+            };
             lane(i, label, count, body)
         })
         .collect();
@@ -641,26 +663,27 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
     let mark = container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
     let head = row![
         mark,
-        ui::mono(label.to_uppercase(), 11.5, ui::INK),
+        text(label.to_uppercase()).font(MONO_BOLD).size(11.5).color(ui::INK),
         Space::new().width(Length::Fill),
-        ui::mono(count.to_string(), 11.5, ui::INK_3),
+        text(count.to_string()).font(MONO_BOLD).size(12.0).color(ui::INK_2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    container(column![head, body].spacing(12))
+    container(column![head, ui::hairline(), body].spacing(12))
         .padding(12.0)
         .width(Length::FillPortion(1))
         .style(theme::boxed)
         .into()
 }
 
-/// One card. Open cards show the role and budget; in-progress cards the assignee's latest step
-/// and the elapsed time; done cards the note and the span; failed cards the reason.
+/// One card, drawn as the web draws it: the id and role on top, the goal in serif semibold
+/// held to two lines, the assignee, then a footer that depends on the lane. Every line is
+/// clipped or wrapped to the card, so no text pushes past its edge.
 fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
     let now = now_ms();
     let status = status_of(&state.agents, t.agent_cid);
-    let dot = container(Space::new().width(7.0).height(7.0)).style(theme::swatch(status_color(&status)));
-    let who = row![dot, assignee_link(state, t.agent_cid)].spacing(8).align_y(Alignment::Center);
+    let dot = container(Space::new().width(8.0).height(8.0)).style(theme::swatch(status_color(&status)));
+    let who = row![dot, assignee_link(state, t.agent_cid)].spacing(8).align_y(Alignment::Center).width(Length::Fill);
     let role = t.role.as_deref().map(|r| role_label(&state.agents, r)).unwrap_or_else(|| "Any role".to_string());
     let detail: Element<'a, Msg> = match lane_of(&t.state) {
         1 => {
@@ -669,51 +692,108 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
                 .and_then(|cid| state.activity.get(&cid).cloned())
                 .unwrap_or_else(|| "waiting for the first step…".to_string());
             column![
-                ui::mono(line, 11.0, ui::INK_2),
-                row![ui::faint("elapsed"), ui::mono(fmt_elapsed(now - t.updated_at), 11.0, ui::INK)].spacing(8),
+                stripe(),
+                container(mono_text(clip(&line, 36), 11.5, ui::INK_2)).width(Length::Fill).clip(true),
+                meta_row(meta_text("elapsed".to_string()), ui::mono(fmt_elapsed(now - t.updated_at), 12.0, ui::INK).into()),
             ]
-            .spacing(6)
+            .spacing(8)
+            .width(Length::Fill)
             .into()
         }
         2 => {
             let mut items: Vec<Element<'a, Msg>> = Vec::new();
             if let Some(note) = t.note.as_deref() {
-                items.push(ui::prose(clip(note, 120)).size(13.0).into());
+                items.push(serif_text(clip(note, 110), 13.5, ui::INK_2));
             }
-            items.push(meta(vec![
-                ui::faint(format!("took {}", fmt_span(t.updated_at - t.created_at))).into(),
-                ui::faint(ago(t.updated_at)).into(),
-            ]));
-            column(items).spacing(6).into()
+            items.push(meta_row(
+                meta_text(format!("took {}", fmt_span(t.updated_at - t.created_at))),
+                meta_text(ago(t.updated_at)),
+            ));
+            column(items).spacing(8).width(Length::Fill).into()
         }
         3 => {
             let reason = t.outcome.clone().or_else(|| t.note.clone()).unwrap_or_else(|| label_of(&t.state));
             column![
-                ui::prose(reason).size(13.0),
-                meta(vec![ui::faint(label_of(&t.state)).into(), ui::faint(ago(t.updated_at)).into()]),
+                serif_text(clip(&reason, 160), 13.0, CRIT),
+                meta_row(meta_text(label_of(&t.state)), meta_text(ago(t.updated_at))),
             ]
-            .spacing(6)
+            .spacing(8)
             .into()
         }
-        _ => meta(vec![
-            ui::faint(format!("budget {}", fmt_num(t.budget))).into(),
-            ui::faint(format!("created {}", ago(t.created_at))).into(),
-        ]),
+        _ => meta_row(
+            meta_text(format!("budget {}", fmt_num(t.budget))),
+            meta_text(format!("created {}", ago(t.created_at))),
+        ),
     };
     let top = row![
-        ui::mono(t.id.clone(), 10.5, ui::INK_3),
+        mono_text(t.id.clone(), 11.0, ui::INK_3),
         Space::new().width(Length::Fill),
-        ui::faint(role),
+        mono_text(clip(&role, 18).to_uppercase(), 10.5, ui::INK_2),
     ]
-    .align_y(Alignment::Center);
-    let body = column![top, ui::mono(title_of(&t.goal), 13.0, ui::INK), who, detail].spacing(8);
-    mouse_area(container(body).padding(12.0).width(Length::Fill).style(theme::boxed))
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
+    let title = container(
+        text(clip(&title_of(&t.goal), 42))
+            .font(TITLE_FONT)
+            .size(15.0)
+            .line_height(1.35)
+            .color(ui::INK)
+            .wrapping(Wrapping::WordOrGlyph),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(41.0))
+    .clip(true);
+    let body = column![top, title, who, container(detail).width(Length::Fill)].spacing(10).width(Length::Fill);
+    mouse_area(container(body).padding(12.0).width(Length::Fill).style(card_box))
         .on_press(Msg::Open(t.id.clone()))
         .into()
 }
 
-fn meta<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    row(items).spacing(12).into()
+/// The card's box: the paper colour under a rule, as the web's task card.
+fn card_box(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(ui::INK),
+        background: Some(theme::PAPER.into()),
+        border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+        ..container::Style::default()
+    }
+}
+
+/// A solid fill with no border, for the running stripe.
+fn solid(color: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_theme: &Theme| container::Style { background: Some(color.into()), ..container::Style::default() }
+}
+
+/// The orange dashed rule under a running card; the web's stripe, drawn still and clipped.
+fn stripe<'a>() -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    for _ in 0..9 {
+        parts.push(container(Space::new().width(10.0).height(3.0)).style(solid(ui::SIGNAL)).into());
+        parts.push(Space::new().width(10.0).height(3.0).into());
+    }
+    container(row(parts)).width(Length::Fill).clip(true).into()
+}
+
+/// Mono text, for the card's labels and figures.
+fn mono_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
+    text(s).font(theme::MONO).size(size).color(color).wrapping(Wrapping::None).into()
+}
+
+
+/// The faint mono of a card's footer.
+fn meta_text<'a>(s: String) -> Element<'a, Msg> {
+    mono_text(s, 11.5, ui::INK_3)
+}
+
+/// Serif text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
+/// run past the card.
+fn serif_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
+    text(s).font(theme::SERIF).size(size).color(color).wrapping(Wrapping::WordOrGlyph).into()
+}
+
+/// A footer line: the left item at the left edge, the right item at the right edge.
+fn meta_row<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, Msg> {
+    row![left, Space::new().width(Length::Fill), right].spacing(10).align_y(Alignment::Center).width(Length::Fill).into()
 }
 
 /// The assignee's name, which opens the agent; "Unassigned" when there is none.
@@ -840,4 +920,20 @@ fn kv<'a>(key: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
         .spacing(8)
         .align_y(Alignment::Center)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip;
+
+    #[test]
+    fn clip_keeps_short_text_and_flattens_whitespace() {
+        assert_eq!(clip("  one\n two  ", 20), "one two");
+    }
+
+    #[test]
+    fn clip_cuts_at_a_word_and_ends_with_an_ellipsis() {
+        assert_eq!(clip("RE-ISSUE of task t3 with a workable budget", 20), "RE-ISSUE of task t3…");
+        assert!(clip("a0b7ecad718094baff717f1c29be4b2a0b7ecad718094baff", 20).ends_with('…'));
+    }
 }
