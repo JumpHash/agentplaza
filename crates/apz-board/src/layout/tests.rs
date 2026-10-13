@@ -244,24 +244,43 @@ fn plate_rests_on_highest_support() {
 }
 
 
-/// Every board kind at 1, 4, 8 and 20 agents returns, or fails with its panic, in under 2 s. Timing is meaningful only in
-/// release (`cargo test -p apz-board --release`), so the test is ignored in debug builds. Each outcome is printed as TIMING.
+/// Every board kind at 1, 4, 8 and 20 agents. Each case is timed and its outcome recorded before anything is asserted, so one
+/// failure does not hide the rest. Timing is meaningful only in release (`cargo test -p apz-board --release`), so the test is
+/// ignored in debug builds. Each case prints `TIMING kind n ms seated|failed(reason)`.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "layout timing is asserted in release only")]
 fn every_layout_returns_within_two_seconds() {
-    let mut over = Vec::new();
+    let mut slow = Vec::new();
+    let mut failed = Vec::new();
     for kind in KINDS {
         for n in COUNTS {
             let t = std::time::Instant::now();
-            let seated = std::panic::catch_unwind(|| layout(kind, &input(n, 0))).is_ok();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| layout(kind, &input(n, 0))));
             let secs = t.elapsed().as_secs_f64();
-            eprintln!("TIMING {kind} n={n}: {secs:.3} s, {}", if seated { "seated" } else { "failed" });
+            let status = match &outcome {
+                Ok(_) => "seated".to_string(),
+                Err(payload) => format!("failed({})", panic_text(payload.as_ref())),
+            };
+            eprintln!("TIMING {kind} {n} {:.0} {status}", secs * 1000.0);
             if secs >= 2.0 {
-                over.push(format!("{kind} n={n}: {secs:.3} s"));
+                slow.push(format!("{kind} n={n}: {secs:.3} s"));
+            }
+            if outcome.is_err() {
+                failed.push(format!("{kind} n={n}"));
             }
         }
     }
-    assert!(over.is_empty(), "over the 2 s budget: {over:?}");
+    assert!(failed.is_empty(), "agents do not seat: {failed:?}");
+    assert!(slow.is_empty(), "over the 2 s budget: {slow:?}");
+}
+
+/// The text of a caught panic's payload.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "panic".to_string())
 }
 
 /// Baseline dump for the layout-speed work: writes `layout(kind, input(4, 0))` as pretty JSON to
