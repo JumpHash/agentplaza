@@ -5,16 +5,19 @@
 // &p_cores=16&e_cores=8&gpu_cores=76. The model's params are number inputs in the controls. The URL is kept in step.
 // model=fleet shows the Machines scene (fleet.ts) with GET /v1/fleet from the live hub; &fake=N adds N made-up
 // machines of mixed kinds, vendors and statuses to it (for judging the ring, cables and statuses).
+// &zoom=8 divides the camera's distance by 8 (close-ups of small parts).
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { h } from '../ui/dom';
+import { boardWithRooms } from './floor3d/board-rooms';
 import type { Cleanup } from './index';
 import { api, type FleetMachine, type FleetResponse, type FleetStatus } from '../api';
 import { MODELS, PALETTE } from './floor3d/hardware-index';
-import { buildModel, currentPulses, placeAtom, traceMeshes, validate, type Built, type Model, type Pulses, type Status } from './floor3d/hardware';
+import { buildModel, currentPulses, placeAtom, traceStrips, validate, type Built, type Model, type Pulses, type Status } from './floor3d/hardware';
 import { buildFleet, type FleetScene } from './floor3d/fleet';
 import { sky, toonMat } from './floor3d/toon';
+import { createMeter, startPixelRatio } from './floor3d/perf';
 
 const STATUSES: string[] = ['online', 'draining', 'offline', 'revoked'];
 const CAMS = ['iso', 'top', 'front', 'side', 'anchor'] as const;
@@ -22,6 +25,8 @@ type Cam = (typeof CAMS)[number];
 
 interface LabState {
   model: string;
+  /** Board models: n synthetic agents seated (one per roster role) with their rooms (&rooms=n). */
+  rooms: number;
   gpus: number;
   status: Status;
   working: number;
@@ -30,13 +35,15 @@ interface LabState {
   cam: Cam;
   /** Made-up fleet machines added to model=fleet (&fake=N). */
   fake: number;
+  /** Camera distance divisor (&zoom=N): above 1 comes closer. */
+  zoom: number;
   /** Model params from the URL (every numeric key the lab does not use itself); they override the model's defaults. */
   params: Record<string, number>;
 }
 
-const DEFAULT_STATE: LabState = { model: 'exterior/workstation', gpus: 0, status: 'online', working: 0, open: 0, traces: true, cam: 'iso', fake: 0, params: {} };
+const DEFAULT_STATE: LabState = { model: 'exterior/workstation', rooms: 0, gpus: 0, status: 'online', working: 0, open: 0, traces: true, cam: 'iso', fake: 0, zoom: 1, params: {} };
 /** The query keys the lab reads for itself; any other key that holds a number is a model param. */
-const LAB_KEYS = new Set(['model', 'gpus', 'status', 'working', 'open', 'traces', 'cam', 'fake']);
+const LAB_KEYS = new Set(['model', 'gpus', 'status', 'working', 'open', 'traces', 'cam', 'fake', 'zoom', 'rooms']);
 const PARAM_KEY = /^[a-z_]\w*$/;
 
 const NO_FLEET: FleetResponse = { machines: [], links: [] };
@@ -99,6 +106,7 @@ function readState(hash: string): LabState {
   });
   return {
     model: q.get('model') ?? DEFAULT_STATE.model,
+    rooms: Math.round(num('rooms', 0, 40, DEFAULT_STATE.rooms)),
     gpus: Math.round(num('gpus', 0, 2, DEFAULT_STATE.gpus)),
     status: (STATUSES.includes(status) ? status : DEFAULT_STATE.status) as Status,
     working: Math.round(num('working', 0, 6, DEFAULT_STATE.working)),
@@ -106,6 +114,7 @@ function readState(hash: string): LabState {
     traces: q.has('traces') ? q.get('traces') !== '0' : DEFAULT_STATE.traces,
     cam: (CAMS as readonly string[]).includes(cam) ? (cam as Cam) : DEFAULT_STATE.cam,
     fake: Math.round(num('fake', 0, 12, DEFAULT_STATE.fake)),
+    zoom: num('zoom', 0.1, 50, DEFAULT_STATE.zoom),
     params,
   };
 }
@@ -131,7 +140,9 @@ function disposeTree(root: THREE.Object3D): void {
 
 function newRenderer(): THREE.WebGLRenderer | null {
   try {
-    return new THREE.WebGLRenderer({ antialias: true });
+    const r = new THREE.WebGLRenderer({ antialias: true });
+    r.debug.checkShaderErrors = false; // the info log is read only when a shader fails
+    return r;
   } catch {
     return null;
   }
@@ -228,6 +239,7 @@ export function mount(root: HTMLElement): Cleanup {
       cam: state.cam,
     });
     if (state.fake) q.set('fake', String(state.fake));
+    if (state.zoom !== 1) q.set('zoom', String(state.zoom));
     for (const [k, v] of Object.entries(state.params)) q.set(k, String(v));
     history.replaceState(null, '', `#/hardware-lab?${q.toString().replace(/%2F/g, '/')}`);
   };
@@ -240,7 +252,7 @@ export function mount(root: HTMLElement): Cleanup {
     renderErrors();
     return () => {};
   }
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(startPixelRatio());
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   const canvas = renderer.domElement;
@@ -300,7 +312,7 @@ export function mount(root: HTMLElement): Cleanup {
   /** Frames a sphere: the camera's preset (iso by default), at a distance that fits it. */
   function frameSphere(at: [number, number, number], radius: number, cam: Cam): void {
     const centre = new THREE.Vector3(...at);
-    const dist = (Math.max(radius, 1) / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 0.9;
+    const dist = ((Math.max(radius, 1) / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 0.9) / state.zoom;
     const dir = { iso: [0.8, 0.6, 1], top: [0, 1, 0.0001], front: [0, 0, 1], side: [1, 0, 0], anchor: [0.8, 0.6, 1] }[cam];
     camera.position.copy(centre).add(new THREE.Vector3(...dir).normalize().multiplyScalar(dist));
     controls.target.copy(centre);
@@ -316,8 +328,9 @@ export function mount(root: HTMLElement): Cleanup {
     }
     const [w, hgt, d] = model?.size ?? [4, 6, 4];
     if (cam === 'anchor' && model?.anchors?.camera) {
-      camera.position.set(...model.anchors.camera.at);
-      controls.target.set(...model.anchors.camera.look);
+      const look = new THREE.Vector3(...model.anchors.camera.look);
+      camera.position.copy(look).add(new THREE.Vector3(...model.anchors.camera.at).sub(look).divideScalar(state.zoom));
+      controls.target.copy(look);
     } else {
       frameSphere([0, hgt / 2, 0], Math.hypot(w, hgt, d) / 2, cam);
     }
@@ -381,10 +394,12 @@ export function mount(root: HTMLElement): Cleanup {
       let traces: THREE.Group | null = null;
       let pulses: Pulses | null = null;
       if (model.view === 'board') {
-        traces = traceMeshes(model);
+        traces = traceStrips(model);
         built.group.add(traces);
         pulses = currentPulses(model);
         built.group.add(pulses.group);
+        // The test hook: n synthetic agents seated on the board, with their rooms (the same layout and room build as the Floor).
+        if (state.rooms > 0) built.group.add(boardWithRooms(model, state.rooms, { ...state.params, gpus: state.gpus }).group);
       }
       const atom = placeAtom(model, built.group);
       scene.add(built.group);
@@ -413,7 +428,9 @@ export function mount(root: HTMLElement): Cleanup {
   // ---- Frames --------------------------------------------------------------------------------
   const clock = new THREE.Clock();
   let time = 0;
+  const meter = createMeter(renderer, 'lab', stage);
   renderer.setAnimationLoop(() => {
+    if (!meter.ready()) return; // a hidden tab or an offscreen canvas does not draw
     const dt = Math.min(clock.getDelta(), 0.1);
     time += dt;
     if (current) {
@@ -432,13 +449,16 @@ export function mount(root: HTMLElement): Cleanup {
     }
     if (fleetScene && fleetView) fleetScene.update(dt, fleetView);
     controls.update();
-    renderer.render(scene, camera);
+    if (current) current.built.frame(camera, controls.target, dt);
+    if (fleetScene) fleetScene.lod(camera, controls.target, dt);
+    meter.render(scene, camera);
   });
 
   return () => {
     alive = false;
     window.removeEventListener('hashchange', onHash);
     renderer.setAnimationLoop(null);
+    meter.dispose();
     ro.disconnect();
     controls.dispose();
     if (current) {

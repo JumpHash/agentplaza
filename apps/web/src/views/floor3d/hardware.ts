@@ -5,7 +5,10 @@
 // plaza's atom at anchors.atom.
 
 import * as THREE from 'three';
+import { supportField, type SupportField } from './ground';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { bakeStatic, colourKey } from './bake';
 import { outline, toonMat } from './toon';
 import { xenonAtom, type PropPalette } from './props';
 import { MODELS, PALETTE } from './hardware-index';
@@ -82,6 +85,16 @@ export interface Part {
   anim?: Anim;
   tag?: Tag;
   label?: Label;
+  /** Distance-based visibility against the model's radius: 1 medium (near), 2 fine (only up close). */
+  detail?: 1 | 2;
+  /** Fades to a quarter opacity while it stands between the camera and the point it looks at. */
+  cutaway?: boolean;
+  /**
+   * Fixed to its parent or the board by something other than resting on it: a fan on its shroud, a cable, a glow,
+   * a light. The grounding audit (ground.ts) does not check its bottom. Solids that are not attached rest on what is
+   * under them, and the audit reports a bottom that floats or sinks.
+   */
+  attached?: boolean;
   children?: Part[];
 }
 
@@ -94,6 +107,8 @@ export interface Slot {
   top: number;
   rect: [number, number, number, number];
   capacity: number;
+  /** True when a tall part stands over the slot from the default camera: no rooms go there. */
+  occluded?: boolean;
 }
 
 export interface Trace {
@@ -146,7 +161,7 @@ const TAGS: readonly string[] = ['status', 'activity', 'fan', 'screen'];
 const AXES: readonly string[] = ['x', 'y', 'z'];
 const SLOT_TYPES: readonly string[] = ['cpu', 'gpu', 'memory', 'storage', 'network', 'power', 'io', 'soc', 'modem', 'bmc', 'npu'];
 const MODEL_KEYS = ['schema', 'kind', 'view', 'size', 'params', 'parts', 'anchors', 'slots', 'traces'];
-const PART_KEYS = ['id', 'geo', 'use', 'at', 'rot', 'scale', 'mat', 'outline', 'repeat', 'when', 'anim', 'tag', 'label', 'children'];
+const PART_KEYS = ['id', 'geo', 'use', 'at', 'rot', 'scale', 'mat', 'outline', 'repeat', 'when', 'anim', 'tag', 'label', 'detail', 'cutaway', 'attached', 'children'];
 const MATERIAL_KEYS = ['color', 'emissive', 'glow', 'opacity', 'additive', 'flat'];
 const ANCHOR_KEYS = ['label', 'port', 'camera', 'open', 'atom'];
 const ANIM_KEYS = ['spin', 'pulse', 'blink', 'slide', 'swing'];
@@ -390,6 +405,7 @@ function checkPart(p: unknown, path: string, c: VCtx): void {
   if (p.scale !== undefined && !(isNum(p.scale) ? p.scale > 0 : isVec3(p.scale) && p.scale.every((v) => v > 0)))
     fail(c, `${path}.scale`, 'expected a positive number or [sx, sy, sz]');
   if (p.mat !== undefined) checkMatRef(p.mat, `${path}.mat`, c);
+  if (p.attached !== undefined && typeof p.attached !== 'boolean') fail(c, `${path}.attached`, 'expected true or false');
   if (p.outline !== undefined && typeof p.outline !== 'boolean') fail(c, `${path}.outline`, 'expected true or false');
   if (p.repeat !== undefined) {
     const r: unknown = p.repeat;
@@ -408,6 +424,8 @@ function checkPart(p: unknown, path: string, c: VCtx): void {
   if (p.when !== undefined) checkWhen(p.when, `${path}.when`, c);
   if (p.anim !== undefined) checkAnim(p.anim, `${path}.anim`, c);
   if (p.tag !== undefined && !(typeof p.tag === 'string' && TAGS.includes(p.tag))) fail(c, `${path}.tag`, `must be one of ${TAGS.join(', ')}`);
+  if (p.detail !== undefined && p.detail !== 1 && p.detail !== 2) fail(c, `${path}.detail`, 'expected 1 (medium) or 2 (fine)');
+  if (p.cutaway !== undefined && typeof p.cutaway !== 'boolean') fail(c, `${path}.cutaway`, 'expected true or false');
   if (p.label !== undefined) {
     if (!isObj(p.label)) fail(c, `${path}.label`, 'expected {text, size, color}');
     else shape(p.label, `${path}.label`, c, { text: [true, isStr, 'text'], size: [false, (v) => isNum(v) && v > 0, 'size > 0'], color: [false, isHex, 'hex color'] });
@@ -446,6 +464,7 @@ function checkSlots(slots: unknown[], c: VCtx): void {
       top: [true, isNum, 'top (the surface height)'],
       rect: [true, (v) => isVec(v, 4) && (v as number[])[2]! > 0 && (v as number[])[3]! > 0, 'rect [x, z, w, d] with w, d above zero'],
       capacity: [true, (v) => Number.isInteger(v) && (v as number) >= 1, 'capacity (a whole number of rooms, 1 or more)'],
+      occluded: [false, (v) => typeof v === 'boolean', 'occluded (true: a tall part stands over the slot from the default camera; no rooms)'],
     });
     if (isStr(s.id)) {
       if (seen.has(s.id)) fail(c, `${path}.id`, `duplicate slot id "${s.id}"`);
@@ -499,15 +518,16 @@ function makeGeometry(g: Geo): THREE.BufferGeometry {
   }
 }
 
-/** A material for a part. Animated or tagged parts get their own (they change); the rest share. */
-function makeMaterial(m: Material, own: boolean): THREE.Material {
+/** A material for a part. Animated or tagged parts get their own (they change); the rest share. A decal sits on a solid's top, so it wins the depth test there. */
+function makeMaterial(m: Material, own: boolean, decal = false): THREE.Material {
   const emissive = m.emissive ?? (own ? m.color : undefined);
   const glow = m.glow ?? (emissive ? (m.emissive ? 1 : 0.5) : 0);
   const additive = m.additive ?? false;
   const opacity = m.opacity ?? 1;
   const transparent = opacity < 1 || additive;
   const blending = additive ? THREE.AdditiveBlending : THREE.NormalBlending;
-  if (m.flat) return new THREE.MeshBasicMaterial({ color: m.color, transparent, opacity, blending, depthWrite: !transparent, toneMapped: !additive });
+  const offset = decal ? { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 } : {};
+  if (m.flat) return new THREE.MeshBasicMaterial({ color: m.color, transparent, opacity, blending, depthWrite: !transparent, toneMapped: !additive, ...offset });
   return toonMat({
     color: m.color,
     emissive: emissive ?? '#000000',
@@ -516,6 +536,7 @@ function makeMaterial(m: Material, own: boolean): THREE.Material {
     opacity,
     blending,
     depthWrite: !transparent,
+    ...offset,
   });
 }
 
@@ -526,41 +547,136 @@ interface Ctx {
   parts: Map<string, THREE.Object3D>;
   mats: Map<string, THREE.Material>;
   drivers: ((t: number, dt: number, st: Required<HwState>) => void)[];
+  /** The part the open state moves (anchors.open): it stays its own object. */
+  moving: string;
 }
 
-function materialFor(p: Part, ctx: Ctx): THREE.Material {
+/** What a part inherits from its ancestors: its detail level, whether it fades (cutaway), whether it moves. */
+interface Inherit {
+  detail?: 1 | 2;
+  cutaway: boolean;
+  dynamic: boolean;
+}
+const NO_INHERIT: Inherit = { cutaway: false, dynamic: false };
+
+/** A part whose bounding radius (scaled, in units) reaches this casts and takes shadows; smaller ones do not. */
+const SHADOW_RADIUS = 2;
+/** Solids under this bounding radius get no outline. */
+const OUTLINE_RADIUS = 0.6;
+/**
+ * Detail 1 is seen while the camera is within this many units of the part (its merged mesh's bounds, in the
+ * model's frame), detail 2 within the second: the board's default view shows both; a far view (the fleet)
+ * drops them, and zooming toward a region brings them back.
+ */
+const DETAIL_RANGE: Record<1 | 2, number> = { 1: 160, 2: 90 };
+/** The hysteresis band around a detail threshold, as a fraction: a switch needs to clear it both ways. */
+const DETAIL_BAND = 0.05;
+/** A cutaway part fades to this opacity in FADE_SECONDS, and back. */
+const CUTAWAY_OPACITY = 0.15;
+const FADE_SECONDS = 0.3;
+
+const noRaycast = (): void => {};
+
+/** A material for a part. Animated or tagged parts get their own (they change); the rest share. */
+function materialFor(p: Part, ctx: Ctx, self: Inherit): THREE.Material {
   const own = p.tag !== undefined || p.anim?.pulse !== undefined || p.anim?.blink !== undefined;
   const ref = p.mat;
   const m: Material = typeof ref === 'string' ? (ctx.palette[ref] ?? DEFAULT_MAT) : (ref ?? DEFAULT_MAT);
-  const key = JSON.stringify(m);
+  const decal = p.geo?.type === 'plane' || p.geo?.type === 'ring';
+  // A cutaway part fades on its own: it never shares its material.
+  if (self.cutaway) return makeMaterial(m, own, decal);
+  const key = JSON.stringify(m) + (decal ? '|decal' : '');
   if (!own && ctx.mats.has(key)) return ctx.mats.get(key)!;
-  const mat = makeMaterial(m, own);
+  const mat = makeMaterial(m, own, decal);
   if (!own) ctx.mats.set(key, mat);
   return mat;
 }
 
-/** Silkscreen text on a part's top: a canvas texture on a flat plane. Null without a DOM (tests). */
-function labelMesh(l: Label, top: number): THREE.Mesh | null {
-  if (typeof document === 'undefined') return null;
+// ---- Labels: one canvas atlas for every silkscreen label of the floor ------------------------
+
+const ATLAS_COLS = 4;
+const ATLAS_ROWS = 8;
+const CELL_W = 512;
+const CELL_H = 128;
+interface Atlas {
+  canvas: HTMLCanvasElement;
+  tex: THREE.CanvasTexture;
+  mat: THREE.MeshBasicMaterial;
+  cells: Map<string, number>;
+}
+let atlas: Atlas | null | undefined;
+
+function atlasOf(): Atlas | null {
+  if (atlas !== undefined) return atlas;
+  if (typeof document === 'undefined') return (atlas = null);
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 128;
-  const cx = canvas.getContext('2d');
-  if (!cx) return null;
+  canvas.width = CELL_W * ATLAS_COLS;
+  canvas.height = CELL_H * ATLAS_ROWS;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+  atlas = { canvas, tex, mat, cells: new Map() };
+  return atlas;
+}
+
+function drawLabel(cx: CanvasRenderingContext2D, x0: number, y0: number, l: Label): void {
   cx.fillStyle = l.color ?? '#e8eadf';
   cx.font = 'bold 84px ui-monospace, Menlo, Consolas, monospace';
   cx.textAlign = 'center';
   cx.textBaseline = 'middle';
-  cx.fillText(l.text, 256, 68);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
+  cx.fillText(l.text, x0 + CELL_W / 2, y0 + 68);
+}
+
+/** Silkscreen text on a part's top: a flat plane showing its cell of the atlas (its own canvas when the atlas is full). */
+function labelMesh(l: Label, top: number): THREE.Mesh | null {
+  if (typeof document === 'undefined') return null;
   const size = l.size ?? 0.6;
   const geo = new THREE.PlaneGeometry(size * 4, size);
   geo.rotateX(-Math.PI / 2);
-  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
+  let mat: THREE.Material | null = null;
+  const a = atlasOf();
+  if (a) {
+    const key = `${l.text}|${l.color ?? ''}`;
+    let cell = a.cells.get(key);
+    if (cell === undefined && a.cells.size < ATLAS_COLS * ATLAS_ROWS) {
+      cell = a.cells.size;
+      a.cells.set(key, cell);
+      const cx = a.canvas.getContext('2d');
+      if (cx) {
+        const x0 = (cell % ATLAS_COLS) * CELL_W;
+        const y0 = Math.floor(cell / ATLAS_COLS) * CELL_H;
+        cx.clearRect(x0, y0, CELL_W, CELL_H);
+        drawLabel(cx, x0, y0, l);
+      }
+      a.tex.needsUpdate = true;
+    }
+    if (cell !== undefined) {
+      // PlaneGeometry's corners: top-left, top-right, bottom-left, bottom-right; the canvas's top row is v = 1.
+      const col = cell % ATLAS_COLS;
+      const row = Math.floor(cell / ATLAS_COLS);
+      const u0 = col / ATLAS_COLS;
+      const u1 = (col + 1) / ATLAS_COLS;
+      const v0 = 1 - (row + 1) / ATLAS_ROWS;
+      const v1 = 1 - row / ATLAS_ROWS;
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute([u0, v1, u1, v1, u0, v0, u1, v0], 2));
+      mat = a.mat;
+    }
+  }
+  if (!mat) {
+    const canvas = document.createElement('canvas');
+    canvas.width = CELL_W;
+    canvas.height = CELL_H;
+    const cx = canvas.getContext('2d');
+    if (!cx) return null;
+    drawLabel(cx, 0, 0, l);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+  }
+  const mesh = new THREE.Mesh(geo, mat);
   mesh.position.y = top + 0.02;
   mesh.userData.outline = false;
-  mesh.raycast = () => {};
+  mesh.raycast = noRaycast;
   return mesh;
 }
 
@@ -568,19 +684,42 @@ function labelMesh(l: Label, top: number): THREE.Mesh | null {
 
 export interface Built {
   group: THREE.Group;
+  /** The upward faces of the solids before the bake, in the model's frame (the plates rest on them: board-rooms.ts). */
+  support: SupportField;
   /** Every part by id; a `use`d part's inner parts are keyed "outer/inner", repeats "id#n". */
   parts: Map<string, THREE.Object3D>;
   /** Per frame: advances the tags and the animations from the machine's state. */
   update: (dt: number, state?: HwState) => void;
+  /**
+   * Per frame, with the camera and the point it looks at (world space): shows the detail parts by distance
+   * (with hysteresis) and fades the cutaway parts that stand between the camera and that point. With an area (a world
+   * box: the plaza the view frames), a cutaway part over that area also fades, so tall parts (GPU shrouds) never hide
+   * the plaza.
+   */
+  frame: (camera: THREE.Camera, focus: THREE.Vector3, dt: number, area?: THREE.Box3) => void;
 }
 
 export interface BuildOptions {
   resolve?: Resolver;
   palette?: Palette;
+  /** Keep every part as its own mesh (no bake, rays on): the grounding audit reads the parts (ground.ts). */
+  unbaked?: boolean;
 }
 
 /** Builds a model's three.js group with the given params (gpus...). Unset params take the model's defaults. */
 export function buildModel(model: Model, params: Params = {}, opts: BuildOptions = {}): Built {
+  const it = buildModelSteps(model, params, opts);
+  for (;;) {
+    const step = it.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * buildModel, resumable: yields after each top-level part is built and after each part is inked and baked, so a
+ * caller can spend a frame budget on it (floor3d/warm.ts). Returns the Built when done. buildModel drains it at once.
+ */
+export function* buildModelSteps(model: Model, params: Params = {}, opts: BuildOptions = {}): Generator<void, Built, void> {
   const ctx: Ctx = {
     params: { ...(model.params ?? {}), ...params },
     palette: opts.palette ?? PALETTE,
@@ -588,13 +727,56 @@ export function buildModel(model: Model, params: Params = {}, opts: BuildOptions
     parts: new Map(),
     mats: new Map(),
     drivers: [],
+    moving: model.anchors?.open ?? '',
   };
   const group = new THREE.Group();
   for (const p of model.parts) {
-    const o = buildPart(p, ctx, '');
-    if (o) group.add(o);
+    const o = buildPart(p, ctx, '', NO_INHERIT);
+    if (o) {
+      group.add(o);
+      outline(o, OUTLINE_RADIUS); // the back-face hulls: inked before the bake, as the whole-model build did
+    }
+    yield;
   }
-  outline(group);
+  // Then merge what never moves: one mesh per material and detail level, across all the parts. The bake runs one
+  // material group a step: a group is the meshes of one material key (its colour key, else the material), and the other
+  // groups are hidden for that bake (bakeStatic leaves hidden meshes alone). Each group bakes as the whole-model bake did.
+  const keyMemo = new Map<THREE.Material, string>(); // a material's key, once: the bake's steps read every mesh each step
+  const keyOf = (m: THREE.Mesh): string => {
+    const mat = m.material as THREE.Material;
+    let k = keyMemo.get(mat);
+    if (k === undefined) {
+      k = colourKey(mat) ?? `uuid:${mat.uuid}`;
+      keyMemo.set(mat, k);
+    }
+    return k;
+  };
+  const support = supportField(group); // before the bake: the baked meshes are merged and not ray-pickable
+  const keys = new Set<string>();
+  if (!opts.unbaked) group.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) keys.add(keyOf(o as THREE.Mesh));
+  });
+  for (const k of keys) {
+    const hidden: THREE.Mesh[] = [];
+    group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.visible && keyOf(m) !== k) {
+        m.visible = false;
+        hidden.push(m);
+      }
+    });
+    bakeStatic(group);
+    for (const m of hidden) m.visible = true;
+    yield;
+  }
+  if (!opts.unbaked) group.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).raycast = noRaycast; // nothing here is picked by a ray
+  });
+  const levels = detailLevels(group);
+  const cut = cutaways(group);
+  const local = new THREE.Vector3();
+  const box = new THREE.Box3();
+
   let time = 0;
   const update = (dt: number, state: HwState = {}): void => {
     time += dt;
@@ -606,17 +788,169 @@ export function buildModel(model: Model, params: Params = {}, opts: BuildOptions
     };
     for (const d of ctx.drivers) d(time, dt, st);
   };
-  return { group, parts: ctx.parts, update };
+  // A cutaway part over the plaza: its footprint overlaps the area's (in world x/z) and its top is above the area's
+  // floor, so from a raised view it stands over the robots.
+  const overArea = (area: THREE.Box3, b: THREE.Box3): boolean =>
+    b.max.y > area.min.y && b.min.x < area.max.x && b.max.x > area.min.x && b.min.z < area.max.z && b.max.z > area.min.z;
+  const frame = (camera: THREE.Camera, focus: THREE.Vector3, dt: number, area?: THREE.Box3): void => {
+    group.updateWorldMatrix(true, false);
+    group.worldToLocal(local.copy(camera.position));
+    for (const L of levels) {
+      const dist = L.box.distanceToPoint(local);
+      const T = DETAIL_RANGE[L.level];
+      const on = L.on ? dist < T * (1 + DETAIL_BAND) : dist < T * (1 - DETAIL_BAND);
+      if (on !== L.on) {
+        L.on = on;
+        L.obj.visible = on;
+      }
+    }
+    const step = dt / FADE_SECONDS;
+    for (const c of cut) {
+      box.setFromObject(c.obj, false);
+      const target = segmentHits(camera.position, focus, box) || (area !== undefined && overArea(area, box)) ? 1 : 0;
+      c.p += Math.max(-step, Math.min(step, target - c.p));
+      const k = c.p * c.p * (3 - 2 * c.p);
+      const opacity = 1 - (1 - CUTAWAY_OPACITY) * k;
+      for (const m of c.mats) {
+        m.opacity = opacity;
+        m.transparent = opacity < 1;
+        m.depthWrite = opacity >= 1;
+        const u = (m as THREE.ShaderMaterial).uniforms;
+        if (u?.fade) u.fade.value = opacity; // the ink hulls read their own fade
+      }
+    }
+  };
+  return { group, parts: ctx.parts, update, frame, support };
 }
 
-function buildPart(p: Part, ctx: Ctx, scope: string): THREE.Object3D | null {
+interface DetailLevel {
+  level: 1 | 2;
+  on: boolean;
+  obj: THREE.Object3D;
+  /** Its bounds in the model's frame (static: detail parts never move). */
+  box: THREE.Box3;
+}
+
+/**
+ * The objects that show by distance, each with its level and bounds (their hulls included: a hull is a
+ * child or a merged mesh of its own level). Only the outermost object of a level is listed.
+ */
+function detailLevels(group: THREE.Group): DetailLevel[] {
+  const out: DetailLevel[] = [];
+  group.updateMatrixWorld(true);
+  const toLocal = new THREE.Matrix4().copy(group.matrixWorld).invert();
+  const visit = (o: THREE.Object3D): void => {
+    const d = o.userData.detail;
+    if (o !== group && (d === 1 || d === 2) && o.parent?.userData.detail !== d) {
+      const box = new THREE.Box3().setFromObject(o, false).applyMatrix4(toLocal);
+      out.push({ level: d, on: true, obj: o, box });
+    }
+    for (const c of o.children) visit(c);
+  };
+  visit(group);
+  return out;
+}
+
+interface Cutaway {
+  obj: THREE.Object3D;
+  mats: THREE.Material[];
+  p: number;
+}
+
+/** The cutaway parts, each with its own materials (the ink hulls included, cloned so that they fade with it). */
+function cutaways(group: THREE.Group): Cutaway[] {
+  const out: Cutaway[] = [];
+  group.traverse((o) => {
+    if (o.userData.cutaway !== true) return;
+    const mats: THREE.Material[] = [];
+    o.traverse((m) => {
+      const mesh = m as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      if (mesh.userData.isOutline) {
+        mesh.material = (mesh.material as THREE.ShaderMaterial).clone();
+      }
+      mats.push(mesh.material as THREE.Material);
+    });
+    out.push({ obj: o, mats, p: 0 });
+  });
+  return out;
+}
+
+/** Does the segment from a to b pass through the box? (slab test; no allocation). */
+function segmentHits(a: THREE.Vector3, b: THREE.Vector3, box: THREE.Box3): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  for (const axis of ['x', 'y', 'z'] as const) {
+    const da = a[axis];
+    const dd = b[axis] - da;
+    const lo = box.min[axis];
+    const hi = box.max[axis];
+    if (Math.abs(dd) < 1e-9) {
+      if (da < lo || da > hi) return false;
+      continue;
+    }
+    let ta = (lo - da) / dd;
+    let tb = (hi - da) / dd;
+    if (ta > tb) [ta, tb] = [tb, ta];
+    t0 = Math.max(t0, ta);
+    t1 = Math.min(t1, tb);
+    if (t0 > t1) return false;
+  }
+  return true;
+}
+
+/** A part's rotation in degrees, as a quaternion's Euler. */
+function eulerOf(rot: Vec3 | undefined): THREE.Euler {
+  const r = rot ?? ZERO;
+  return new THREE.Euler(THREE.MathUtils.degToRad(r[0]), THREE.MathUtils.degToRad(r[1]), THREE.MathUtils.degToRad(r[2]));
+}
+
+function scaleOf(s: Vec3 | number | undefined): THREE.Vector3 {
+  if (typeof s === 'number') return new THREE.Vector3(s, s, s);
+  return s ? new THREE.Vector3(s[0], s[1], s[2]) : new THREE.Vector3(1, 1, 1);
+}
+
+/** The part's own inherit: its detail (or the parent's), cutaway and moving state, for itself and its children. */
+function selfInherit(p: Part, key: string, ctx: Ctx, inh: Inherit): Inherit {
+  const cutaway = inh.cutaway || p.cutaway === true;
+  return {
+    detail: p.detail ?? inh.detail,
+    cutaway,
+    dynamic: inh.dynamic || cutaway || p.tag !== undefined || p.anim !== undefined || (key !== '' && key === ctx.moving),
+  };
+}
+
+/** The flags a built object carries: its detail level, whether it moves, and whether it is a cutaway. */
+function markFlags(o: THREE.Object3D, p: Part, self: Inherit): void {
+  if (self.detail !== undefined) o.userData.detail = self.detail;
+  if (self.dynamic) o.userData.dynamic = true;
+  if (p.cutaway === true) o.userData.cutaway = true;
+  // The grounding audit (ground.ts): a solid rests on what is under it unless it is attached; a flat decal is neither a rest nor a support.
+  const decal = p.geo?.type === 'plane' || p.geo?.type === 'ring';
+  if (p.id) o.name = p.id;
+  if (decal) o.userData.decal = true;
+  else if (p.attached !== true) o.userData.rest = true;
+}
+
+/** Shadows: only the big solids cast and take them. */
+function shadowsFor(o: THREE.Mesh, geo: Geo, scale: Vec3 | number | undefined): void {
+  if (geo.type === 'plane' || geo.type === 'ring') return;
+  const s = typeof scale === 'number' ? scale : scale ? Math.max(...scale) : 1;
+  const r = (o.geometry.boundingSphere?.radius ?? 0) * s;
+  o.castShadow = r >= SHADOW_RADIUS;
+  o.receiveShadow = r >= SHADOW_RADIUS;
+}
+
+function buildPart(p: Part, ctx: Ctx, scope: string, inh: Inherit): THREE.Object3D | null {
   if (p.when !== undefined) {
     const w = parseWhen(p.when);
     if (!w || !evalWhen(w, ctx.params)) return null;
   }
-  if (!p.repeat) return buildOne(p, ctx, scope, 0, ZERO);
+  if (!p.repeat) return buildOne(p, ctx, scope, 0, ZERO, inh);
+  // A repeat of one plain solid is one instanced mesh; with labels, children or motion, each copy is its own part.
+  if (p.geo && !p.label && !p.children && !p.tag && !p.anim) return buildInstanced(p, p.geo, ctx, scope, p.repeat, inh);
   const holder = new THREE.Group();
-  repeatOffsets(p.repeat, ctx.params).forEach((offset, i) => holder.add(buildOne(p, ctx, scope, i, offset)));
+  repeatOffsets(p.repeat, ctx.params).forEach((offset, i) => holder.add(buildOne(p, ctx, scope, i, offset, inh)));
   return holder;
 }
 
@@ -644,27 +978,62 @@ export function repeatOffsets(r: Repeat, params: Params): Vec3[] {
   return out;
 }
 
-function buildOne(p: Part, ctx: Ctx, scope: string, inst: number, offset: Vec3): THREE.Object3D {
+/** A repeat of one solid: one InstancedMesh, its copies as instance matrices. Copies with an id get a placeholder object (not drawn). */
+function buildInstanced(p: Part, geo: Geo, ctx: Ctx, scope: string, r: Repeat, inh: Inherit): THREE.Object3D | null {
+  const offsets = repeatOffsets(r, ctx.params);
+  if (offsets.length === 0) return null;
+  const key = p.id ? `${scope}${p.id}` : '';
+  const self = selfInherit(p, key, ctx, inh);
+  const mesh = new THREE.InstancedMesh(makeGeometry(geo), materialFor(p, ctx, self), offsets.length);
+  const at = p.at ?? ZERO;
+  const q = new THREE.Quaternion().setFromEuler(eulerOf(p.rot));
+  const s = scaleOf(p.scale);
+  const m = new THREE.Matrix4();
+  const pos = new THREE.Vector3();
+  offsets.forEach((o, i) => {
+    pos.set(at[0] + o[0], at[1] + o[1], at[2] + o[2]);
+    m.compose(pos, q, s);
+    mesh.setMatrixAt(i, m);
+    if (p.id) {
+      const ph = new THREE.Object3D();
+      ph.position.copy(pos);
+      ctx.parts.set(`${scope}${p.id}${i ? `#${i}` : ''}`, ph);
+    }
+  });
+  outlineFlag(mesh, p, geo);
+  shadowsFor(mesh, geo, p.scale);
+  markFlags(mesh, p, self);
+  return mesh;
+}
+
+/** The outline flag of a solid: decals are not inked; the part's own `outline` wins. */
+function outlineFlag(o: THREE.Mesh, p: Part, geo: Geo): void {
+  if (p.outline !== undefined) o.userData.outline = p.outline;
+  else if (geo.type === 'plane' || geo.type === 'ring') o.userData.outline = false;
+}
+
+function buildOne(p: Part, ctx: Ctx, scope: string, inst: number, offset: Vec3, inh: Inherit): THREE.Object3D {
   const key = p.id ? `${scope}${p.id}${inst ? `#${inst}` : ''}` : '';
   const childScope = key ? `${key}/` : scope;
+  const self = selfInherit(p, key, ctx, inh);
   let obj: THREE.Object3D;
   let top = 0;
   if (p.use !== undefined) {
     const target = ctx.resolve(p.use);
     const g = new THREE.Group();
     for (const tp of target?.parts ?? []) {
-      const c = buildPart(tp, ctx, childScope);
+      const c = buildPart(tp, ctx, childScope, self);
       if (c) g.add(c);
     }
     top = target?.size[1] ?? 0;
     obj = g;
   } else if (p.geo) {
-    const mesh = new THREE.Mesh(makeGeometry(p.geo), materialFor(p, ctx));
+    const mesh = new THREE.Mesh(makeGeometry(p.geo), materialFor(p, ctx, self));
     mesh.geometry.computeBoundingBox();
+    mesh.geometry.computeBoundingSphere();
     top = mesh.geometry.boundingBox?.max.y ?? 0;
-    // Decals (plane, ring) are not inked; solids are, unless the part says otherwise.
-    if (p.outline !== undefined) mesh.userData.outline = p.outline;
-    else if (p.geo.type === 'plane' || p.geo.type === 'ring') mesh.userData.outline = false;
+    outlineFlag(mesh, p, p.geo);
+    shadowsFor(mesh, p.geo, p.scale);
     obj = mesh;
   } else {
     obj = new THREE.Group();
@@ -675,10 +1044,11 @@ function buildOne(p: Part, ctx: Ctx, scope: string, inst: number, offset: Vec3):
   if (p.rot) obj.rotation.set(THREE.MathUtils.degToRad(p.rot[0]), THREE.MathUtils.degToRad(p.rot[1]), THREE.MathUtils.degToRad(p.rot[2]));
   if (typeof p.scale === 'number') obj.scale.setScalar(p.scale);
   else if (p.scale) obj.scale.set(p.scale[0], p.scale[1], p.scale[2]);
+  markFlags(obj, p, self);
 
   if (key) ctx.parts.set(key, obj);
   for (const c of p.children ?? []) {
-    const o = buildPart(c, ctx, childScope);
+    const o = buildPart(c, ctx, childScope, self);
     if (o) obj.add(o);
   }
   if (p.label) {
@@ -762,7 +1132,7 @@ const easeInOut = (v: number): number => {
 
 // ---- Boards: copper and current ------------------------------------------------------------
 
-/** The copper of a board's traces: a flat strip along each segment, with its width and height. */
+/** The copper of a board's traces: a flat strip along each segment, with its width and height (one mesh per segment). */
 export function traceMeshes(model: Model, palette: Palette = PALETTE): THREE.Group {
   const g = new THREE.Group();
   const mat = makeMaterial(palette.copper ?? DEFAULT_MAT, false);
@@ -786,29 +1156,63 @@ export function traceMeshes(model: Model, palette: Palette = PALETTE): THREE.Gro
   return g;
 }
 
+/** The same copper as traceMeshes, merged into one mesh (what the views draw: one draw call per board). */
+export function traceStrips(model: Model, palette: Palette = PALETTE): THREE.Group {
+  const g = new THREE.Group();
+  const strips: THREE.BufferGeometry[] = [];
+  const m4 = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const one = new THREE.Vector3(1, 1, 1);
+  for (const tr of model.traces ?? []) {
+    for (let i = 0; i < tr.path.length - 1; i++) {
+      const [x0, z0] = tr.path[i]!;
+      const [x1, z1] = tr.path[i + 1]!;
+      const dx = x1 - x0;
+      const dz = z1 - z0;
+      const len = Math.hypot(dx, dz);
+      if (len === 0) continue;
+      // The strip is `len` long along x, turned to the segment's bearing, with a half-width overlap at each end.
+      const geo = new THREE.BoxGeometry(len + tr.width, 0.04, tr.width);
+      q.setFromEuler(new THREE.Euler(0, -Math.atan2(dz, dx), 0));
+      pos.set((x0 + x1) / 2, tr.y, (z0 + z1) / 2);
+      geo.applyMatrix4(m4.compose(pos, q, one));
+      strips.push(geo);
+    }
+  }
+  if (strips.length === 0) return g;
+  const merged = mergeGeometries(strips, false);
+  for (const s of strips) s.dispose();
+  if (!merged) return g;
+  const mesh = new THREE.Mesh(merged, makeMaterial(palette.copper ?? DEFAULT_MAT, false));
+  mesh.userData.outline = false;
+  mesh.userData.decal = true; // printed copper: flat on the board, not a solid
+  mesh.raycast = noRaycast;
+  g.add(mesh);
+  return g;
+}
+
 export interface Pulses {
   group: THREE.Group;
   /** Moves the pulses along the traces; `activity` 0..1 speeds them up and lights more of them. */
   update: (dt: number, activity?: number) => void;
 }
 
-function pointAt(path: [number, number][], cum: number[], s: number): [number, number] {
+/** The point at arc length s along a path, written into out (x, z). */
+function pointAt(path: [number, number][], cum: number[], s: number, out: THREE.Vector2): void {
   let i = 0;
   while (i < path.length - 2 && cum[i + 1]! <= s) i++;
   const [ax, az] = path[i]!;
   const [bx, bz] = path[i + 1]!;
   const len = cum[i + 1]! - cum[i]!;
   const f = len > 0 ? (s - cum[i]!) / len : 0;
-  return [ax + (bx - ax) * f, az + (bz - az) * f];
+  out.set(ax + (bx - ax) * f, az + (bz - az) * f);
 }
 
-/** Current pulses: small additive spheres that travel along each trace, one per ~10 units of trace. */
+/** Current pulses: small additive spheres that travel along each trace, one per ~10 units of trace, drawn as one instanced mesh. */
 export function currentPulses(model: Model, palette: Palette = PALETTE): Pulses {
   const group = new THREE.Group();
-  const geo = new THREE.SphereGeometry(0.16, 10, 8);
-  const colour = palette['copper-live']?.color ?? '#ffb347';
-  const mat = new THREE.MeshBasicMaterial({ color: colour, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-  const runs: { tr: Trace; cum: number[]; total: number; n: number; rank: number; s: number; mesh: THREE.Mesh }[] = [];
+  const runs: { tr: Trace; cum: number[]; total: number; n: number; rank: number; s: number }[] = [];
   for (const tr of model.traces ?? []) {
     const cum = [0];
     for (let i = 0; i < tr.path.length - 1; i++) {
@@ -819,21 +1223,33 @@ export function currentPulses(model: Model, palette: Palette = PALETTE): Pulses 
     const total = cum[cum.length - 1]!;
     if (total <= 0) continue;
     const n = Math.min(4, 1 + Math.floor(total / 10));
-    for (let k = 0; k < n; k++) {
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.y = tr.y + 0.1;
-      group.add(mesh);
-      runs.push({ tr, cum, total, n, rank: k, s: (total * k) / n, mesh });
-    }
+    for (let k = 0; k < n; k++) runs.push({ tr, cum, total, n, rank: k, s: (total * k) / n });
   }
+  if (runs.length === 0) return { group, update: () => undefined };
+  const colour = palette['copper-live']?.color ?? '#ffb347';
+  const mat = new THREE.MeshBasicMaterial({ color: colour, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.16, 10, 8), mat, runs.length);
+  mesh.frustumCulled = false; // the pulses move, so their bounds are not fixed
+  mesh.raycast = noRaycast;
+  group.add(mesh);
+  const pt = new THREE.Vector2();
+  const m4 = new THREE.Matrix4();
+  const pos = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const one = new THREE.Vector3(1, 1, 1);
+  const none = new THREE.Vector3(0, 0, 0);
   const update = (dt: number, activity = 0): void => {
     const a = Math.min(1, Math.max(0, activity));
-    for (const r of runs) {
+    const lit = 0.25 + 0.75 * a;
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i]!;
       r.s = (r.s + 5 * (1 + 2 * a) * dt) % r.total;
-      const [x, z] = pointAt(r.tr.path, r.cum, r.s);
-      r.mesh.position.set(x, r.tr.y + 0.1, z);
-      r.mesh.visible = r.rank < Math.ceil(r.n * (0.25 + 0.75 * a));
+      pointAt(r.tr.path, r.cum, r.s, pt);
+      const shown = r.rank < Math.ceil(r.n * lit);
+      pos.set(pt.x, r.tr.y + 0.1, pt.y);
+      mesh.setMatrixAt(i, m4.compose(pos, q, shown ? one : none));
     }
+    mesh.instanceMatrix.needsUpdate = true;
   };
   return { group, update };
 }

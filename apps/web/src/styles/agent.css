@@ -64,3 +64,14 @@
 .perm-option.active { border: 2px solid var(--signal); padding: 7px 9px; background: color-mix(in srgb, var(--signal) 8%, var(--sheet)); }
 .perm-label { font: 600 12px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
 .perm-hint { font: 400 12.5px var(--serif); color: var(--ink-3); line-height: 1.35; overflow-wrap: anywhere; }
+
+/* Conduct: the suspensions in force, then the sanctions on the register. */
+.conduct-h { margin: 0 0 var(--s1); font: 600 var(--fs-xs) var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.conduct-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.conduct-susp { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--s2); min-width: 0; }
+.conduct-susp-main, .conduct-susp-side { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
+.conduct-row { display: flex; flex-direction: column; gap: var(--s1); padding-top: var(--s2); border-top: 1px solid var(--rule-faint); min-width: 0; }
+.conduct-row-head, .conduct-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
+.conduct-row-meta { font-size: var(--fs-sm); color: var(--ink-3); }
+.conduct-law { font: 400 12px var(--mono); overflow-wrap: anywhere; }
+.conduct-lifted { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }

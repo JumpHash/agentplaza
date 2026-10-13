@@ -2,8 +2,8 @@
 // A grid of provider cards, grouped by how each one is credentialed.
 
 import '../styles/models.css';
-import { api, isDecisionKind, type Auth, type Provider, type ProviderKind, type TestReport } from '../api';
-import { attempt, badge, brandLogo, button, empty, field, input, modal, toast, type Tone } from '../ui/components';
+import { api, contributorIds, isDecisionKind, type Auth, type Provider, type ProviderKind, type TestReport } from '../api';
+import { attempt, badge, brandLogo, button, empty, field, input, modal, toast, TRAINS_NOTE, trainsBadge, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { decisionPanel } from './models-decisions';
@@ -33,6 +33,17 @@ function groupOf(p: Provider): Group {
   if (p.credential === 'missing') return 'Needs a key';
   if (p.credential === 'none') return 'Local';
   return 'Configured with a key';
+}
+
+/** Kind ids whose model list is fetched live from the vendor rather than fixed in the kind. */
+const LIVE_CATALOG_KINDS = new Set(['openrouter']);
+
+/** The model count line. Only the kind with an id in LIVE_CATALOG_KINDS says the list was fetched live. */
+function modelCountText(p: Provider, kinds: ProviderKind[]): string {
+  const n = p.models.length;
+  const count = `${n} ${n === 1 ? 'model' : 'models'}`;
+  const exact = kinds.find((k) => k.id === p.id);
+  return exact && LIVE_CATALOG_KINDS.has(exact.id) ? `fetched live, ${count}` : count;
 }
 
 function splitList(text: string): string[] {
@@ -127,11 +138,18 @@ export function mountProviders(root: HTMLElement): Cleanup {
         const list = await attempt(() => api.providerModels(p.id));
         if (!list) return;
         loaded = true;
+        const trains = new Set([...contributorIds(kind?.options), ...contributorIds(p.options)]);
+        const rows = await Promise.all(
+          list.map(async (m) => {
+            const price = await api.price(`${p.id}/${m.id}`).catch(() => null);
+            const rates = price ? `$${price.price.input} in · $${price.price.output} out per 1M` : null;
+            return h('li.mono', { 'data-key': `model-${m.id}`, title: m.id }, m.id, rates ? [' ', h('span.faint', null, rates)] : null, trains.has(m.id) ? [' ', trainsBadge()] : null);
+          }),
+        );
         replace(
           models,
-          list.length
-            ? h('ul.prov-model-list', null, list.map((m) => h('li.mono', { 'data-key': `model-${m.id}` }, m.id)))
-            : h('p.faint', null, 'No models listed'),
+          trains.size ? h('p.faint', null, TRAINS_NOTE) : null,
+          list.length ? h('ul.prov-model-list', null, rows) : h('p.faint', null, 'No models listed'),
         );
       },
       { size: 'sm', kind: 'ghost', icon: 'models', title: 'Models' },
@@ -155,7 +173,7 @@ export function mountProviders(root: HTMLElement): Cleanup {
         'div.prov-meta',
         null,
         badge(text, tone, true),
-        h('span.faint', null, `${p.models.length} ${p.models.length === 1 ? 'model' : 'models'}`),
+        h('span.faint', null, modelCountText(p, kinds)),
       ),
       h(
         'div.prov-actions',

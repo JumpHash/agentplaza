@@ -1,0 +1,272 @@
+/* Setup > MCP: the server list, row actions, the test dialog and the confirm dialog. Colours come from tokens.css. */
+
+.mcp-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  max-width: var(--content-max);
+  min-width: 0;
+}
+
+.mcp-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.mcp-toolbar:empty {
+  display: none;
+}
+
+.mcp-loading,
+.mcp-muted {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+.mcp-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  max-width: 100%;
+}
+
+.mcp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.mcp-table th,
+.mcp-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.mcp-table th {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.mcp-table tbody tr:hover {
+  background: var(--hover);
+}
+
+.mcp-name {
+  display: block;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mcp-id,
+.mcp-mono {
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.mcp-truncate {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  align-items: center;
+}
+
+.mcp-summary {
+  display: block;
+  margin-top: var(--s1);
+  font-size: var(--fs-xs);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-danger {
+  color: var(--danger);
+}
+
+.mcp-row-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--s1);
+}
+
+.mcp-actions-cell {
+  min-width: 260px;
+  white-space: nowrap;
+}
+
+/* The error line under the status, with its logs link beside it. */
+.mcp-err { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s1); margin-top: var(--s1); }
+.mcp-err .mcp-summary { margin-top: 0; min-width: 0; flex: 0 1 auto; max-width: 200px; }
+.mcp-err .btn { flex: none; white-space: nowrap; }
+
+/* Narrow screens: each row becomes a stacked card, with the column name in front of each value. */
+@media (max-width: 720px) {
+  .mcp-table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .mcp-table,
+  .mcp-table tbody,
+  .mcp-table tr,
+  .mcp-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .mcp-table thead {
+    display: none;
+  }
+
+  .mcp-table tbody tr {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    margin-bottom: var(--s3);
+    padding: var(--s2) 0;
+  }
+
+  .mcp-table td {
+    border-bottom: 0;
+    padding: var(--s1) var(--s3);
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: var(--s2);
+    align-items: start;
+  }
+
+  .mcp-table td::before {
+    content: attr(data-label);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .mcp-table td.mcp-actions-cell {
+    min-width: 0;
+  }
+
+  .mcp-table td.mcp-actions-cell::before {
+    content: none;
+  }
+
+  .mcp-truncate {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .mcp-summary {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
+/* Test dialog */
+.mcp-test {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+.mcp-test h3 {
+  margin: var(--s2) 0 0;
+  font-size: var(--fs-md);
+}
+
+.mcp-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s1) var(--s3);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.mcp-facts dt {
+  color: var(--text-3);
+}
+
+.mcp-facts dd {
+  margin: 0;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.mcp-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.mcp-tools li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--rule-faint);
+  min-width: 0;
+}
+
+.mcp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.mcp-mono {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: var(--s2);
+  background: var(--surface-2);
+  border: 1px solid var(--rule-faint);
+  max-height: 240px;
+  overflow: auto;
+}
+
+.mcp-test pre.mcp-mono {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+/* Confirm dialog */
+.mcp-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.mcp-confirm p {
+  margin: 0;
+}
+
+.mcp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}

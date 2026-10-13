@@ -1,13 +1,22 @@
 // Shared components. Views compose these; they own no state.
 
 import { BRAND_ICONS } from './brands.gen';
-import { h, icon, pathSvg, replace } from './dom';
+import { h, icon, markSvg, pathSvg, replace } from './dom';
 import type { IconName } from './icons.gen';
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'accent' | 'muted';
 
 export function badge(text: string, tone: Tone = 'muted', withDot = false): HTMLElement {
   return h('span.badge', { class: tone === 'muted' ? '' : tone }, withDot ? h('span.dot', { class: tone }) : null, text);
+}
+
+export const TRAINS_NOTE = 'Meta trains future models on everything sent to and returned by these models, so use them only for data you are happy to share.';
+
+/** The warning on a contributor model; its title carries the explanation. */
+export function trainsBadge(): HTMLElement {
+  const el = badge('WARNING: trains on your data', 'warn');
+  el.title = TRAINS_NOTE;
+  return el;
 }
 
 export function dot(tone: Tone): HTMLElement {
@@ -153,7 +162,10 @@ const MONOGRAMS: Record<string, string> = {
 export function brandLogo(brand: string, large = false): HTMLElement {
   const tile = h('span.logo', { class: large ? 'lg' : '', title: brand });
   const icon = BRAND_ICONS[brand];
-  if (icon) {
+  if (icon?.paths) {
+    // A multi-colour mark keeps each path's own fill: never tinted or recoloured.
+    tile.appendChild(markSvg(icon.paths));
+  } else if (icon?.path) {
     tile.appendChild(pathSvg(icon.path));
     // Very dark brand colours vanish on a dark tile; keep those white.
     const hex = icon.hex.toLowerCase();

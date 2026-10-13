@@ -1,0 +1,9 @@
+/* Lab breeders: one card per breeder, its budget use over the bar, and its jobs and calls in tables
+   (the tables scroll in their own wrapper, so a long call never widens the page). The shared
+   skeleton is lab.css, the models' pieces are lab-models.css. */
+
+.lab-breeder { min-width: 0; }
+.lab-budget { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.lab-budget-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.lab-budget-head .lab-mono { overflow-wrap: anywhere; }
+.lab-breeder h4.lab-section-title { margin-top: 6px; }

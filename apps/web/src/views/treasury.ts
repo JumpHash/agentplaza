@@ -59,7 +59,7 @@ export const FLOWS: { key: FlowKey; label: string; color: string }[] = [
   { key: 'fined', label: 'Fined', color: 'var(--chart-5)' },
   { key: 'spent', label: 'Spent', color: 'var(--chart-6)' },
 ];
-const KINDS = ['mint', 'budget_move', 'payment', 'refund', 'fine', 'fee', 'clawback', 'spend', 'subcontract', 'transfer'];
+const KINDS = ['mint', 'budget_move', 'payment', 'refund', 'fine', 'fee', 'clawback', 'spend', 'subcontract', 'transfer', 'model'];
 const KIND_TONE: Record<string, Tone> = {
   mint: 'ok',
   spend: 'warn',
@@ -71,6 +71,7 @@ const KIND_TONE: Record<string, Tone> = {
   fee: 'warn',
   subcontract: 'accent',
   budget_move: 'muted',
+  model: 'warn',
 };
 /** The journal's kinds in human words: the filter, the badges and the flows legend. */
 const KIND_LABEL: Record<string, string> = {
@@ -84,6 +85,7 @@ const KIND_LABEL: Record<string, string> = {
   spend: 'Spend',
   subcontract: 'Subcontract',
   transfer: 'Transfer',
+  model: 'Model call',
 };
 const KIND_COLOR: Record<string, string> = {
   mint: 'var(--chart-1)',
@@ -96,6 +98,7 @@ const KIND_COLOR: Record<string, string> = {
   subcontract: 'var(--chart-8)',
   fine: 'var(--danger)',
   transfer: 'var(--ink-2)',
+  model: 'var(--ink-3)',
 };
 
 // ---- Pure helpers (tested) -------------------------------------------------

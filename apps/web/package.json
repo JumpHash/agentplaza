@@ -8,6 +8,10 @@
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
     "test": "node test/run.mjs",
+    "rooms:prop": "node test/rooms-prop.mjs",
+    "rooms:fixtures": "node test/rooms-fixtures.mjs",
+    "nav:sim": "node test/nav-sim.mjs",
+    "nav:fixtures": "node test/nav-fixtures.mjs",
     "check": "tsc --noEmit && node build.mjs && node test/run.mjs"
   },
   "devDependencies": {

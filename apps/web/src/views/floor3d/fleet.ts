@@ -142,6 +142,8 @@ export interface FleetScene {
   machines: Map<string, FleetMachineScene>;
   /** Per frame: applies the fleet's state; rebuilds the scene when the machines change. */
   update: (dt: number, fleet: FleetResponse) => void;
+  /** Per frame, after update: each machine's detail by its distance to the camera, and its cutaways toward `focus`. */
+  lod: (camera: THREE.Camera, focus: THREE.Vector3, dt: number) => void;
   /** The machine whose bounding sphere the ray hits first, or null. */
   pick: (ray: THREE.Ray) => string | null;
   /** Lifts the hovered machine (null lowers every machine). */
@@ -155,31 +157,43 @@ export interface FleetScene {
 interface Live {
   m: FleetMachine;
   scene: FleetMachineScene;
-  ringMat: THREE.MeshBasicMaterial;
+  /** Its ring's first vertex and vertex count in the merged ring mesh. */
+  ring: [number, number];
   atom: { atom: THREE.Object3D; animate: (t: number) => void } | null;
   lift: number;
   open: number;
   phase: number;
 }
 interface Packet {
-  mesh: THREE.Mesh;
+  /** Its instance in the packet mesh. */
+  idx: number;
   /** 0: from the node to the hub; 1: from the hub to the node. */
   dir: 0 | 1;
   /** 0..1 along the direction of travel. */
   s: number;
   live: boolean;
+  /** Its colour while live: busy (the copper) or idle (the LED blue). */
+  busy: boolean;
 }
 interface Cable {
   node: string;
-  segs: THREE.Mesh[];
+  /** Its first segment's instance in the cable meshes (CABLE_SEGMENTS instances per cable). */
+  base: number;
   packets: Packet[];
   timers: [number, number];
 }
 interface Mats {
   cable: THREE.Material;
   dim: THREE.Material;
-  busy: THREE.Material;
-  idle: THREE.Material;
+  packet: THREE.Material;
+}
+/** The three meshes that carry every cable and packet of the fleet: one draw call each, whatever the node count. */
+interface Wires {
+  /** Every segment of a cable that is online (the cable material). */
+  solid: THREE.InstancedMesh;
+  /** Every segment of an offline cable (the translucent material); the other mesh holds the rest, the rest are hidden. */
+  dim: THREE.InstancedMesh;
+  packets: THREE.InstancedMesh;
 }
 
 const byId = (a: FleetMachine, b: FleetMachine): number => a.id.localeCompare(b.id, undefined, { numeric: true });
@@ -216,15 +230,34 @@ const placed = (p: Vec3, x: number, z: number, rot: number): Vec3 => {
 const lifted = (p: Vec3, lift: number): Vec3 => [p[0], p[1] + lift, p[2]];
 const loadOf = (m: FleetMachine): number => (m.stats ? clamp01(m.stats.cpu_pct / 100) : Math.min(1, m.working / 4));
 
-/** Sets a cylinder of unit height from a to b. */
-function placeSegment(mesh: THREE.Mesh, a: Vec3, b: Vec3): void {
-  const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-  const len = d.length();
-  mesh.visible = len > 1e-6;
-  if (!mesh.visible) return;
-  mesh.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
-  mesh.quaternion.setFromUnitVectors(UP, d.multiplyScalar(1 / len));
-  mesh.scale.set(1, len, 1);
+// Scratch values for the per-frame instance matrices (a hidden instance keeps its place, scaled to nothing).
+const scratchQ = new THREE.Quaternion();
+const scratchS = new THREE.Vector3();
+const scratchP = new THREE.Vector3();
+const scratchD = new THREE.Vector3();
+const scratchM = new THREE.Matrix4();
+const IDENTITY_Q = new THREE.Quaternion();
+/** An instance matrix that draws nothing: scaled to zero at the origin. */
+const HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
+
+/**
+ * The matrix of a unit-height cylinder from a to b, or of nothing (scaled to zero, at the middle) when
+ * shown is false or the segment has no length. Its place is the middle either way, so the bounds stay near the cable.
+ */
+function segmentMatrix(out: THREE.Matrix4, a: Vec3, b: Vec3, shown: boolean): void {
+  scratchD.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const len = scratchD.length();
+  const on = shown && len > 1e-6;
+  if (len > 1e-6) scratchQ.setFromUnitVectors(UP, scratchD.multiplyScalar(1 / len));
+  else scratchQ.identity();
+  scratchS.set(on ? 1 : 0, on ? len : 0, on ? 1 : 0);
+  out.compose(scratchP.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2), scratchQ, scratchS);
+}
+
+/** The matrix of a packet's sphere at p, or of nothing at p when shown is false. */
+function pointMatrix(out: THREE.Matrix4, p: Vec3, shown: boolean): void {
+  const s = shown ? 1 : 0;
+  out.compose(scratchP.set(p[0], p[1], p[2]), IDENTITY_Q, scratchS.set(s, s, s));
 }
 
 /** The point at fraction t along a polyline. */
@@ -251,39 +284,47 @@ function disposeTree(root: THREE.Object3D): void {
 }
 
 /** Moves the packets of one cable along its curve (from the node's end when dir 0). */
-function stepPackets(c: Cable, pts: Vec3[], dt: number, online: boolean, rate: number, busy: boolean, mats: Mats): void {
+/** The two packet colours, set per instance when a packet starts. */
+interface PacketColours {
+  busy: THREE.Color;
+  idle: THREE.Color;
+}
+
+/**
+ * Moves the packets of one cable along its curve (from the node's end when dir 0) and writes each packet's
+ * instance matrix and, when one starts, its colour. Returns true when a colour changed.
+ */
+function stepPackets(c: Cable, pts: Vec3[], dt: number, online: boolean, rate: number, busy: boolean, mesh: THREE.InstancedMesh, colours: PacketColours): boolean {
+  let coloured = false;
   if (!online || rate <= 0) {
-    for (const p of c.packets) {
-      p.live = false;
-      p.mesh.visible = false;
-    }
+    for (const p of c.packets) p.live = false;
     c.timers = [0, 0];
-    return;
-  }
-  for (const dir of [0, 1] as const) {
-    c.timers[dir] += dt;
-    const period = 1 / rate;
-    while (c.timers[dir] >= period) {
-      c.timers[dir] -= period;
-      const p = c.packets.find((q) => !q.live && q.dir === dir);
-      if (!p) break;
-      p.live = true;
-      p.s = 0;
-      p.mesh.material = busy ? mats.busy : mats.idle;
+  } else {
+    for (const dir of [0, 1] as const) {
+      c.timers[dir] += dt;
+      const period = 1 / rate;
+      while (c.timers[dir] >= period) {
+        c.timers[dir] -= period;
+        const p = c.packets.find((q) => !q.live && q.dir === dir);
+        if (!p) break;
+        p.live = true;
+        p.s = 0;
+        p.busy = busy;
+        mesh.setColorAt(p.idx, busy ? colours.busy : colours.idle);
+        coloured = true;
+      }
     }
   }
   for (const p of c.packets) {
-    if (!p.live) continue;
-    p.s += PACKET_SPEED * dt;
-    if (p.s >= 1) {
-      p.live = false;
-      p.mesh.visible = false;
-      continue;
+    if (p.live) {
+      p.s += PACKET_SPEED * dt;
+      if (p.s >= 1) p.live = false;
     }
-    const [x, y, z] = pointOn(pts, p.dir === 0 ? p.s : 1 - p.s);
-    p.mesh.visible = true;
-    p.mesh.position.set(x, y, z);
+    if (p.live) pointMatrix(scratchM, pointOn(pts, p.dir === 0 ? p.s : 1 - p.s), true);
+    else pointMatrix(scratchM, pts[0]!, false);
+    mesh.setMatrixAt(p.idx, scratchM);
   }
+  return coloured;
 }
 
 export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): FleetScene {
@@ -291,9 +332,16 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
   const machines = new Map<string, FleetMachineScene>();
   const live = new Map<string, Live>();
   const ledHex = Object.fromEntries((Object.keys(LED) as FleetStatus[]).map((s) => [s, colour(palette, LED[s])])) as Record<FleetStatus, string>;
+  const ledCol = Object.fromEntries((Object.keys(LED) as FleetStatus[]).map((s) => [s, new THREE.Color(ledHex[s])])) as Record<FleetStatus, THREE.Color>;
+  /** The machines' rings before they merge (built in addMachine, merged in buildRings), and the merged colour attribute. */
+  let ringParts: { id: string; geo: THREE.BufferGeometry }[] = [];
+  let ringColours: THREE.BufferAttribute | null = null;
   let cables: Cable[] = [];
   /** The cable and packet materials of the current build (made in rebuild). */
   let mats!: Mats;
+  /** The fleet's cable and packet meshes of the current build (null while there are no nodes). */
+  let wires: Wires | null = null;
+  let colours!: PacketColours;
   let hubId: string | null = null;
   let key = '';
   let built = false;
@@ -320,13 +368,49 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
       label: placed(model.anchors?.label ?? [0, h, 0], x, z, rot),
       port: placed(portOf(model), x, z, rot),
     };
-    const ringMat = new THREE.MeshBasicMaterial({ color: ledHex[m.status], transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false });
-    const ring = new THREE.Mesh(new THREE.RingGeometry(foot + 0.8, foot + 1.2, 64), ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(x, 0.04, z);
-    group.add(ring);
+    // The status ring lies flat under the machine; buildRings merges every ring into one mesh.
+    const ringGeo = new THREE.RingGeometry(foot + 0.8, foot + 1.2, 64);
+    ringGeo.rotateX(-Math.PI / 2);
+    ringGeo.translate(x, 0.04, z);
+    ringParts.push({ id: m.id, geo: ringGeo });
     machines.set(m.id, scene);
-    live.set(m.id, { m, scene, ringMat, atom, lift: 0, open: 0, phase: [...m.id].reduce((s, c) => s + c.charCodeAt(0), 0) * 0.7 });
+    live.set(m.id, { m, scene, ring: [0, 0], atom, lift: 0, open: 0, phase: [...m.id].reduce((s, c) => s + c.charCodeAt(0), 0) * 0.7 });
+  }
+
+  /**
+   * Every machine's status ring in one mesh: each vertex carries the ring's colour and opacity (rgba), so the
+   * states animate by writing the colour attribute, with one draw call for all the rings.
+   */
+  function buildRings(): void {
+    let verts = 0;
+    for (const p of ringParts) verts += p.geo.attributes.position!.count;
+    const pos = new Float32Array(verts * 3);
+    const index: number[] = [];
+    let v = 0;
+    for (const p of ringParts) {
+      const src = p.geo.attributes.position!;
+      pos.set(src.array as Float32Array, v * 3);
+      for (const i of p.geo.index!.array) index.push(i + v);
+      const L = live.get(p.id);
+      if (L) L.ring = [v, src.count];
+      v += src.count;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(index);
+    ringColours = new THREE.BufferAttribute(new Float32Array(verts * 4).fill(1), 4);
+    geo.setAttribute('color', ringColours);
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, toneMapped: false });
+    group.add(new THREE.Mesh(geo, mat));
+    ringParts = [];
+  }
+
+  /** Paints one machine's ring: its LED colour, at an opacity (per vertex, so the rings draw as one mesh). */
+  function paintRing(L: Live, status: FleetStatus, alpha: number): void {
+    if (!ringColours) return;
+    const c = ledCol[status];
+    const [start, count] = L.ring;
+    for (let v = start; v < start + count; v++) ringColours.setXYZW(v, c.r, c.g, c.b, alpha);
   }
 
   function rebuild(f: FleetResponse): void {
@@ -335,6 +419,9 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
     machines.clear();
     live.clear();
     cables = [];
+    wires = null;
+    ringParts = [];
+    ringColours = null;
     const ordered = [...f.machines].sort(byId);
     const hub = ordered.find((m) => m.role === 'hub') ?? ordered[0];
     hubId = hub?.id ?? null;
@@ -355,33 +442,40 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
     mats = {
       cable: toonMat({ color: colour(palette, 'cable') }),
       dim: toonMat({ color: colour(palette, 'cable'), transparent: true, opacity: 0.3, depthWrite: false }),
-      busy: new THREE.MeshBasicMaterial({ color: colour(palette, 'copper-live'), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
-      idle: new THREE.MeshBasicMaterial({ color: colour(palette, 'led-info'), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+      // One material for every packet: the colour is per instance (busy or idle), set when the packet starts.
+      packet: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
     };
+    colours = { busy: new THREE.Color(colour(palette, 'copper-live')), idle: new THREE.Color(colour(palette, 'led-info')) };
     addMachine(hub, 0, 0, 0);
     for (const n of nodes) {
       const s = slot.get(n.id)!;
       addMachine(n, s.x, s.z, facingAngle(s.x, s.z, portOf(modelOf(n))));
     }
-    const cylinder = new THREE.CylinderGeometry(CABLE_RADIUS, CABLE_RADIUS, 1, 6);
-    const sphere = new THREE.SphereGeometry(0.22, 8, 6);
-    for (const n of nodes) {
-      const segs: THREE.Mesh[] = [];
-      for (let k = 0; k < CABLE_SEGMENTS; k++) {
-        const seg = new THREE.Mesh(cylinder, mats.cable);
-        group.add(seg);
-        segs.push(seg);
-      }
+    buildRings();
+    // Every cable and packet of the fleet in three instanced meshes (one draw call each): cable i owns the
+    // segment instances [i * CABLE_SEGMENTS, (i + 1) * CABLE_SEGMENTS) and its packets' instances.
+    const segments = nodes.length * CABLE_SEGMENTS;
+    const packetCount = nodes.length * 2 * PACKETS_PER_DIR;
+    cables = nodes.map((n, i) => {
       const packets: Packet[] = [];
       for (const dir of [0, 1] as const) {
-        for (let k = 0; k < PACKETS_PER_DIR; k++) {
-          const mesh = new THREE.Mesh(sphere, mats.idle);
-          mesh.visible = false;
-          group.add(mesh);
-          packets.push({ mesh, dir, s: 0, live: false });
-        }
+        for (let k = 0; k < PACKETS_PER_DIR; k++) packets.push({ idx: i * 2 * PACKETS_PER_DIR + dir * PACKETS_PER_DIR + k, dir, s: 0, live: false, busy: false });
       }
-      cables.push({ node: n.id, segs, packets, timers: [0, 0] });
+      return { node: n.id, base: i * CABLE_SEGMENTS, packets, timers: [0, 0] as [number, number] };
+    });
+    if (nodes.length > 0) {
+      const cylinder = new THREE.CylinderGeometry(CABLE_RADIUS, CABLE_RADIUS, 1, 6);
+      const sphere = new THREE.SphereGeometry(0.22, 8, 6);
+      wires = {
+        solid: new THREE.InstancedMesh(cylinder, mats.cable, segments),
+        dim: new THREE.InstancedMesh(cylinder, mats.dim, segments),
+        packets: new THREE.InstancedMesh(sphere, mats.packet, packetCount),
+      };
+      for (const mesh of [wires.solid, wires.dim, wires.packets]) {
+        for (let i = 0; i < mesh.count; i++) mesh.setMatrixAt(i, HIDDEN);
+        group.add(mesh);
+      }
+      for (let i = 0; i < packetCount; i++) wires.packets.setColorAt(i, colours.idle);
     }
     // Frame what is there: each machine's distance from the hub plus its own radius (a lone hub
     // fills the view; a ring frames the ring), as the desktop's frame does.
@@ -416,25 +510,43 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
       L.lift += ((hoverId === id ? HOVER_LIFT : 0) - L.lift) * Math.min(1, dt * 10);
       L.scene.root.position.y = L.lift;
       L.scene.built.update(dt, { status: m.status, working: m.working, load: loadOf(m), open: L.open });
-      L.ringMat.color.set(ledHex[m.status]);
-      L.ringMat.opacity = m.status === 'online' ? 0.6 + 0.3 * (0.5 + 0.5 * Math.sin(time * 2 + L.phase)) : 0.85;
+      paintRing(L, m.status, m.status === 'online' ? 0.6 + 0.3 * (0.5 + 0.5 * Math.sin(time * 2 + L.phase)) : 0.85);
       if (L.atom) {
         L.atom.atom.visible = m.status === 'online';
         L.atom.animate(time);
       }
     }
+    if (ringColours) ringColours.needsUpdate = true;
     const hub = hubId !== null ? live.get(hubId) : undefined;
+    const w = wires;
+    let coloured = false;
     for (const c of cables) {
       const node = live.get(c.node);
-      if (!node || !hub) continue;
+      if (!node || !hub || !w) continue;
       const online = linkOnline.get(c.node) ?? node.m.status === 'online';
       const pts = cableCurvePoints(lifted(node.scene.port, node.lift), lifted(hub.scene.port, hub.lift));
-      c.segs.forEach((seg, i) => {
-        placeSegment(seg, pts[i]!, pts[i + 1]!);
-        seg.material = online ? mats.cable : mats.dim;
-      });
+      // An online cable's segments show in the solid mesh, an offline one's in the translucent mesh; the other
+      // mesh's copies are scaled to nothing. No material is swapped.
+      const shown = online ? w.solid : w.dim;
+      const other = online ? w.dim : w.solid;
+      for (let i = 0; i < CABLE_SEGMENTS; i++) {
+        segmentMatrix(scratchM, pts[i]!, pts[i + 1]!, true);
+        shown.setMatrixAt(c.base + i, scratchM);
+        segmentMatrix(scratchM, pts[i]!, pts[i + 1]!, false);
+        other.setMatrixAt(c.base + i, scratchM);
+      }
       const busy = hub.m.working + node.m.working > 0;
-      stepPackets(c, pts, dt, online, packetRate(hub.m.working, node.m.working, online), busy, mats);
+      if (stepPackets(c, pts, dt, online, packetRate(hub.m.working, node.m.working, online), busy, w.packets, colours)) coloured = true;
+    }
+    if (w) {
+      // Instance matrices changed: the bounds (which frustum culling reads) follow them, and the colours too.
+      w.solid.instanceMatrix.needsUpdate = true;
+      w.dim.instanceMatrix.needsUpdate = true;
+      w.packets.instanceMatrix.needsUpdate = true;
+      if (coloured && w.packets.instanceColor) w.packets.instanceColor.needsUpdate = true;
+      w.solid.computeBoundingSphere();
+      w.dim.computeBoundingSphere();
+      w.packets.computeBoundingSphere();
     }
   }
 
@@ -446,6 +558,9 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
     group,
     machines,
     update,
+    lod(camera: THREE.Camera, focus: THREE.Vector3, dt: number): void {
+      for (const L of live.values()) L.scene.built.frame(camera, focus, dt);
+    },
     pick(ray: THREE.Ray): string | null {
       const hit = new THREE.Vector3();
       const sphere = new THREE.Sphere();

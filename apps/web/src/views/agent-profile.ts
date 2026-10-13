@@ -14,6 +14,7 @@ import { portrait } from './floor3d/portrait';
 export function avatar(a: Agent, size = 40): HTMLElement {
   const hue = agentHue(a.cid);
   const url = portrait({
+    species: a.species,
     cid: a.cid,
     roleHue: a.tier === 'orchestrator' ? 25 : roleHue(a.role),
     bodyHue: hue,

@@ -1,414 +1,304 @@
-// A plaza robot: a small, cute toon 3D model in the plaza's palette, in one of a few variants (a
-// WALL·E-like rover, a hover bubble, a TV-head on a ball wheel, a can with a dome head, a kitty with
-// ears). Every variant has the same parts (a base, a body, a head with glowing eyes, two arms), so
-// they share one animation. The scene owns placement; the robot owns its own animation.
+// A plaza robot: a small toon 3D model built from its species' JSON (assets/robots/species/<id>.json).
+// The species decides the parts, bones, eyes and motion; the clips (assets/robots/clips.json and the
+// species' own) decide what it does. The scene owns placement; the robot owns its own animation.
+//
+// The floor's API is unchanged: makeRobot(hue, orchestrator, palette, bodyHue?, variant?), robotVariant,
+// ROBOT_PALETTE, Robot, RobotState, RobotPose. The variant is now a species id.
 
 import * as THREE from 'three';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { outline, toonMat } from './toon';
+import { evalClip, restOf } from './robots/clips';
+import { bakeSpecies, bakeTool, instantiate, robotMats, type RigInstance, type SpeciesGeo, type BoneGeo } from './robots/rig';
+import { Fx } from './robots/fx';
+import { registry, sharedClip } from './robots/files';
+import type { Clip, FxKind, Palette as PaletteT, Species, Tool, Vec3 } from './robots/types';
 
 export type RobotState = 'idle' | 'working' | 'walking' | 'offline';
-
-/** A still pose for a portrait. */
+/** A still pose for a portrait: the shared clips of the same names. */
 export type RobotPose = 'wave' | 'proud' | 'think' | 'cheer';
-
-/** The robot designs: an agent keeps its own (`robotVariant`); the orchestrator is always the rover. */
-export type RobotVariant = 'rover' | 'hover' | 'tv' | 'can' | 'kitty';
-export const ROBOT_VARIANTS: RobotVariant[] = ['rover', 'hover', 'tv', 'can', 'kitty'];
+/** A species id (the designs are in assets/robots/species/); the orchestrator is always `rover`. */
+export type RobotVariant = string;
+export type Palette = PaletteT;
 
 /** An agent's design: neighbouring cids (a district's members) get different ones. */
 export function robotVariant(cid: number): RobotVariant {
-  return ROBOT_VARIANTS[((cid % ROBOT_VARIANTS.length) + ROBOT_VARIANTS.length) % ROBOT_VARIANTS.length]!;
+  // The oracle is reserved (the hub never deals it to a robot): the client's fallback deal skips it too.
+  const list = registry().index.species.filter((id) => id !== 'oracle');
+  return list[((cid % list.length) + list.length) % list.length] ?? 'rover';
 }
 
-export interface Palette {
-  ink: string; sheet: string; paper: string; rule: string; signal: string; ok: string; info: string; inkMuted: string;
+/** A robot's species: the hub's `species` on the agent record, else the cid's `robotVariant` when the record has none. */
+export function speciesOf(hub: string | null | undefined, cid: number): RobotVariant {
+  const id = hub?.trim();
+  return id ? id : robotVariant(cid);
 }
 
-/**
- * The robots' own paint, the same in the light and the dark theme: white shells, graphite running
- * gear, brushed-metal trim, mint eyes that turn cyan at work.
- */
-export const ROBOT_PALETTE: Palette = {
-  ink: '#262c3a', sheet: '#ffffff', paper: '#eef1f6', rule: '#9aa5b8',
-  signal: '#ff7a2e', ok: '#3ee08f', info: '#4cc9ff', inkMuted: '#5b6475',
-};
+/** The robots' own paint, the same in the light and the dark theme. */
+export const ROBOT_PALETTE: Palette = registry().palette;
+
+export interface PlayOptions {
+  /** Hold the clip (it repeats until play(null)); a one-shot clip is held when this is true. */
+  loop?: boolean;
+}
 
 export interface Robot {
   /** Add this to the scene; position/rotate it from the scene. */
   readonly group: THREE.Group;
-  /** World-space point just above the head, for the status label. */
+  /** The species id this robot was built from. */
+  readonly species: string;
+  /** World-space point above the head, for the status label. */
   labelAnchor(target: THREE.Vector3): THREE.Vector3;
   setState(state: RobotState): void;
   /** Advance the animation: `dt` seconds since the last frame, `t` seconds since start. */
   update(dt: number, t: number): void;
   setHighlighted(on: boolean): void;
-  /** Strikes a still pose (for a portrait); the next `update` moves it again. */
+  /** Strikes a still pose (for a portrait), held until the next play or pose. */
   pose(kind: RobotPose): void;
+  /** Plays a clip: held when it loops (or with `loop`), else a one-shot that returns to the state's clip. `null` ends a held clip. */
+  play(clipId: string | null, opts?: PlayOptions): void;
+  /**
+   * The body layer (gravity and heights): a clip that overrides the hold, the one-shot and the state's clip while it is set
+   * (crouch, jump, fall, land). It starts when set and is kept while the same id is set again. `null` ends it.
+   */
+  setBody(clipId: string | null): void;
+  /** Holds a tool in the grip: one hand, or both (a two-handed tool aims at the other grip). `null` puts it down. */
+  hold(toolId: string | null): void;
+  /** Carries an item at the carry bone (a crate). `null` puts it down. */
+  carry(itemId: string | null): void;
+  /** Spawns one effect at the head (sparks, zzz, dots, hearts, keys). */
+  fx(kind: FxKind): void;
   dispose(): void;
 }
 
-// Layout in robot units: about one unit tall before the orchestrator's scale.
 const SCALE = 1.3; // a touch bigger than the furniture, so the robots read from afar
 const ORCH_SCALE = 1.25 * SCALE;
-const LABEL_LIFT = 0.35;
+const BLEND = 8; // the per-second rate each channel moves toward its target (k = min(1, dt·8))
+const WALK_FEET_RATE = 9; // rad/s of the feet's step while walking
+/** The feet's height offset while a body clip plays (tucked in the jump, hanging in the fall). Shared clips cannot name the
+ *  feet (each species has its own), so the state's feet take it here. */
+const AIR_FEET: Record<string, number> = { 'jump.air': 0.06, 'fall.air': -0.03 };
+const FLOAT_OFFLINE = -0.07; // a hover robot sets down when offline
 
-type Add = (parent: THREE.Object3D, geometry: THREE.BufferGeometry, material: THREE.Material, x?: number, y?: number, z?: number) => THREE.Mesh;
-
-interface Mats {
-  sheet: THREE.Material; paper: THREE.Material; panel: THREE.Material; rivet: THREE.Material;
-  ink: THREE.Material; signal: THREE.Material; glass: THREE.Material; pupil: THREE.Material;
-  light: THREE.Material; thruster: THREE.Material;
+const warned = new Set<string>();
+function warnOnce(msg: string): void {
+  if (warned.has(msg)) return;
+  warned.add(msg);
+  console.warn(`robots: ${msg}`);
 }
 
-/** The parts a variant builds; the shared animation drives them. */
-interface Parts {
-  head: THREE.Group;
-  /** The top of the head above its pivot, for the label. */
-  headTop: number;
-  armL: THREE.Group;
-  armR: THREE.Group;
-  /** The glowing eyes: they blink (scale y). */
-  pupils: THREE.Mesh[];
-  /** Wheels and rotors: they turn about their own x (or y, for `yaw`) while walking. */
-  spin: { obj: THREE.Object3D; yaw: boolean }[];
-  /** Feet that step while walking. */
-  feet: THREE.Object3D[];
-  /** Floats on a thruster (bobs, lands when offline). */
-  hover: boolean;
-}
-
-/** A shoulder pivot with a straight arm hanging from it and a hand at its end. */
-function arm(add: Add, parent: THREE.Object3D, x: number, y: number, len: number, armMat: THREE.Material, hand: (grip: THREE.Group) => void): THREE.Group {
-  const pivot = new THREE.Group();
-  pivot.position.set(x, y, 0);
-  parent.add(pivot);
-  const geo = new THREE.CylinderGeometry(0.045, 0.04, len, 12);
-  geo.translate(0, -len / 2, 0);
-  add(pivot, geo, armMat);
-  const grip = new THREE.Group();
-  grip.position.set(0, -len, 0);
-  pivot.add(grip);
-  hand(grip);
-  return pivot;
-}
-
-/** A round mitten hand. */
-const mitten = (add: Add, mat: THREE.Material) => (grip: THREE.Group): void => {
-  add(grip, new THREE.SphereGeometry(0.065, 14, 10), mat);
-};
-
-/** Two eye sockets (dark glass, glowing pupils) on a face at depth `z`. */
-function eyes(add: Add, head: THREE.Object3D, m: Mats, xs: number[], y: number, z: number, glassR: number, pupilR: number): THREE.Mesh[] {
-  const glassGeo = new THREE.CircleGeometry(glassR, 24);
-  const pupilGeo = new THREE.CircleGeometry(pupilR, 24);
-  return xs.map((x) => {
-    add(head, glassGeo, m.glass, x, y, z);
-    return add(head, pupilGeo, m.pupil, x, y, z + 0.004);
-  });
-}
-
-/** The original: boxy body on tank treads, binocular eyes on a neck, claw arms. */
-function rover(add: Add, _root: THREE.Group, body: THREE.Group, base: THREE.Group, m: Mats): Parts {
-  const BODY_Y = 0.46;
-  const treadGeo = new RoundedBoxGeometry(0.16, 0.22, 0.86, 3, 0.07);
-  add(base, treadGeo, m.ink, -0.36, 0.11, 0);
-  add(base, treadGeo, m.ink, 0.36, 0.11, 0);
-  const wheelGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.03, 16);
-  wheelGeo.rotateZ(Math.PI / 2); // axle along x, so the wheel spins about rotation.x
-  const spin: Parts['spin'] = [];
-  for (const side of [-1, 1]) {
-    for (const z of [-0.28, 0, 0.28]) spin.push({ obj: add(base, wheelGeo, m.rivet, side * 0.445, 0.11, z), yaw: false });
+const geoCache = new Map<string, SpeciesGeo>();
+const toolCache = new Map<string, BoneGeo>();
+function speciesGeo(s: Species, palette: Palette, orch: boolean): SpeciesGeo {
+  const key = `${s.id}|${orch}`;
+  let g = geoCache.get(key);
+  if (!g) {
+    g = bakeSpecies(s, palette, orch);
+    geoCache.set(key, g);
   }
-
-  add(body, new RoundedBoxGeometry(0.62, 0.5, 0.6, 4, 0.12), m.sheet, 0, BODY_Y, 0);
-  add(body, new RoundedBoxGeometry(0.36, 0.26, 0.03, 2, 0.01), m.panel, 0, BODY_Y, 0.315);
-  add(body, new THREE.BoxGeometry(0.28, 0.012, 0.012), m.rivet, 0, BODY_Y, 0.33);
-  const rivetGeo = new THREE.SphereGeometry(0.018, 8, 6);
-  for (const x of [-0.15, 0.15]) {
-    for (const y of [BODY_Y - 0.1, BODY_Y + 0.1]) add(body, rivetGeo, m.rivet, x, y, 0.33);
+  return g;
+}
+function toolGeo(id: string, tool: Tool, palette: Palette): BoneGeo {
+  let g = toolCache.get(id);
+  if (!g) {
+    g = bakeTool(tool, palette);
+    toolCache.set(id, g);
   }
-  add(body, new THREE.CylinderGeometry(0.07, 0.08, 0.14, 12), m.ink, 0, 0.78, 0);
-
-  const claw = (grip: THREE.Group): void => {
-    add(grip, new RoundedBoxGeometry(0.1, 0.05, 0.08, 2, 0.02), m.ink);
-    const finger = new THREE.BoxGeometry(0.025, 0.08, 0.03);
-    add(grip, finger, m.ink, -0.035, -0.05, 0);
-    add(grip, finger, m.ink, 0.035, -0.05, 0);
-  };
-  const armL = arm(add, body, -0.34, 0.6, 0.3, m.sheet, claw);
-  const armR = arm(add, body, 0.34, 0.6, 0.3, m.sheet, claw);
-
-  const HEAD_H = 0.24;
-  const head = new THREE.Group();
-  head.position.set(0, 0.82, 0);
-  body.add(head);
-  add(head, new RoundedBoxGeometry(0.62, HEAD_H, 0.42, 3, 0.09), m.paper, 0, HEAD_H / 2, 0);
-  const eyeGeo = new THREE.CylinderGeometry(0.13, 0.13, 0.18, 24);
-  eyeGeo.rotateX(Math.PI / 2); // axis along z, so the eyes face forward
-  for (const x of [-0.16, 0.16]) add(head, eyeGeo, m.paper, x, 0.12, 0.2);
-  const pupils = eyes(add, head, m, [-0.16, 0.16], 0.12, 0.292, 0.1, 0.07);
-  return { head, headTop: HEAD_H, armL, armR, pupils, spin, feet: [], hover: false };
+  return g;
 }
 
-/** A round bubble floating on a glowing thruster ring, with a goggle visor and mitten hands. */
-function hover(add: Add, _root: THREE.Group, body: THREE.Group, base: THREE.Group, m: Mats): Parts {
-  // The thruster: a dark ring with a glowing disc under it; the ring turns.
-  const rotor = new THREE.Group();
-  rotor.position.set(0, 0.16, 0);
-  base.add(rotor);
-  const ringGeo = new THREE.TorusGeometry(0.22, 0.05, 10, 28);
-  ringGeo.rotateX(Math.PI / 2);
-  add(rotor, ringGeo, m.ink);
-  const vaneGeo = new THREE.BoxGeometry(0.4, 0.02, 0.05);
-  add(rotor, vaneGeo, m.rivet);
-  add(rotor, vaneGeo.clone().rotateY(Math.PI / 2), m.rivet);
-  const glowGeo = new THREE.CircleGeometry(0.19, 24);
-  glowGeo.rotateX(Math.PI / 2); // faces down
-  add(base, glowGeo, m.thruster, 0, 0.13, 0);
-
-  // The bubble body with a metal seam round its middle.
-  add(body, new THREE.SphereGeometry(0.31, 28, 20).scale(1, 0.92, 1), m.sheet, 0, 0.46, 0);
-  const seamGeo = new THREE.TorusGeometry(0.305, 0.022, 8, 36);
-  seamGeo.rotateX(Math.PI / 2);
-  add(body, seamGeo, m.rivet, 0, 0.42, 0);
-  add(body, new THREE.CircleGeometry(0.08, 20), m.panel, 0, 0.36, 0.296);
-
-  const armL = arm(add, body, -0.31, 0.5, 0.2, m.sheet, mitten(add, m.paper));
-  const armR = arm(add, body, 0.31, 0.5, 0.2, m.sheet, mitten(add, m.paper));
-
-  // The head: a white dome with a dark goggle visor wrapped round its front.
-  const head = new THREE.Group();
-  head.position.set(0, 0.7, 0);
-  body.add(head);
-  add(head, new THREE.SphereGeometry(0.25, 28, 20), m.paper, 0, 0.14, 0);
-  // The visor: a flattened dark lens bulging out of the dome's front.
-  add(head, new THREE.SphereGeometry(0.21, 24, 14).scale(1, 0.55, 0.6), m.glass, 0, 0.15, 0.15);
-  const pupilGeo = new THREE.CircleGeometry(0.045, 20).scale(1, 1.35, 1);
-  const pupils = [-0.085, 0.085].map((x) => add(head, pupilGeo, m.pupil, x, 0.15, 0.278));
-  // Two little antenna nubs.
-  const nubGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.1, 6);
-  for (const x of [-0.12, 0.12]) {
-    add(head, nubGeo, m.ink, x, 0.38, 0);
-    add(head, new THREE.SphereGeometry(0.03, 10, 8), m.signal, x, 0.44, 0);
-  }
-  return { head, headTop: 0.44, armL, armR, pupils, spin: [{ obj: rotor, yaw: true }], feet: [], hover: true };
-}
-
-/** A box head with a screen face (eyes and a smile) on a short neck, rolling on one ball wheel. */
-function tv(add: Add, _root: THREE.Group, body: THREE.Group, base: THREE.Group, m: Mats): Parts {
-  // The ball wheel in a fork; the stripe shows it rolling.
-  const wheel = new THREE.Group();
-  wheel.position.set(0, 0.15, 0);
-  base.add(wheel);
-  add(wheel, new THREE.SphereGeometry(0.15, 20, 14), m.ink);
-  const stripeGeo = new THREE.TorusGeometry(0.15, 0.022, 8, 28);
-  stripeGeo.rotateY(Math.PI / 2); // round the axle (x)
-  add(wheel, stripeGeo, m.rivet);
-  const forkGeo = new RoundedBoxGeometry(0.05, 0.2, 0.14, 2, 0.02);
-  add(base, forkGeo, m.sheet, -0.19, 0.2, 0);
-  add(base, forkGeo, m.sheet, 0.19, 0.2, 0);
-
-  // A compact body with three buttons, a neck.
-  add(body, new RoundedBoxGeometry(0.48, 0.32, 0.4, 4, 0.1), m.sheet, 0, 0.44, 0);
-  const buttonGeo = new THREE.SphereGeometry(0.03, 10, 8);
-  add(body, buttonGeo, m.signal, -0.09, 0.44, 0.2);
-  add(body, buttonGeo, m.panel, 0, 0.44, 0.2);
-  add(body, buttonGeo, m.rivet, 0.09, 0.44, 0.2);
-  add(body, new THREE.CylinderGeometry(0.06, 0.07, 0.1, 12), m.ink, 0, 0.64, 0);
-
-  const ball = (grip: THREE.Group): void => {
-    add(grip, new THREE.SphereGeometry(0.055, 12, 10), m.rivet);
-  };
-  const armL = arm(add, body, -0.28, 0.54, 0.24, m.ink, ball);
-  const armR = arm(add, body, 0.28, 0.54, 0.24, m.ink, ball);
-
-  // The head: a white set with a dark screen; on it, two round eyes and a smile.
-  const head = new THREE.Group();
-  head.position.set(0, 0.68, 0);
-  body.add(head);
-  add(head, new RoundedBoxGeometry(0.62, 0.44, 0.44, 4, 0.12), m.paper, 0, 0.22, 0);
-  add(head, new RoundedBoxGeometry(0.48, 0.32, 0.04, 3, 0.06), m.glass, 0, 0.22, 0.212);
-  const pupils = [-0.11, 0.11].map((x) => add(head, new THREE.CircleGeometry(0.06, 22), m.pupil, x, 0.25, 0.236));
-  const smileGeo = new THREE.TorusGeometry(0.06, 0.013, 6, 16, Math.PI);
-  smileGeo.rotateZ(Math.PI); // the lower half: a smile
-  add(head, smileGeo, m.pupil, 0, 0.17, 0.236);
-  // An antenna with a ball on top.
-  add(head, new THREE.CylinderGeometry(0.012, 0.012, 0.14, 6), m.ink, 0.16, 0.5, 0);
-  add(head, new THREE.SphereGeometry(0.04, 12, 8), m.signal, 0.16, 0.58, 0);
-  return { head, headTop: 0.6, armL, armR, pupils, spin: [{ obj: wheel, yaw: false }], feet: [], hover: false };
-}
-
-/** A round can on two stubby feet, with a dome head and one big eye. */
-function can(add: Add, _root: THREE.Group, body: THREE.Group, base: THREE.Group, m: Mats): Parts {
-  const footGeo = new RoundedBoxGeometry(0.16, 0.08, 0.24, 2, 0.035);
-  const legGeo = new THREE.CylinderGeometry(0.045, 0.05, 0.14, 10);
-  const feet = [-0.12, 0.12].map((x) => {
-    const foot = new THREE.Group();
-    foot.position.set(x, 0, 0);
-    base.add(foot);
-    add(foot, footGeo, m.ink, 0, 0.04, 0.03);
-    add(foot, legGeo, m.rivet, 0, 0.14, 0);
-    return foot;
-  });
-
-  // The can, banded top and bottom, with a front panel.
-  add(body, new THREE.CylinderGeometry(0.27, 0.27, 0.44, 28), m.sheet, 0, 0.42, 0);
-  const bandGeo = new THREE.TorusGeometry(0.27, 0.022, 8, 32);
-  bandGeo.rotateX(Math.PI / 2);
-  add(body, bandGeo, m.rivet, 0, 0.22, 0);
-  add(body, bandGeo, m.rivet, 0, 0.62, 0);
-  add(body, new RoundedBoxGeometry(0.2, 0.16, 0.04, 2, 0.015), m.panel, 0, 0.42, 0.262);
-
-  const armL = arm(add, body, -0.3, 0.56, 0.24, m.sheet, mitten(add, m.ink));
-  const armR = arm(add, body, 0.3, 0.56, 0.24, m.sheet, mitten(add, m.ink));
-
-  // The dome head with one big eye in a dark housing, and a light on top.
-  const head = new THREE.Group();
-  head.position.set(0, 0.64, 0);
-  body.add(head);
-  add(head, new THREE.SphereGeometry(0.27, 28, 14, 0, Math.PI * 2, 0, Math.PI / 2), m.paper);
-  add(head, new THREE.CircleGeometry(0.27, 28).rotateX(Math.PI / 2), m.paper); // the dome's floor, seen from below
-  const housingGeo = new THREE.CylinderGeometry(0.11, 0.11, 0.1, 24);
-  housingGeo.rotateX(Math.PI / 2);
-  add(head, housingGeo, m.ink, 0, 0.12, 0.23);
-  const pupils = eyes(add, head, m, [0], 0.12, 0.282, 0.09, 0.06);
-  add(head, new THREE.CylinderGeometry(0.035, 0.045, 0.05, 10), m.ink, 0, 0.29, 0);
-  add(head, new THREE.SphereGeometry(0.04, 12, 8), m.signal, 0, 0.33, 0);
-  return { head, headTop: 0.36, armL, armR, pupils, spin: [], feet, hover: false };
-}
-
-/** A big round head with ears, a small body on a four-wheeled chassis. */
-function kitty(add: Add, _root: THREE.Group, body: THREE.Group, base: THREE.Group, m: Mats): Parts {
-  add(base, new RoundedBoxGeometry(0.44, 0.1, 0.4, 2, 0.04), m.ink, 0, 0.13, 0);
-  const wheelGeo = new THREE.CylinderGeometry(0.085, 0.085, 0.06, 16);
-  wheelGeo.rotateZ(Math.PI / 2);
-  const spin: Parts['spin'] = [];
-  for (const x of [-0.23, 0.23]) {
-    for (const z of [-0.12, 0.12]) spin.push({ obj: add(base, wheelGeo, m.rivet, x, 0.085, z), yaw: false });
-  }
-
-  add(body, new RoundedBoxGeometry(0.42, 0.28, 0.36, 4, 0.1), m.sheet, 0, 0.32, 0);
-  const bellyGeo = new THREE.CircleGeometry(0.09, 20);
-  add(body, bellyGeo, m.panel, 0, 0.31, 0.182);
-
-  const armL = arm(add, body, -0.25, 0.4, 0.16, m.sheet, mitten(add, m.paper));
-  const armR = arm(add, body, 0.25, 0.4, 0.16, m.sheet, mitten(add, m.paper));
-
-  const head = new THREE.Group();
-  head.position.set(0, 0.48, 0);
-  body.add(head);
-  add(head, new RoundedBoxGeometry(0.68, 0.46, 0.5, 5, 0.17), m.paper, 0, 0.23, 0);
-  // Ears: the body's colour outside, the district's inside.
-  const earGeo = new THREE.ConeGeometry(0.1, 0.17, 4);
-  const innerGeo = new THREE.ConeGeometry(0.055, 0.1, 4);
-  for (const side of [-1, 1]) {
-    const ear = add(head, earGeo, m.sheet, side * 0.2, 0.5, 0);
-    ear.rotation.set(0, Math.PI / 4, -side * 0.3);
-    const inner = add(head, innerGeo, m.panel, side * 0.205, 0.49, 0.045);
-    inner.rotation.set(0, Math.PI / 4, -side * 0.3);
-  }
-  const pupils = eyes(add, head, m, [-0.14, 0.14], 0.25, 0.252, 0.1, 0.065);
-  const cheekGeo = new THREE.CircleGeometry(0.04, 16);
-  add(head, cheekGeo, m.panel, -0.25, 0.14, 0.252);
-  add(head, cheekGeo, m.panel, 0.25, 0.14, 0.252);
-  const mouthGeo = new THREE.TorusGeometry(0.03, 0.01, 6, 12, Math.PI);
-  mouthGeo.rotateZ(Math.PI);
-  add(head, mouthGeo, m.ink, -0.03, 0.15, 0.252);
-  add(head, mouthGeo, m.ink, 0.03, 0.15, 0.252);
-  return { head, headTop: 0.58, armL, armR, pupils, spin, feet: [], hover: false };
-}
-
-const BUILD: Record<RobotVariant, (add: Add, root: THREE.Group, body: THREE.Group, base: THREE.Group, m: Mats) => Parts> = {
-  rover, hover, tv, can, kitty,
-};
+/** The joint values of the bones, by "bone|prop" (and "lid" for the eyes). */
+type Key = string;
+const propOf = (key: Key): string => (key === 'lid' ? 'lid' : key.slice(key.indexOf('|') + 1));
+const boneOf = (key: Key): string => (key === 'lid' ? 'head' : key.slice(0, key.indexOf('|')));
 
 /**
- * `bodyHue` (0–360) colours the robot's shell and arms, so every agent has its own colour;
- * `hue` (its district's) tints the front panel. The orchestrator is a larger rover with an antenna
- * light and a signal-orange trim.
+ * `bodyHue` (0–360) colours the robot's shell, its darker shade and its arms; `hue` (its district's)
+ * tints the front panel. The orchestrator wears the species' extras (the rover's antenna and trim).
  */
 export function makeRobot(hue: number, orchestrator: boolean, palette: Palette, bodyHue = hue, variant: RobotVariant = 'rover'): Robot {
-  const kind: RobotVariant = orchestrator ? 'rover' : variant;
+  const reg = registry();
+  const id = orchestrator ? 'rover' : variant;
+  let species = reg.species[id];
+  if (!species) {
+    warnOnce(`species "${id}" is not valid (see registry().errors); the rover is used`);
+    species = reg.species.rover!;
+  }
+  const sp = species;
+
   const root = new THREE.Group();
   root.name = orchestrator ? 'robot-orchestrator' : 'robot';
   root.scale.setScalar(orchestrator ? ORCH_SCALE : SCALE);
 
-  const allMats: THREE.Material[] = [];
-  // Materials that take the highlight glow (the shell and running gear).
-  const shell: THREE.MeshToonMaterial[] = [];
-  const std = (color: string | THREE.Color): THREE.MeshToonMaterial => {
-    const m = toonMat({ color });
-    allMats.push(m);
-    shell.push(m);
-    return m;
-  };
-  const glow = (color: string, intensity: number): THREE.MeshToonMaterial => {
-    const m = toonMat({ color, emissive: color, emissiveIntensity: intensity });
-    allMats.push(m);
-    return m;
-  };
+  const mats = robotMats(palette, hue, bodyHue);
+  const rig: RigInstance = instantiate(sp, speciesGeo(sp, palette, orchestrator), mats, root);
+  const fx = new Fx();
 
-  // Glass and lights are not part of the highlight, so it never washes out the eyes.
-  const glassMat = toonMat({ color: palette.ink });
-  allMats.push(glassMat);
-  const pupilMat = glow(palette.ok, 1.2);
-  const lightMat = glow(palette.signal, 1.2);
-  const thrusterMat = new THREE.MeshBasicMaterial({ color: palette.info, toneMapped: false });
-  allMats.push(thrusterMat);
-  const m: Mats = {
-    sheet: std(new THREE.Color().setHSL(bodyHue / 360, 0.62, 0.62, THREE.SRGBColorSpace)),
-    paper: std(palette.paper),
-    panel: std(new THREE.Color().setHSL(hue / 360, 0.55, 0.78, THREE.SRGBColorSpace)),
-    rivet: std(palette.rule),
-    ink: std(palette.ink),
-    signal: std(palette.signal),
-    glass: glassMat, pupil: pupilMat, light: lightMat, thruster: thrusterMat,
-  };
+  // The grip: the tool's aim (a two-handed tool points at the other grip, at rest).
+  root.updateMatrixWorld(true);
+  const gripR = rig.bones.get('gripR')!;
+  const gripL = rig.bones.get('gripL')!;
+  const toGripL = gripR.worldToLocal(gripL.getWorldPosition(new THREE.Vector3()));
 
-  const add: Add = (parent, geometry, material, x = 0, y = 0, z = 0) => {
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(x, y, z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    parent.add(mesh);
-    return mesh;
-  };
-
-  // The base (treads, wheels, feet or thruster) bobs when walking; the body carries the rest.
-  const baseGroup = new THREE.Group();
-  root.add(baseGroup);
-  const bodyGroup = new THREE.Group();
-  root.add(bodyGroup);
-  const { head, headTop, armL, armR, pupils, spin, feet, hover: floats } = BUILD[kind](add, root, bodyGroup, baseGroup, m);
-
-  let antennaLight: THREE.Mesh | undefined;
-  if (orchestrator) {
-    add(head, new THREE.CylinderGeometry(0.01, 0.01, 0.16, 6), m.ink, 0.22, headTop + 0.08, -0.05);
-    antennaLight = add(head, new THREE.SphereGeometry(0.03, 10, 8), lightMat, 0.22, headTop + 0.17, -0.05);
-    // Signal-orange trim across the front of the body, above the panel.
-    add(bodyGroup, new RoundedBoxGeometry(0.36, 0.03, 0.02, 2, 0.008), m.signal, 0, 0.62, 0.31);
-  }
-
+  // ---- State ---------------------------------------------------------------------------------
   let state: RobotState = 'idle';
-  let pupilIntensity = 1.2;
+  let eyeIntensity = 1.3;
+  let lastT = 0;
+  let hold: { id: string; clip: Clip; start: number } | null = null;
+  let once: { id: string; clip: Clip; start: number; dur: number } | null = null;
+  let body: { id: string; clip: Clip; start: number } | null = null;
+  let heldTool: { id: string; holder: THREE.Object3D } | null = null;
+  let carried: { id: string; holder: THREE.Object3D } | null = null;
+  /** The blended value of each joint, and the rate channels' and spins' accumulated angles. */
+  const cur = new Map<Key, number>();
+  const acc = new Map<Key, number>();
+  /** Clip effects: the seconds since each one last spawned, for the clip they came from. */
+  const fxTimer = new Map<number, number>();
+  let fxFor: string | null = null;
+
+  const eyeColour = (s: RobotState): string => (s === 'offline' ? palette.inkMuted : s === 'working' ? palette.info : palette.ok);
+
   const applyState = (next: RobotState): void => {
     state = next;
-    const colour = next === 'offline' ? palette.inkMuted : next === 'working' ? palette.info : palette.ok;
-    pupilMat.color.set(colour);
-    pupilMat.emissive.set(colour);
-    pupilIntensity = next === 'offline' ? 0.2 : next === 'working' ? 2.0 : 1.3;
-    thrusterMat.color.set(next === 'offline' ? palette.inkMuted : palette.info);
+    mats.eye.color.set(eyeColour(next));
+    mats.eye.emissive.set(eyeColour(next));
+    eyeIntensity = next === 'offline' ? 0.2 : next === 'working' ? 2.0 : 1.3;
+    mats.thruster.color.set(next === 'offline' ? palette.inkMuted : palette.info);
   };
-  applyState('idle');
 
-  outline(root, 0.03);
+  /** A shared clip, or the species' own (overrides first), by name. */
+  const clipNamed = (name: string): Clip | undefined => {
+    const override = sp.overrides[name];
+    if (override && sp.clips[override]) return sp.clips[override];
+    return sp.clips[name] ?? sharedClip(name);
+  };
+  const stateClipId = (): string => {
+    if (state === 'idle') return 'idle';
+    if (state === 'working') return 'type';
+    if (state === 'offline') return 'offline';
+    const walk = `walk.${sp.locomotion}`;
+    if (clipNamed(walk)) return walk;
+    warnOnce(`no clip "${walk}" for locomotion "${sp.locomotion}" (the treads walk is used)`);
+    return 'walk.treads';
+  };
+
+  /** The clip playing now: a one-shot over a hold over the state's clip. */
+  const activeClip = (t: number): { id: string; clip: Clip; elapsed: number } | null => {
+    if (body) return { id: body.id, clip: body.clip, elapsed: t - body.start };
+    if (once) {
+      if (t - once.start >= once.dur) once = null;
+      else return { id: once.id, clip: once.clip, elapsed: t - once.start };
+    }
+    if (hold) return { id: hold.id, clip: hold.clip, elapsed: (t - hold.start) % (hold.clip.dur ?? Infinity) };
+    const id = stateClipId();
+    const clip = clipNamed(id);
+    return clip ? { id, clip, elapsed: 0 } : null;
+  };
+
+  /** Clip effects, spawned on their interval while the clip plays. */
+  const clipFx = (id: string, clip: Clip, dt: number): void => {
+    if (fxFor !== id) {
+      fxFor = id;
+      fxTimer.clear();
+    }
+    (clip.fx ?? []).forEach((f, i) => {
+      const every = f.every ?? 0.6;
+      const next = (fxTimer.get(i) ?? every) - dt;
+      if (next <= 0) {
+        spawnAt(f.kind, f.at);
+        fxTimer.set(i, every);
+      } else fxTimer.set(i, next);
+    });
+  };
+
+  const anchorOf = (name: string): { obj: THREE.Object3D; at: Vec3 } => {
+    if (name === 'head') return { obj: rig.bones.get('head')!, at: [0, 0.3, 0] };
+    const obj = rig.bones.get(name);
+    return obj ? { obj, at: [0, 0, 0] } : { obj: rig.bones.get('head')!, at: [0, 0.3, 0] };
+  };
+  const spawnAt = (kind: FxKind, anchor: string): void => {
+    const a = anchorOf(anchor);
+    fx.spawn(kind, a.obj, a.at);
+  };
+
+  /** The state's motion on top of the clip: floating, the feet, the spins. */
+  const extras = new Map<string, Vec3>();
+  const extra = (bone: string): Vec3 => {
+    let v = extras.get(bone);
+    if (!v) extras.set(bone, (v = [0, 0, 0]));
+    return v;
+  };
+
+  const apply = (): void => {
+    for (const [name, obj] of rig.bones) {
+      const r = rig.rest.get(name)!;
+      obj.position.set(r[0], r[1], r[2]);
+      obj.rotation.set(0, 0, 0);
+      obj.scale.setScalar(1);
+    }
+    const keys = new Set<Key>([...cur.keys(), ...acc.keys()]);
+    for (const key of keys) {
+      if (key === 'lid') continue;
+      const obj = rig.bones.get(boneOf(key));
+      if (!obj) continue;
+      const prop = propOf(key);
+      const v = cur.get(key) ?? restOf(prop);
+      if (prop.startsWith('rot.')) {
+        const axis = prop.slice(4) as 'x' | 'y' | 'z';
+        obj.rotation[axis] = v + (acc.get(key) ?? 0);
+      } else if (prop.startsWith('pos.')) {
+        const axis = prop.slice(4) as 'x' | 'y' | 'z';
+        obj.position[axis] += v;
+      } else if (prop === 'scale') obj.scale.setScalar(v);
+    }
+    for (const [bone, e] of extras) {
+      const obj = rig.bones.get(bone);
+      if (obj) obj.position.add(new THREE.Vector3(e[0], e[1], e[2]));
+    }
+    const lid = cur.get('lid') ?? 1;
+    for (const p of rig.pupils) p.scale.y = lid;
+  };
+
+  // The grip and carry holders: tools are baked once (cached), held at the bone.
+  const holdTool = (id: string | null): void => {
+    if (heldTool) {
+      heldTool.holder.removeFromParent();
+      heldTool = null;
+    }
+    if (id === null) return;
+    const tool = reg.tools[id];
+    if (!tool) return void warnOnce(`no tool "${id}"`);
+    const bone = tool.grip === 'carry' ? 'carry' : 'gripR';
+    const holder = rig.attach(bone, toolGeo(id, tool, palette));
+    if (tool.grip === 'two') {
+      const dir = toGripL.clone().normalize();
+      holder.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+    } else if (tool.grip === 'one') {
+      // The parts hang along −y; a fist turns them ahead (−y → +z), or stands them up.
+      const aim = tool.aim ?? 'forward';
+      holder.rotation.x = aim === 'forward' ? -Math.PI / 2 : aim === 'up' ? Math.PI : 0;
+    }
+    heldTool = { id, holder };
+  };
+  const carryItem = (id: string | null): void => {
+    if (carried) {
+      carried.holder.removeFromParent();
+      carried = null;
+    }
+    if (id === null) return;
+    const item = reg.tools[id];
+    if (!item) return void warnOnce(`no item "${id}"`);
+    carried = { id, holder: rig.attach('carry', toolGeo(id, item, palette)) };
+  };
+
+  applyState('idle');
+  apply();
+
   return {
     group: root,
+    species: sp.id,
 
     labelAnchor(target: THREE.Vector3): THREE.Vector3 {
-      head.updateWorldMatrix(true, false);
-      return head.localToWorld(target.set(0, headTop + LABEL_LIFT, 0));
+      root.updateWorldMatrix(true, false);
+      return root.localToWorld(target.set(0, sp.label_top, 0));
     },
 
     setState(next: RobotState): void {
@@ -416,118 +306,120 @@ export function makeRobot(hue: number, orchestrator: boolean, palette: Palette, 
     },
 
     update(dt: number, t: number): void {
-      const k = Math.min(1, dt * 8);
-      const s = state;
+      lastT = t;
+      const k = Math.min(1, dt * BLEND);
+      const active = activeClip(t);
+      const targets = active ? evalClip(active.clip, t, sp.gait, active.elapsed) : new Map<Key, { value: number; snap: boolean }>();
 
-      // Head: idle tilts, working nods, walking glances, offline droops and stays still.
-      let headX = 0;
-      let headZ = 0;
-      if (s === 'idle') {
-        headX = 0.03 * Math.sin(t * 0.5);
-        headZ = 0.12 * Math.sin(t * 0.9);
-      } else if (s === 'working') {
-        headX = 0.14 + 0.08 * Math.sin(t * 5);
-        headZ = 0.04 * Math.sin(t * 1.3);
-      } else if (s === 'walking') {
-        headX = 0.04;
-        headZ = 0.06 * Math.sin(t * 3);
-      } else {
-        headX = 0.5;
-        headZ = 0.12;
+      if (active) {
+        for (const ch of active.clip.channels) {
+          if (ch.rate === undefined) continue;
+          const key = `${ch.bone}|${ch.prop}`;
+          acc.set(key, (acc.get(key) ?? 0) + ch.rate * dt);
+        }
+        clipFx(active.id, active.clip, dt);
       }
-      head.rotation.x += (headX - head.rotation.x) * k;
-      head.rotation.z += (headZ - head.rotation.z) * k;
-
-      // Body: slight bob when idle, a sway when walking, slumped when offline.
-      let bodyY = 0;
-      let bodySway = 0;
-      if (s === 'idle') bodyY = 0.012 * Math.sin(t * 1.6);
-      else if (s === 'working') bodyY = 0.004 * Math.sin(t * 2.5);
-      else if (s === 'walking') {
-        bodyY = 0.01 * Math.abs(Math.sin(t * 6));
-        bodySway = 0.05 * Math.sin(t * 6);
-      } else bodyY = -0.02;
-      // A hover robot floats on its thruster, and sets down when offline.
-      const lift = floats ? (s === 'offline' ? -0.07 : 0.035 * Math.sin(t * 2.2)) : 0;
-      bodyGroup.position.y = bodyY + lift;
-      bodyGroup.rotation.z = bodySway;
-
-      // The base bobs, wheels roll and feet step while walking; a rotor always turns.
-      baseGroup.position.y = (s === 'walking' && !floats ? 0.012 * Math.abs(Math.sin(t * 10)) : 0) + lift;
-      for (const w of spin) {
-        if (w.yaw) w.obj.rotation.y += dt * (s === 'offline' ? 0 : s === 'walking' ? 9 : 3);
-        else if (s === 'walking') w.obj.rotation.x += dt * 8;
+      // Blend every joint toward its target; a joint no clip names eases back to rest.
+      for (const key of new Set<Key>([...cur.keys(), ...targets.keys()])) {
+        const tg = targets.get(key);
+        const goal = tg ? tg.value : restOf(propOf(key));
+        const v = cur.get(key) ?? restOf(propOf(key));
+        cur.set(key, tg?.snap ? goal : v + (goal - v) * k);
       }
-      feet.forEach((f, i) => {
-        const p = s === 'walking' ? Math.sin(t * 9 + i * Math.PI) : 0;
-        f.position.z = 0.06 * p;
-        f.position.y = 0.035 * Math.max(0, p);
+
+      // Spins: the species' rates by state (a rotor, a ball wheel).
+      for (const s of sp.spin) {
+        const rate = state === 'walking' ? s.walk : state === 'offline' ? (s.offline ?? 0) : s.idle;
+        const key = `${s.bone}|rot.${s.axis}`;
+        acc.set(key, (acc.get(key) ?? 0) + rate * dt);
+      }
+      // Feet step alternately while walking; floating robots bob, and sit down when offline.
+      extras.clear();
+      sp.feet.forEach((bone, i) => {
+        const p = state === 'walking' ? Math.sin(WALK_FEET_RATE * t + i * Math.PI) : 0;
+        const e = extra(bone);
+        e[1] += 0.035 * Math.max(0, p);
+        e[2] += 0.06 * p;
       });
-
-      // Arms: quick alternating typing when working, a swing when walking, rest otherwise.
-      if (s === 'working') {
-        const p = Math.sin(t * 11);
-        armL.rotation.x = -0.9 + 0.2 * p;
-        armR.rotation.x = -0.9 - 0.2 * p;
-      } else if (s === 'walking') {
-        const w = 0.25 * Math.sin(t * 6);
-        armL.rotation.x = w;
-        armR.rotation.x = -w;
-      } else if (s === 'idle') {
-        const i = 0.05 * Math.sin(t * 1.1);
-        armL.rotation.x = i;
-        armR.rotation.x = -i;
-      } else {
-        armL.rotation.x = 0.2;
-        armR.rotation.x = 0.2;
+      const tuck = body ? AIR_FEET[body.id] : undefined;
+      if (tuck !== undefined) for (const bone of sp.feet) extra(bone)[1] += tuck;
+      if (sp.floats) {
+        const lift = state === 'offline' ? FLOAT_OFFLINE : 0.035 * Math.sin(2.2 * t);
+        extra('base')[1] += lift;
+        extra('body')[1] += lift;
       }
 
-      // Eyes: occasional blink when idle, half-lidded when offline, brighter and pulsing when working.
-      let lid = 1;
-      if (s === 'idle' && t % 3.6 < 0.14) lid = 0.1;
-      else if (s === 'offline') lid = 0.45;
-      for (const p of pupils) p.scale.y = lid;
-      pupilMat.emissiveIntensity = s === 'working' ? pupilIntensity + 0.3 * Math.sin(t * 5) : pupilIntensity;
-
-      if (antennaLight) lightMat.emissiveIntensity = 1.1 + 0.5 * Math.sin(t * 3);
-    },
-
-    pose(kind: RobotPose): void {
-      armL.rotation.set(0, 0, 0);
-      armR.rotation.set(0, 0, 0);
-      head.rotation.set(0, 0, 0);
-      if (kind === 'wave') {
-        armR.rotation.z = 2.5;
-        armL.rotation.z = -0.25;
-        head.rotation.z = -0.15;
-      } else if (kind === 'proud') {
-        armL.rotation.z = -0.55;
-        armR.rotation.z = 0.55;
-        head.rotation.x = -0.12;
-      } else if (kind === 'think') {
-        armR.rotation.x = -1.9;
-        armR.rotation.z = -0.35;
-        head.rotation.z = 0.2;
-        head.rotation.x = 0.08;
-      } else {
-        armL.rotation.z = -2.7;
-        armR.rotation.z = 2.7;
-        head.rotation.x = -0.15;
-      }
+      apply();
+      fx.update(dt);
+      mats.eye.emissiveIntensity = state === 'working' ? eyeIntensity + 0.3 * Math.sin(t * 5) : eyeIntensity;
+      if (orchestrator) mats.light.emissiveIntensity = 1.1 + 0.5 * Math.sin(t * 3);
     },
 
     setHighlighted(on: boolean): void {
-      for (const mat of shell) {
-        mat.emissive.set(on ? palette.signal : 0x000000);
-        mat.emissiveIntensity = on ? 0.35 : 0;
+      mats.matte.emissive.set(on ? palette.signal : 0x000000);
+      mats.matte.emissiveIntensity = on ? 0.35 : 0;
+    },
+
+    pose(kind: RobotPose): void {
+      const clip = clipNamed(kind);
+      if (!clip) return void warnOnce(`no pose clip "${kind}"`);
+      hold = { id: kind, clip, start: lastT };
+      once = null;
+      snapTo(clip, lastT);
+    },
+
+    play(clipId: string | null, opts?: PlayOptions): void {
+      if (clipId === null) {
+        hold = null;
+        return;
+      }
+      const clip = clipNamed(clipId);
+      if (!clip) return void warnOnce(`no clip "${clipId}" for species "${sp.id}"`);
+      if (opts?.loop ?? clip.loop !== false) {
+        hold = { id: clipId, clip, start: lastT };
+        once = null;
+      } else {
+        once = { id: clipId, clip, start: lastT, dur: clip.dur ?? 1.6 };
       }
     },
 
+    setBody(clipId: string | null): void {
+      if (clipId === null) {
+        body = null;
+        return;
+      }
+      if (body?.id === clipId) return;
+      const clip = clipNamed(clipId);
+      if (!clip) return void warnOnce(`no body clip "${clipId}" for species "${sp.id}"`);
+      body = { id: clipId, clip, start: lastT };
+    },
+
+    hold(toolId: string | null): void {
+      holdTool(toolId);
+    },
+
+    carry(itemId: string | null): void {
+      carryItem(itemId);
+    },
+
+    fx(kind: FxKind): void {
+      spawnAt(kind, 'head');
+    },
+
     dispose(): void {
-      root.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) obj.geometry.dispose();
-      });
-      for (const mat of allMats) mat.dispose();
+      fx.clear();
+      rig.dispose();
+      root.removeFromParent();
     },
   };
+
+  /** Sets the joints to a clip's targets at once (a pose: no blend). */
+  function snapTo(clip: Clip, t: number): void {
+    const targets = evalClip(clip, t, sp.gait, 0);
+    for (const key of new Set<Key>([...cur.keys(), ...targets.keys()])) {
+      const tg = targets.get(key);
+      cur.set(key, tg ? tg.value : restOf(propOf(key)));
+    }
+    apply();
+  }
 }

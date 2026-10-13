@@ -4,12 +4,12 @@
 // behind the estimates. `#/usage?fixture=1` renders generated data for design work.
 
 import '../styles/usage.css';
-import { api, type PriceRates, type PricesView, type Settings, type UsageBucket, type UsageCall, type UsageCallsPage, type UsageGroup, type UsageKeyed, type UsageSeries, type UsageSummary, type UsageTotals } from '../api';
+import { api, isContributor, type PriceRates, type PricesView, type Settings, type UsageBucket, type UsageCall, type UsageCallsPage, type UsageGroup, type UsageKeyed, type UsageSeries, type UsageSummary, type UsageTotals } from '../api';
 import { agentName, roleLabel } from '../roles';
 import { href } from '../router';
 import { agents, on } from '../store';
 import { bars, countTo, sparkline, stackedArea, type AreaData, type BarItem, type ChartHandle, type ChartLayer } from '../ui/chart';
-import { ago, button, card, compact, empty, select, stat, table, tabs, toast, type Column } from '../ui/components';
+import { ago, button, card, compact, empty, select, stat, table, tabs, toast, trainsBadge, type Column } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
@@ -187,7 +187,11 @@ const FIXTURE_MODELS = [
   { id: 'openai/gpt-6-astra', provider: 'openai', input: 2.5, output: 10, cr: 1.25, cw: 0, weight: 2 },
   { id: 'deepseek/deepseek-flash', provider: 'deepseek', input: 0.14, output: 0.28, cr: 0.014, cw: 0, weight: 4 },
   { id: 'xai/grok-4.7', provider: 'xai', input: 3, output: 15, cr: 0.75, cw: 0, weight: 1 },
+  { id: 'meta/muse-wonder-1.0', provider: 'meta', input: 4, output: 20, cr: 0.2, cw: 0, weight: 1 },
+  { id: 'meta/muse-spark-1.3', provider: 'meta', input: 1.25, output: 4.25, cr: 0.15, cw: 0, weight: 2 },
+  { id: 'meta/muse-spark-1.3-contributor', provider: 'meta', input: 0.1, output: 0.2, cr: 0.002, cw: 0, weight: 1 },
 ];
+const FIXTURE_TRAINERS = new Set(['meta/muse-spark-1.3-contributor']);
 const FIXTURE_AGENTS = [
   { cid: 101, name: 'Ada', role: 'orchestrator' },
   { cid: 102, name: 'Brin', role: 'builder' },
@@ -245,8 +249,14 @@ const SORT_COLS: { key: Exclude<SortKey, 'key' | 'usd'>; label: string; text: (t
   { key: 'cost_usd', label: 'Reported', text: (t) => usd(t.cost_usd) },
 ];
 
-const SOURCE_LABEL: Record<string, string> = { openrouter: 'OpenRouter', litellm: 'LiteLLM', manual: 'manual' };
-const shortModel = (id: string): string => id.split('/').pop() ?? id;
+/** Display names for provider ids; an unknown id is shown as it is. */
+const PROVIDER_LABEL: Record<string, string> = { openrouter: 'OpenRouter', opencode: 'OpenCode Zen' };
+const SOURCE_LABEL: Record<string, string> = { ...PROVIDER_LABEL, litellm: 'LiteLLM', manual: 'manual' };
+/** Splits `provider/model` on the first slash only: a model id can hold slashes (`openrouter/anthropic/x`). */
+const splitKey = (key: string): { provider: string; model: string } => {
+  const at = key.indexOf('/');
+  return at < 0 ? { provider: '', model: key } : { provider: key.slice(0, at), model: key.slice(at + 1) };
+};
 
 const seg = <T extends string>(items: { key: T; label: string }[], current: T, onPick: (k: T) => void, label: string): HTMLElement => {
   const group = h('div.us-seg', { role: 'group', 'aria-label': label });
@@ -287,6 +297,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let busyMore = false;
   let settings: Settings | null = null;
   let pricesMeta: PricesView | null = null;
+  let trainers = new Set<string>();
+  const isTrainer = (model: string): boolean => (fixture ? FIXTURE_TRAINERS.has(model) : trainers.has(model.replace(/@.*$/, '')));
   const prices = new Map<string, PriceRates | null>();
   let plan: AreaData | null = null;
   let ranked: string[] = [];
@@ -304,7 +316,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       const n = Number(key);
       return Number.isFinite(n) ? nameOf(n) : key;
     }
-    return group === 'role' ? roleLabel(key) : key;
+    if (group === 'role') return roleLabel(key);
+    if (group === 'provider') return PROVIDER_LABEL[key] ?? key;
+    return key;
   };
   const allCalls = (): UsageCall[] => (fixtureAll ??= fixtureCalls(Date.now(), 90));
 
@@ -604,7 +618,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       h(
         'tr',
         { 'data-key': r.key },
-        h('td', null, h('strong', null, labelOf(r.key))),
+        h('td', null, h('strong', null, labelOf(r.key)), isTrainer(r.key) ? trainsBadge() : null),
         SORT_COLS.map((c) => h('td', { class: 'num' }, c.text(r.totals))),
         h('td', { class: 'num us-shr' }, shareBar(max > 0 ? r.totals.usd / max : 0), h('span', null, pct(summary && summary.totals.usd > 0 ? (r.totals.usd / summary.totals.usd) * 100 : 0))),
       ),
@@ -638,7 +652,13 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       refresh,
     );
     const columns: Column<string>[] = [
-      { label: 'Model', cell: (m) => h('span', null, h('strong', null, shortModel(m)), ' ', h('span.faint', null, m.includes('/') ? m.split('/')[0] ?? '' : '')) },
+      {
+        label: 'Model',
+        cell: (m) => {
+          const { provider, model } = splitKey(m);
+          return h('span.truncate', { title: m }, h('strong', null, model), ' ', h('span.faint', null, provider), isTrainer(m) ? [' ', trainsBadge()] : null);
+        },
+      },
       { label: 'Source', cell: (m) => (prices.get(m)?.source ? SOURCE_LABEL[prices.get(m)?.source ?? ''] ?? prices.get(m)?.source ?? '—' : '—') },
       { label: 'Input', num: true, cell: (m) => (prices.get(m) ? usd(prices.get(m)?.input ?? 0) : '—') },
       { label: 'Output', num: true, cell: (m) => (prices.get(m) ? usd(prices.get(m)?.output ?? 0) : '—') },
@@ -673,7 +693,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const columns: Column<UsageCall>[] = [
       { label: 'Time', cell: (c) => h('span.mono', { title: new Date(c.at_ms).toLocaleString() }, new Date(c.at_ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) },
       { label: 'Agent', cell: (c) => h('a', { href: href('agents', c.cid) }, nameOf(c.cid)) },
-      { label: 'Model', cell: (c) => h('span', { title: c.model }, shortModel(c.model)) },
+      { label: 'Model', cell: (c) => h('span.truncate', { title: c.model }, c.model, isTrainer(c.model) ? [' ', trainsBadge()] : null) },
       { label: 'In', num: true, cell: (c) => compact(c.input) },
       { label: 'Out', num: true, cell: (c) => compact(c.output) },
       { label: 'Cache r / w', num: true, cell: (c) => `${compact(c.cache_read)} / ${compact(c.cache_write)}` },
@@ -708,6 +728,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   render();
   const boot = async (): Promise<void> => {
     if (!fixture) settings = await api.settings().catch(() => null);
+    if (!fixture) trainers = await api.models().then((v) => new Set(v.models.filter(isContributor).map((m) => `${m.provider}/${m.id}`))).catch(() => new Set<string>());
     await loadPricesMeta();
     await loadCalls();
     await reload();

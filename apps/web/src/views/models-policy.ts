@@ -2,9 +2,9 @@
 // and the prices. One document (apid's /v1/settings), saved whole.
 
 import '../styles/models-policy.css';
-import { api, type ModelsView, type Settings } from '../api';
+import { api, isContributor, type ModelsView, type Settings } from '../api';
 import { agents } from '../store';
-import { attempt, badge, button, card, dot, empty, field, input, select, table, textarea, toast } from '../ui/components';
+import { attempt, badge, button, card, dot, empty, field, input, select, table, TRAINS_NOTE, textarea, toast, trainsBadge } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { modelPicker } from '../ui/model-picker';
@@ -37,6 +37,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
   let copy: Settings = clone(settings);
   const devModels = settings.dev_models === true;
   const known = new Set(modelsView.models.map((m) => `${m.provider}/${m.id}`));
+  const trainers = new Set(modelsView.models.filter(isContributor).map((m) => `${m.provider}/${m.id}`));
   const errors = new Set<string>();
   let pricesOpen = false;
 
@@ -127,6 +128,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     availability.title = listed ? 'Listed by its provider' : 'Not listed by its provider';
     const pinned = effort === null ? null : badge('effort pinned', 'accent');
     if (pinned) pinned.title = `@${effort}`;
+    const trains = trainers.has(base) ? trainsBadge() : null;
     const remove = button(
       '',
       () => {
@@ -135,7 +137,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       },
       { kind: 'ghost', size: 'sm', icon: 'x', title: `Remove ${entry}` },
     );
-    return h('li.policy-row', { 'data-key': `policy-${tier}-${entry}` }, availability, h('span.mono', { title: entry }, base), pinned, remove);
+    return h('li.policy-row', { 'data-key': `policy-${tier}-${entry}` }, availability, h('span.mono.truncate', { title: entry }, base), pinned, trains, remove);
   }
 
   function defaultsCard(): HTMLElement {
@@ -177,8 +179,19 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       : empty('agents', 'No roles connected');
     return card(
       'Defaults',
-      h('div.stack', null, field('Orchestrator model', orch.el), field('Worker default', worker.el), h('h3', null, 'Per role'), roleRows),
+      h('div.stack', null, trainingField(), field('Orchestrator model', orch.el), field('Worker default', worker.el), h('h3', null, 'Per role'), roleRows),
     );
+  }
+
+  /** The owner's confirmation for contributor models; off until the owner turns it on. */
+  function trainingField(): HTMLElement {
+    const box = input({ type: 'checkbox', style: 'width:auto' });
+    box.checked = copy.allow_training_models === true;
+    box.addEventListener('change', () => {
+      copy.allow_training_models = box.checked;
+      sync();
+    });
+    return h('div.stack', null, h('h3', null, 'Contributor models'), h('label', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' }, box, h('span', null, 'Allow as defaults, role models and policy entries')), h('p.faint', null, TRAINS_NOTE));
   }
 
   function roleSelect(role: string): HTMLElement {
@@ -213,10 +226,10 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       sync();
     });
     const block = textarea({ rows: 5, spellcheck: 'false', placeholder: 'example.com\n*.example.net' });
-    block.value = copy.fetch_block.join('\n');
+    block.value = (copy.fetch_block ?? []).join('\n');
     block.addEventListener('input', () => {
       copy.fetch_block = block.value
-        .split('\n')
+        .split(/[\n,]/)
         .map((s) => s.trim())
         .filter((s) => s !== '');
       sync();
@@ -266,7 +279,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     const priceTable = keys.length
       ? table<string>(
           [
-            { label: 'Model', cell: (k) => h('span.mono', null, k) },
+            { label: 'Model', cell: (k) => h('span', null, h('span.mono.truncate', { title: k }, k), trainers.has(k) ? trainsBadge() : null) },
             { label: 'Input (credits / 1M)', num: true, cell: (k) => priceInput(k, 'input') },
             { label: 'Output (credits / 1M)', num: true, cell: (k) => priceInput(k, 'output') },
           ],

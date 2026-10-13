@@ -1,0 +1,160 @@
+/* MCP wizard steps 3 (Test) and 4 (Tools). */
+
+.wz-test,
+.wz-tools-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  min-width: 0;
+}
+
+.wz-test-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.wz-test-box {
+  min-width: 0;
+}
+
+.wz-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+.wz-test-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-sm);
+}
+
+.wz-test-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.wz-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.wz-scroll .table {
+  min-width: 100%;
+}
+
+.wz-tool-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+  overflow-wrap: normal;
+}
+
+.wz-tool-name .mono {
+  font-size: var(--fs-xs);
+}
+
+.wz-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.wz-log {
+  margin: 0;
+  max-height: 14rem;
+  overflow: auto;
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.wz-log .err {
+  color: var(--danger);
+}
+
+.wz-note {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.wz-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s4);
+}
+
+.wz-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  cursor: pointer;
+}
+
+.wz-tool-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.wz-tool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.wz-tool-row:first-child {
+  border-top: 0;
+}
+
+.wz-tool-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.wz-tool-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wz-tool-text .mono {
+  font-size: var(--fs-xs);
+}
+
+.wz-tool-desc {
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 560px) {
+  .wz-tool-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -31,6 +31,12 @@ function setState(next: PlazaState | null): void {
   notify();
 }
 
+/** Whether the plaza is held (STOP ALL, not yet resumed). Starts the shared state's one poll on first use. */
+export function plazaPaused(): boolean {
+  start();
+  return state?.paused ?? false;
+}
+
 function subscribe(el: HTMLElement, paint: () => void): HTMLElement {
   start();
   subs.add({ el, paint, seen: false });

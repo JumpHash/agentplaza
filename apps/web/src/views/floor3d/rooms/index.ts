@@ -1,39 +1,29 @@
-// District rooms: each role's room has its own size, shape, floor, walls and furniture (the styles
-// live in styles-*.ts); this module builds a room from its style and gives the scene what it needs.
+// District rooms. A room is generated (gen.ts) from the catalogue and its role's template, then built (build.ts)
+// into a group in the room's local frame. The generator is deterministic: the same role, size, door and seed give
+// the same layout in the desktop app too (docs/design/rooms.md).
 
 import * as THREE from 'three';
-import { canvasTexture, rng } from '../textures';
-import { outline, toonMat } from '../toon';
-import { floorTexture, makeKit, Room, wallLook, type KitPalette, type RoomStyle } from './kit';
-import { STYLES_A } from './styles-a';
-import { STYLES_B } from './styles-b';
-import { STYLES_C } from './styles-c';
-import { STYLES_D } from './styles-d';
+import catalogFile from '../../../../../../assets/rooms/catalog.json';
+import rolesFile from '../../../../../../assets/rooms/roles.json';
+import { roleLabel } from '../../../roles';
+import { buildLayout, type RoomSpot } from './build';
+import { generate, type Catalog, type Door, type Layout, type Roles } from './gen';
+import minSizeTable from '../../../../../../assets/rooms/minsize.json';
+import type { KitPalette } from './kit';
 
-export type { RoomStyle } from './kit';
+const CATALOG = catalogFile as unknown as Catalog;
+export const ROOM_CATALOG = CATALOG;
+const ROLES = rolesFile as unknown as Roles;
+/** The largest side a room is built at when its role needs more space than the slot gives. */
+const MAX_SIDE = 8;
+/** Walls take this much off the cell's side: the default inner size is 2s - WALL_MARGIN. */
+const WALL_MARGIN = 0.15;
 
-/** A plain studio: desks and plants, for a role without a room of its own. */
-const STUDIO: RoomStyle = {
-  name: 'Studio',
-  size: 3,
-  shape: 'square',
-  floor: 'tiles',
-  wall: 'panel',
-  build(room) {
-    const s = room.s;
-    room.desk(-s + 1.2, -s + 1.0);
-    room.desk(s - 1.2, -s + 1.0);
-    room.plant(-s + 0.5, s - 0.6, 0.9);
-    room.plant(s - 0.5, s - 0.6, 0.9);
-    room.lamp(s - 0.45, 0);
-  },
-};
+export type { RoomSpot } from './build';
 
-const STYLES: Record<string, RoomStyle> = { ...STYLES_A, ...STYLES_B, ...STYLES_C, ...STYLES_D };
-
-/** The room style of a role. */
-export function roomStyle(role: string): RoomStyle {
-  return STYLES[role] ?? STUDIO;
+/** The room's shape as the board sees it: rooms are square (only a central seat is round). */
+export function roomStyle(_role: string): { shape: 'square' } {
+  return { shape: 'square' };
 }
 
 export interface BuiltRoom {
@@ -46,80 +36,99 @@ export interface BuiltRoom {
   animate: (t: number) => void;
 }
 
-/** Builds a role's room at half-size `s` (the style's size, or more for a crowded district). */
-export function buildRoom(role: string, s: number, hue: number, palette: KitPalette): BuiltRoom {
-  const style = roomStyle(role);
-  const g = new THREE.Group();
-  const kit = makeKit(hue, palette);
-  const room = new Room(g, s, hue, kit, rng(hue * 131 + role.length));
-  walls(room, style);
-  sign(room, style.name, style.shape === 'round');
-  style.build(room);
-  outline(g);
-  const anims = room.anim;
-  const { glowOk, glowInfo } = kit;
-  return {
-    group: g,
-    // Tinted toward the night's blue, so a room's floor reads as lit by the plaza's moonlight.
-    floor: toonMat({ map: floorTexture(style.floor, hue, s), color: 0xb4bde0 }),
-    screens: [kit.screen],
-    animate: (t) => {
-      glowOk.color.copy(palette.ok).multiplyScalar(0.4 + 0.6 * Math.max(0, Math.sin(t * 2.7)));
-      glowInfo.color.copy(palette.info).multiplyScalar(0.4 + 0.6 * Math.max(0, Math.sin(t * 3.9 + 1)));
-      for (const a of anims) a(t);
-    },
-  };
+export interface RoomInput {
+  /** Inner size (x by z) in units. */
+  w: number;
+  d: number;
+  /** The side facing the walkway: n = -z, e = +x, s = +z, w = -x. */
+  door: Door;
+  seed: number;
+  /** Desk count; default cap(w, d) = clamp(floor(w * d / 6), 1, 4). */
+  agents?: number;
 }
 
-/** Walls on the back half: square rooms get a back wall and two half side walls; round ones an arc. */
-function walls(room: Room, style: RoomStyle): void {
-  const look = wallLook(style.wall, room.hue);
-  if (!look) return;
-  const { mat, h, thick } = look;
-  const s = room.s;
-  const seg = (x: number, z: number, len: number, rot: number) => {
-    const it = room.item(x, z, rot);
-    room.box(it, len, h, thick, mat);
-    // A cap rail in the darker wood, the cartoon trim.
-    if (style.wall !== 'hedge' && style.wall !== 'glass') room.box(it, len + 0.04, 0.06, thick + 0.06, room.k.darkWood, 0, h, 0);
-  };
-  if (style.shape === 'round') {
-    const n = 9;
-    const R = s - 0.15;
-    for (let i = 0; i < n; i++) {
-      const a = Math.PI + (i + 0.5) * (Math.PI / n); // the back half, z < 0
-      const len = 2 * R * Math.sin(Math.PI / (2 * n)) + 0.05;
-      seg(Math.cos(a) * R, Math.sin(a) * R, len, -a - Math.PI / 2);
-    }
-  } else {
-    seg(0, -s + thick / 2 + 0.05, 2 * s - 0.1, 0);
-    for (const side of [-1, 1]) {
-      const len = s * 0.9;
-      seg(side * (s - thick / 2 - 0.05), -s + len / 2 + 0.05, len, Math.PI / 2);
-    }
+/** The desk count a room of this size holds (the generator's default). */
+function capFor(w: number, d: number): number {
+  return Math.min(4, Math.max(1, Math.floor((w * d) / 6)));
+}
+
+/** The room's layout: the generator with the catalogue and roles, the desk count defaulting to the room's cap. */
+export function roomLayout(role: string, input: RoomInput, catalog: Catalog = CATALOG, roles: Roles = ROLES): Layout {
+  const agents = input.agents ?? capFor(input.w, input.d);
+  const cached = catalog === CATALOG && roles === ROLES; // the default catalog only: one layout per room, shared (navSteps, districtMesh)
+  const key = `${role}|${input.w}|${input.d}|${input.door}|${input.seed}|${agents}`;
+  if (cached) {
+    const hit = layoutMemo.get(key);
+    if (hit) return hit;
   }
+  const layout = generate({ role, w: input.w, d: input.d, door: input.door, seed: input.seed, agents }, catalog, roles);
+  if (cached) {
+    layoutMemo.set(key, layout);
+    if (layoutMemo.size > LAYOUT_MEMO_MAX) layoutMemo.delete(layoutMemo.keys().next().value!);
+  }
+  return layout;
 }
 
-/** The room's name on a painted board at the middle of the back wall. */
-function sign(room: Room, name: string, round: boolean): void {
-  const tex = canvasTexture(`roomsign:${name}`, 512, 128, 1, (g, w, h) => {
-    g.fillStyle = '#fff6e0';
-    g.fillRect(0, 0, w, h);
-    g.strokeStyle = '#2b2420';
-    g.lineWidth = 10;
-    g.strokeRect(5, 5, w - 10, h - 10);
-    g.fillStyle = '#2b2420';
-    g.font = '700 64px ui-rounded, "Comic Sans MS", system-ui, sans-serif';
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(name, w / 2, h / 2 + 4);
-  });
-  const face = toonMat({ map: tex });
-  const it = room.item(0, -room.s + (round ? 0.45 : 0.3));
-  room.cyl(it, 0.04, 0.04, 1.5, room.k.darkWood, -0.8, 0, 0, 8);
-  room.cyl(it, 0.04, 0.04, 1.5, room.k.darkWood, 0.8, 0, 0, 8);
-  const board = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.48, 0.06), [room.k.wood, room.k.wood, room.k.wood, room.k.wood, face, room.k.wood]);
-  board.position.set(0, 1.42, 0.02);
-  board.castShadow = true;
-  it.add(board);
+const LAYOUT_MEMO_MAX = 96;
+const layoutMemo = new Map<string, Layout>();
+
+/**
+ * The minimum side of a role and desk count, from the table (assets/rooms/minsize.json). A role the table does not
+ * list has no known minimum (0): computing one generates thousands of rooms and would stall the page, so it is not done here.
+ */
+function minSideFor(role: string, agents: number): number {
+  const row = (minSizeTable as Record<string, (number | null)[]>)[role];
+  if (!row) return 0;
+  const v = row[Math.min(agents, row.length) - 1];
+  if (typeof v === 'number') return v;
+  return v === null ? Infinity : 0;
+}
+
+export interface RoomOptions {
+  /** The layout seed (the floor passes fnv1a32 of machine, role and room index). Default 1. */
+  seed?: number;
+  /** The walkway side. Default 's'. */
+  door?: Door;
+  /** The inner size; default 2s - 0.15 (the slot minus the wall margin). */
+  w?: number;
+  d?: number;
+  /** The desks the room houses: the board's agent count for it. Default cap of the slot's size. */
+  agents?: number;
+}
+
+export type BuiltRoomLayout = BuiltRoom & {
+  spots: RoomSpot[];
+  layout: Layout;
+  /** True when the slot was smaller than the role's minimum (the room is built at the slot size anyway). */
+  warned: boolean;
+  /** The size the room was built at: the slot's size. */
+  w: number;
+  d: number;
+};
+
+/**
+ * Builds a role's room in a slot of half-size `s`, at the slot's size (w and d, default the cell). A slot smaller than
+ * the role's minimum (minSize for the board's desk count) is NOT enlarged: enlarging would overlap the neighbouring
+ * slots. Such a room is built at its slot size anyway, its required items may not place, and a warning names the
+ * role, the slot and the minimum so the board's slot sizes can be raised.
+ */
+export function buildRoom(role: string, s: number, hue: number, palette: KitPalette, opts: RoomOptions = {}): BuiltRoomLayout {
+  const cell = 2 * s - WALL_MARGIN;
+  const w0 = opts.w ?? cell;
+  const d0 = opts.d ?? cell;
+  const door = opts.door ?? 's';
+  const seed = opts.seed ?? 1;
+  // The desk count is the board's agent count for this room (not the enlarged size); it drives both the layout and minSize.
+  const agents = Math.max(1, Math.floor(opts.agents ?? capFor(w0, d0)));
+  const need = Math.min(minSideFor(role, agents), MAX_SIDE);
+  // The minimum is a cell size: compare the cell (2 * s), not the room inside its wall margin.
+  const warned = 2 * s < need - 1e-9;
+  if (warned) {
+    console.warn(`rooms: ${role} slot ${s.toFixed(2)} (${w0.toFixed(2)} x ${d0.toFixed(2)}) is below its minimum ${need} (${agents} desks); built at the slot size, not enlarged`);
+  }
+  const w = w0;
+  const d = d0;
+  const layout = roomLayout(role, { w, d, door, seed, agents }, CATALOG, ROLES);
+  const built = buildLayout(layout, CATALOG, hue, palette, w, d, s, roleLabel(role));
+  return { group: built.group, floor: built.floor, screens: built.screens, animate: built.animate, spots: built.spots, layout, warned, w, d };
 }

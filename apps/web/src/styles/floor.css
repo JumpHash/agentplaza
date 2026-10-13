@@ -45,6 +45,17 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 /* The plaza's breadcrumb in the header: Machines › name. */
 .floor-crumb { display: inline-flex; align-items: center; gap: 6px; font: 400 11px/1.4 var(--mono); color: var(--ink-3); }
 .floor-crumb a { color: var(--ink-2); }
+/* The loading card of an arrival that waits for its build (floor.ts updateLoading): a thin bar fed by the build's progress. */
+.floor-loading {
+  position: absolute; z-index: 3; top: 14px; left: 50%; transform: translateX(-50%); width: 300px; max-width: calc(100% - 28px);
+  padding: 12px 14px; box-sizing: border-box; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print);
+  font: 600 11.5px/1.35 var(--mono); pointer-events: none;
+}
+.floor-loading[hidden] { display: none; }
+.floor-loading-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); margin-bottom: 9px; }
+.floor-loading-pct { font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.floor-loading-track { position: relative; height: 3px; overflow: hidden; background: var(--rule, rgb(0 0 0 / 0.12)); }
+.floor-loading-bar { position: absolute; inset: 0; background: var(--ink); transform: scaleX(0); transform-origin: left center; will-change: transform; }
 .floor-card {
   position: absolute; z-index: 3; width: 300px; padding: 14px; box-sizing: border-box; border-radius: 0;
   background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print);
@@ -61,4 +72,7 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 .machine-agents { display: flex; flex-direction: column; gap: 4px; }
 .machine-agent-names { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 400 10.5px/1.5 var(--mono); }
 .machine-agent-names a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
-.machine-card-foot { display: flex; justify-content: flex-end; }
+/* The popup fits its stage: at most the stage less a margin, scrolling inside itself. Its ENTER footer sticks to the foot
+   of the card (over the card's 14px padding), so the button stays in view while the facts scroll. */
+.floor-card.machine-card { max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; }
+.machine-card-foot { display: flex; justify-content: flex-end; position: sticky; bottom: 0; margin: 0 -14px -14px; padding: 0 14px 14px; background: var(--sheet); }

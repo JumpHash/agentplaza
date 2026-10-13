@@ -56,7 +56,9 @@ export function decisionPanel(): DecisionPanel {
   const pickerSlot = h('div.dec-picker');
 
   const choose = async (value: string): Promise<void> => {
+    // Split on the first slash only: the model part of an id can hold slashes too.
     const at = value.indexOf('/');
+    if (at < 0) return;
     const saved = await attempt(
       () => api.setDecisionDefault({ provider: value.slice(0, at), model: value.slice(at + 1) }),
       'Decision model saved',

@@ -3,9 +3,10 @@
 // owner-token rotation, and this hub joined to another network as a node.
 // Refreshes every few seconds.
 
-import { api, type HubIdentity, type JoinCode, type NodeLink, type NodeView } from '../api';
+import { api, type Agent, type HubIdentity, type JoinCode, type MachineNode, type NodeLink, type NodeView } from '../api';
 import { ago, attempt, badge, button, card, empty, field, input, modal, select, table, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { isLive, KIND_LABEL, machineDetail, machineList, newRunState, normalizeMachines, specOf, type ListRow } from './machine-list';
 import type { Cleanup } from './index';
 
 const REFRESH_MS = 5000;
@@ -55,13 +56,13 @@ function copyBox(value: string): HTMLElement {
 }
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
-  const nodesBody = h('div');
+  const list = machineList();
   const codesBody = h('div');
   const hubBody = h('div');
   const linkBody = h('div.node-link');
   root.append(
     h('div.view-head.node-head', null, h('h1', null, 'Nodes'), button('Add a node', () => openAdd(), { kind: 'primary' })),
-    card('Machines in this plaza', nodesBody, { flush: true }),
+    card('Machines in this plaza', list.el, { flush: true }),
     card('Join another network', linkBody),
     card('Join codes', codesBody, { flush: true }),
     card('This hub', hubBody),
@@ -74,6 +75,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let codes: JoinCode[] | null = null;
   let hub: HubIdentity | null = null;
   let link: NodeLink | null = null;
+  // Each node's machine, joined by id (the hub is n0), and the agents' names by CID for the machine detail.
+  let machines = new Map<string, MachineNode>();
+  let agentsByCid = new Map<number, Agent>();
   // The countdown in the open dialog, and the dialog's closer.
   let tick: number | undefined;
   let closeOpen: (() => void) | null = null;
@@ -99,17 +103,21 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   const load = async (): Promise<void> => {
-    const [n, c, id, ln] = await Promise.all([
+    const [n, c, id, ln, ms, ag] = await Promise.all([
       api.nodes().catch(() => null),
       api.joinCodes().catch(() => null),
       api.hubIdentity().catch(() => null),
       api.nodeLink().catch(() => null),
+      api.machines().catch(() => null),
+      api.agents().catch((): Agent[] => []),
     ]);
     if (!alive) return;
     nodes = n;
     codes = c;
     hub = id;
     link = ln;
+    machines = new Map(normalizeMachines(ms).map((m): [string, MachineNode] => [m.id, m]));
+    agentsByCid = new Map((ag ?? []).map((a): [number, Agent] => [a.cid, a]));
     ready = true;
     renderNodes();
     renderCodes();
@@ -167,30 +175,64 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     );
   };
 
+  // The run kills in a node's detail: then the page reloads.
+  const killRun = async (id: string): Promise<void> => {
+    await attempt(() => api.killRun(id), `Killed run ${id}`);
+    void load();
+  };
+  const rs = newRunState((id) => void killRun(id));
+
+  // A node's detail: its machine's usage and runs when it is joined to one, then its facts and actions.
+  const nodeDetail = (n: NodeView, m: MachineNode | undefined): HTMLElement => {
+    const pairs: [string, string][] = [
+      ['Address', n.address || '—'],
+      ['CIDs', cids(n)],
+      ['Last seen', ago(n.last_seen_ms)],
+      ['Agents', String(n.agents)],
+      ['Host', n.machine?.host ?? '—'],
+      ['Version', n.machine?.version ?? '—'],
+    ];
+    return h(
+      'div.stack',
+      null,
+      m ? machineDetail(m, agentsByCid, rs) : null,
+      h('dl.node-facts', null, pairs.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
+      h('div.node-buttons', null, nodeActions(n)),
+    );
+  };
+
+  // A node's row: its machine's picture when it is joined to one, the line art otherwise.
+  const rowOf = (n: NodeView): ListRow => {
+    const m = machines.get(n.id);
+    const s = nodeState(n);
+    return {
+      key: n.id,
+      name: n.name,
+      subtitle: m ? [KIND_LABEL[m.kind], m.model].filter(Boolean).join(' · ') : n.id,
+      status: s,
+      facts: [
+        ['Address', n.address || '—'],
+        ['Agents', String(n.agents)],
+        ['CIDs', cids(n)],
+        ['Machine', machineText(n.machine)],
+        ['Last seen', ago(n.last_seen_ms)],
+      ],
+      bars: [],
+      spec: m ? specOf(m) : null,
+      active: m ? isLive(m.runs ?? []) : n.online,
+      actions: nodeActions(n),
+      detail: () => nodeDetail(n, m),
+    };
+  };
+
   const renderNodes = (): void => {
     if (!ready) return;
-    const columns: Column<NodeView>[] = [
-      { label: 'Name', cell: (n) => h('div.node-name', null, h('strong', null, n.name), h('span.faint', null, n.id)) },
-      {
-        label: 'State',
-        cell: (n) => {
-          const s = nodeState(n);
-          return badge(s.label, s.tone, true);
-        },
-      },
-      { label: 'Address', cell: (n) => n.address || '—' },
-      { label: 'Agents', num: true, cell: (n) => n.agents },
-      { label: 'CIDs', cell: (n) => cids(n) },
-      { label: 'Machine', cell: (n) => machineText(n.machine) },
-      { label: 'Last seen', cell: (n) => ago(n.last_seen_ms) },
-      { label: '', cell: (n) => nodeActions(n) },
-    ];
-    replace(
-      nodesBody,
+    list.setRows(
+      nodes ? nodes.map(rowOf) : [],
       nodes === null
         ? empty('alert', 'Could not load the machines.')
         : nodes.length
-          ? table(columns, nodes, undefined, (n) => n.id)
+          ? null
           : empty('link', 'No machines yet', 'Add a node here to bring a machine into this network, or join this hub to another network below.'),
     );
   };
@@ -434,5 +476,6 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     window.clearInterval(refresh);
     window.clearInterval(tick);
     closeOpen?.();
+    list.destroy();
   };
 }

@@ -221,6 +221,8 @@ export function mount(root: HTMLElement): Cleanup {
   let grouped: boolean | null = null;
   /** Where the next level's new marks pop out of: set by a click on a group. */
   let popFrom: Pt | null = null;
+  /** The agents with an active suspension, from the sanctions register, read once per refresh. */
+  let suspended: ReadonlySet<number> = new Set();
 
   const isGrouped = (d: Society | null): boolean => grouped ?? (d !== null && d.agents.length > GROUP_AT);
 
@@ -253,8 +255,8 @@ export function mount(root: HTMLElement): Cleanup {
       ? { from: popFrom, fresh: new Set(lv.marks.map((m) => m.key).filter((k) => !known.has(k))) }
       : null;
     popFrom = null;
-    replace(graph, controls(on, open, act), drawGraph(d, lv, selected, pos, enter, act));
-    replace(aside, panel(d, selected, act));
+    replace(graph, controls(on, open, act), drawGraph(d, lv, selected, pos, enter, act, suspended));
+    replace(aside, panel(d, selected, act, suspended));
   };
 
   /** Selects a node; an agent is zoomed to (its family and role open), so it is on the graph. */
@@ -304,6 +306,13 @@ export function mount(root: HTMLElement): Cleanup {
       data = await api.society();
     } catch {
       // Keep the last good view; the next poll tries again.
+    }
+    // One read of the sanctions register per refresh marks every node; a failed read keeps the last set.
+    try {
+      const register = await api.sanctions();
+      suspended = new Set(register.suspensions.filter((s) => s.active).map((s) => s.cid));
+    } catch {
+      // Keep the last set; the next poll tries again.
     }
     loaded = true;
     render();
@@ -582,7 +591,7 @@ function controls(on: boolean, at: Open, act: Actions): HTMLElement {
   return h('div.soc-top', null, toggle, crumbs, at.family !== null ? button('Back', () => act.up(), { size: 'sm' }) : null);
 }
 
-function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt>, enter: Enter | null, act: Actions): SVGSVGElement {
+function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt>, enter: Enter | null, act: Actions, suspended: ReadonlySet<number>): SVGSVGElement {
   const byKey = new Map(lv.marks.map((m) => [m.key, m] as const));
   const bondOf = new Set(d.bonds.map((b) => `${b.from}>${b.to}`));
   const mutual = (b: Bond): boolean => bondOf.has(`${b.to}>${b.from}`);
@@ -683,7 +692,14 @@ function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt
     const tag = s('rect', { class: 'soc-tag', x: -w / 2, y: half + 8, width: w, height: 22, rx: 6 });
     const text = s('text', { class: 'soc-name', x: 0, y: half + 23, 'text-anchor': 'middle' });
     text.textContent = clip(label, 16);
-    node.append(grp ? groupBody(m, sz) : robotBody(first, sz), tag, text);
+    // A node with a suspended agent in it gets the ring at its top-right corner, inside the body so it bounces with it.
+    const hasSuspended = m.members.some((a) => suspended.has(a.cid));
+    const body = grp ? groupBody(m, sz) : robotBody(first, sz);
+    if (hasSuspended) {
+      body.append(suspendedRing(half));
+      node.setAttribute('aria-label', `${label}, suspended`);
+    }
+    node.append(body, tag, text);
 
     const activate = (): void => {
       if (m.opens) act.open(m);
@@ -715,6 +731,23 @@ function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt
   // Frame the layout box: the agents are spread over all of it, footprints included.
   const box = `0 0 ${W} ${H}`;
   return s('svg', { class: 'soc-svg', viewBox: box, preserveAspectRatio: 'xMidYMid meet', 'aria-label': 'Society graph' }, defs, bg, dots, edges, nodes);
+}
+
+/** The ring segment at a node's top-right corner, for a suspended agent: red-orange, with a tooltip. */
+function suspendedRing(half: number): SVGElement {
+  const r = 9;
+  const ring = s('path', {
+    class: 'soc-suspended',
+    d: `M${half} ${(-half - r).toFixed(1)} A${r} ${r} 0 0 1 ${half + r} ${-half}`,
+    fill: 'none',
+    'stroke-width': 3.5,
+    'stroke-linecap': 'round',
+  });
+  ring.style.stroke = 'var(--danger)';
+  const title = s('title', {});
+  title.textContent = 'suspended';
+  ring.append(title);
+  return ring;
 }
 
 /** A cartoon robot head, drawn around its centre: the body of an agent node. */
@@ -799,13 +832,13 @@ function eyes(sz: number): SVGElement[] {
 
 // ---- Panel -----------------------------------------------------------------
 
-function panel(d: Society, selected: Key | null, act: Actions): HTMLElement {
+function panel(d: Society, selected: Key | null, act: Actions, suspended: ReadonlySet<number>): HTMLElement {
   if (selected === null) return legend();
-  if (selected.startsWith('a:')) return detail(d, Number(selected.slice(2)), act);
+  if (selected.startsWith('a:')) return detail(d, Number(selected.slice(2)), act, suspended);
   return groupDetail(d, selected, act);
 }
 
-function detail(d: Society, cid: number, act: Actions): HTMLElement {
+function detail(d: Society, cid: number, act: Actions, suspended: ReadonlySet<number>): HTMLElement {
   const me = d.agents.find((a) => a.cid === cid);
   if (!me) return legend();
 
@@ -843,7 +876,7 @@ function detail(d: Society, cid: number, act: Actions): HTMLElement {
   return h(
     'div.soc-detail',
     null,
-    h('header.soc-head', null, h('h2', null, name), h('p.soc-role', null, roleLabel(me.role))),
+    h('header.soc-head', null, h('h2', null, name), h('p.soc-role', null, roleLabel(me.role)), suspended.has(me.cid) ? badge('suspended', 'danger') : null),
     h(
       'div.soc-stats',
       null,

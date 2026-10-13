@@ -234,9 +234,21 @@ export function xenonAtom(palette: PropPalette, height: number): { group: THREE.
   const neutron = toonMat({ color: palette.sheet, emissive: 0xffe2b0, emissiveIntensity: 0.25 });
   const nucleonGeo = new THREE.SphereGeometry(0.13, 14, 10);
   const nr = rng(54);
+  const neutronAt: THREE.Vector3[] = [];
+  const protonAt: THREE.Vector3[] = [];
   for (let i = 0; i < 24; i++) {
     const v = new THREE.Vector3(nr() - 0.5, nr() - 0.5, nr() - 0.5).normalize().multiplyScalar(Math.cbrt(nr()) * 0.24);
-    part(nucleus, nucleonGeo, i % 2 ? proton : neutron, v.x, v.y, v.z);
+    (i % 2 ? protonAt : neutronAt).push(v);
+  }
+  // One instanced mesh per material: the nucleons never move inside the nucleus, so their matrices are set once.
+  const pairs: [THREE.Material, THREE.Vector3[]][] = [
+    [neutron, neutronAt],
+    [proton, protonAt],
+  ];
+  for (const [mat, at] of pairs) {
+    const m = new THREE.InstancedMesh(nucleonGeo, mat, at.length);
+    at.forEach((v, i) => m.setMatrixAt(i, new THREE.Matrix4().makeTranslation(v.x, v.y, v.z)));
+    nucleus.add(m);
   }
   globe.add(nucleus);
   const haloMat = new THREE.MeshBasicMaterial({ color: XENON, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
@@ -250,7 +262,7 @@ export function xenonAtom(palette: PropPalette, height: number): { group: THREE.
   const ringMat = toonMat({ color: 0xc9ccff, emissive: XENON, emissiveIntensity: 0.6 });
   const electronMat = toonMat({ color: 0x8ff0ff, emissive: 0x5fd8ff, emissiveIntensity: 1.1 });
   const electronGeo = new THREE.SphereGeometry(0.065, 12, 8);
-  const shells: { group: THREE.Group; electrons: THREE.Mesh[]; r: number; speed: number }[] = [];
+  const shells: { group: THREE.Group; n: number; r: number; speed: number }[] = [];
   [2, 8, 18, 18, 8].forEach((n, k) => {
     const r = 0.62 + k * 0.27;
     const shell = new THREE.Group();
@@ -259,14 +271,40 @@ export function xenonAtom(palette: PropPalette, height: number): { group: THREE.
     ring.rotation.x = Math.PI / 2;
     ring.userData.outline = false; // a fine glowing track, not an inked hoop
     shell.add(ring);
-    const electrons: THREE.Mesh[] = [];
-    for (let i = 0; i < n; i++) electrons.push(part(shell, electronGeo, electronMat, 0, 0, 0));
     globe.add(shell);
-    shells.push({ group: shell, electrons, r, speed: 1.9 / (1 + k * 0.45) * (k % 2 ? -1 : 1) });
+    shells.push({ group: shell, n, r, speed: 1.9 / (1 + k * 0.45) * (k % 2 ? -1 : 1) });
   });
+  // The 54 electrons: one instanced mesh in the atom's frame. Each instance carries its shell's
+  // rotation, its spot on the shell's track and its scale, so the look is that of 54 separate spheres.
+  const electrons = new THREE.InstancedMesh(electronGeo, electronMat, shells.reduce((sum, sh) => sum + sh.n, 0));
+  electrons.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  globe.add(electrons);
+  const T = new THREE.Matrix4();
+  const S = new THREE.Matrix4();
+  const M = new THREE.Matrix4();
+  const placeElectrons = (t: number, scale: number): void => {
+    let idx = 0;
+    S.makeScale(scale, scale, scale);
+    for (const sh of shells) {
+      sh.group.updateMatrix();
+      for (let i = 0; i < sh.n; i++) {
+        const a = t * sh.speed + (i / sh.n) * Math.PI * 2;
+        T.makeTranslation(Math.cos(a) * sh.r, 0, Math.sin(a) * sh.r);
+        electrons.setMatrixAt(idx++, M.multiplyMatrices(sh.group.matrix, T).multiply(S));
+      }
+    }
+    electrons.instanceMatrix.needsUpdate = true;
+  };
+  placeElectrons(0, 1);
   outline(globe, 0.05);
+  // The electrons move every frame, so their bounds are fixed: every shell lies within 1.7 of the
+  // centre, and an electron swells to 1.25 of its 0.065 radius. The hull shares the same bounds.
+  const bounds = new THREE.Sphere(new THREE.Vector3(), 2);
+  electrons.boundingSphere = bounds;
+  for (const c of electrons.children) if (c.userData.isOutline) (c as THREE.InstancedMesh).boundingSphere = bounds;
   globe.scale.setScalar(1.5);
   globe.position.set(0, height, 0);
+  globe.userData.dynamic = true; // it moves and animates every frame: bakeStatic must not merge it
   const animate = (t: number): void => {
     globe.position.y = height + Math.sin(t * 0.9) * 0.1;
     // The nucleus beats, its halo and light breathing with it.
@@ -278,15 +316,8 @@ export function xenonAtom(palette: PropPalette, height: number): { group: THREE.
     auraMat.opacity = 0.07 + 0.08 * beat;
     aura.scale.setScalar(1 + 0.1 * beat);
     glow.intensity = 1.6 + 2.4 * beat;
-    for (const sh of shells) {
-      sh.group.rotation.y += 0.002;
-      const n = sh.electrons.length;
-      sh.electrons.forEach((e, i) => {
-        const a = t * sh.speed + (i / n) * Math.PI * 2;
-        e.position.set(Math.cos(a) * sh.r, 0, Math.sin(a) * sh.r);
-        e.scale.setScalar(1 + 0.25 * beat);
-      });
-    }
+    for (const sh of shells) sh.group.rotation.y += 0.002;
+    placeElectrons(t, 1 + 0.25 * beat);
   };
   return { group: globe, animate };
 }

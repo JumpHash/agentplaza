@@ -58,7 +58,7 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
     },
     h('header.signin-brand', null, brandMark(36), h('span.signin-name', null, 'AgentPlaza')),
     h('h1', null, 'Sign in to this hub'),
-    h('p.signin-lede', null, "Paste the owner token. It was printed once when the hub first started and is kept in <state dir>/owner-token on the hub's machine."),
+    h('p.signin-lede', null, "Paste the owner token. The hub keeps it in the owner-token file in its state directory, on the hub's own machine; `agentplaza hub login` reads it from there."),
     who,
     field('Owner token', token),
     error,

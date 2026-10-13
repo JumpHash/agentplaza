@@ -2,7 +2,7 @@
 // The console is served by apid, so every path is same-origin.
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public diagnostics: Diagnostic[] = []) {
     super(message);
   }
 }
@@ -19,7 +19,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     // Off loopback the hub wants the owner's sign-in; the shell shows the sign-in screen.
     if (res.status === 401 && path !== '/v1/auth/session') window.dispatchEvent(new CustomEvent('apz-auth-required'));
     const message = (data as { error?: string } | null)?.error ?? `${method} ${path}: ${res.status}`;
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, (data as { diagnostics?: Diagnostic[] } | null)?.diagnostics ?? []);
   }
   return data as T;
 }
@@ -54,7 +54,8 @@ export interface Agent {
   cid: number; name: string; role: string; role_label: string; tier: Tier; status: AgentStatus;
   model: string; model_override: string | null; model_source: 'agent' | 'role' | 'default';
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
-  usage: Usage; work: WorkItem | null; queue: number;
+  usage: Usage; work: WorkItem | null; queue: number; species?: string;
+  kind: string;
 }
 
 export interface Overview {
@@ -105,8 +106,16 @@ export interface Connector {
 export interface ConnectorTest { ok: boolean; latency_ms: number; detail: string }
 /** `chat` models write text for agents; `decisions` models answer typed questions for the plaza. */
 export type ModelGroup = 'chat' | 'decisions';
-export interface ModelInfo { provider: string; id: string; name: string | null; group?: ModelGroup }
+export interface ModelInfo { provider: string; id: string; name: string | null; group?: ModelGroup; trains_on_data?: boolean }
 export interface ModelsView { models: ModelInfo[]; errors: { provider: string; error: string }[] }
+
+/** Contributor models: their vendor trains future models on what is sent to and returned by them. */
+export const isContributor = (m: { trains_on_data?: boolean }): boolean => m.trains_on_data === true;
+/** The ids a provider kind lists as contributor models (`options.trains_on_data`). */
+export const contributorIds = (options: Record<string, unknown> | null | undefined): string[] => {
+  const ids = options?.trains_on_data;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+};
 
 /** Provider kinds whose models are decision models (the kind list carries no group). */
 const DECISION_KINDS = ['openai-decisions', 'systemone', 'azure-decisions'];
@@ -137,6 +146,10 @@ export interface Settings {
   model_policy: { orchestrator: string[]; worker: string[] };
   effort: string | null; max_turns: number; max_tokens: number; fetch_block: string[];
   prices: Record<string, { input: number; output: number }>; dev_models?: boolean;
+  /** Strict permits: when on, an operation with permit laws is refused unless one of them allows it. */
+  laws?: { strict_permits: boolean };
+  /** Contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries. */
+  allow_training_models?: boolean;
 }
 
 export interface Task {
@@ -183,7 +196,19 @@ export interface LawInfo {
   id: string; title: string; tier: string; enforcement: string; severity: string; statement: string; rationale: string;
   effect: 'permit' | 'forbid'; ops: string[]; principal: string; resource: string; conditions: string[]; explanation: string;
   file: string; source: string; refusals: number; agents: { cid: number; name: string; count: number }[]; last_at_ms: number | null;
+  origin: 'built-in' | 'owner'; enabled: boolean; rule_id: string; overridden: LawOverride | null;
+  /** A constitutional law that is switched off now. */
+  constitutional_off: boolean;
 }
+export interface LawOverride { law: string; disabled_by: string; reason: string; at_ms: number }
+/** A change of state of a constitutional law, on record: who, when, and whether it was confirmed by typing the id. */
+export interface LawChange { law: string; title: string; tier: string; disabled: boolean; by: string; reason: string; at_ms: number; confirmed: boolean }
+export interface LawRule { id: string; title: string; source: string; enabled: boolean; created_ms: number; updated_ms: number; author: string }
+export interface LawRules { rules: LawRule[]; overrides: LawOverride[]; strict_permits: boolean; constitutional_off: string[]; history: LawChange[] }
+/** One compile error: `line` and `column` are 1-based positions in the source. */
+export interface Diagnostic { file: string; line: number; column: number; message: string }
+export interface WouldRefuse { cid: number; role: string; tool: string; at_ms: number; laws: string[] }
+export interface LawCheck { ok: boolean; diagnostics: Diagnostic[]; laws: string[]; would_refuse: WouldRefuse[] }
 export interface Infraction { cid: number; law: string; at_ms: number; tool: string; detail: string; law_title: string; statement: string; agent_name: string }
 export interface RoleDef {
   id: string; title: string; purpose: string; responsibilities: string[]; deliverables: string[]; collaboration: string;
@@ -464,6 +489,15 @@ export const api = {
   agentLimits: (cid: number) => get<HarnessLimits>(`/v1/agents/${cid}/limits`),
   agentControl: (cid: number, body: { action: 'compress' | 'steer' | 'extend_turns' | 'set_limits'; text?: string; turns?: number; max_turns?: number; compress_at?: number; keep_recent?: number }) => post<unknown>(`/v1/agents/${cid}/control`, body),
   laws: () => get<LawInfo[]>('/v1/laws'),
+  lawRules: () => get<LawRules>('/v1/laws/rules'),
+  createLawRule: (r: { title: string; source: string }) => post<LawRule>('/v1/laws/rules', r),
+  updateLawRule: (id: string, r: { title: string; source: string }) => put<LawRule>(`/v1/laws/rules/${id}`, r),
+  setLawRuleEnabled: (id: string, enabled: boolean) => post<LawRule>(`/v1/laws/rules/${id}/${enabled ? 'enable' : 'disable'}`),
+  deleteLawRule: (id: string) => del<{ deleted: string }>(`/v1/laws/rules/${id}`),
+  checkLaw: (source: string, id?: string) => post<LawCheck>('/v1/laws/check', id ? { source, id } : { source }),
+  /** Switching a constitutional law off needs `confirm` set to its exact id (the API answers 409 without it). */
+  setLawOverride: (law: string, disabled: boolean, reason: string, confirm?: string) => put<{ law: string; override: LawOverride | null }>(`/v1/laws/overrides/${law}`, { disabled, reason, confirm }),
+  lawViolations: (law: string, limit = 20) => get<Infraction[]>(`/v1/laws/violations${query({ law, limit })}`),
   infractions: (limit = 200) => get<Infraction[]>(`/v1/infractions?limit=${limit}`),
   agentInfractions: (cid: number) => get<Infraction[]>(`/v1/agents/${cid}/infractions`),
   plazaState: () => get<PlazaState>('/v1/plaza/state'),
@@ -500,7 +534,12 @@ export const api = {
   testConnector: (id: string) => post<ConnectorTest>(`/v1/connectors/${id}/test`),
 
   approvals: () => get<Approval[]>('/v1/approvals'),
-  decideApproval: (id: string, approve: boolean, reason?: string) => post<unknown>(`/v1/approvals/${id}`, { approve, reason }),
+  /** `action` picks what a sanction escalation does; left out, approve and deny act as they always have. */
+  decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(`/v1/approvals/${id}`, { approve, reason, action }),
+  /** The sanctions register, newest first. `cid`, `law` and `limit` (default 100) narrow it. */
+  sanctions: (q: { cid?: number; law?: string; limit?: number } = {}) => get<SanctionsView>(`/v1/sanctions${query({ ...q })}`),
+  /** Lifts an active suspension. 404 for an unknown id, 409 when it is not an active suspension. */
+  liftSanction: (id: number, reason: string) => post<Sanction>(`/v1/sanctions/${id}/lift`, { reason }),
   permissions: (cid: number) => get<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`),
   setPermissions: (cid: number, mode: PermissionMode) => put<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`, { mode }),
 
@@ -591,7 +630,321 @@ export type JoinCodeState = 'active' | 'used' | 'expired' | 'revoked';
 export interface JoinCode { id: string; label: string; created_ms: number; expires_ms: number; state: JoinCodeState; used_by: string | null }
 
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used';
-/** A tool call an agent asked to make, waiting on (or recording) the owner's decision. */
-export interface Approval { id: string; cid: number; tool: string; input: unknown; created_ms: number; state: ApprovalState; reason: string | null }
+/**
+ * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call), "sanction"
+ * (an escalation from the conduct laws) or "payment" (a held payment). For a tool call `subject` is the tool
+ * and `detail` its input; a sanction's `detail` carries `sanction_id`.
+ */
+export interface Approval {
+  id: string; cid: number; tool: string; input: unknown; created_ms: number; state: ApprovalState; reason: string | null;
+  kind: string; subject: string; detail: unknown;
+}
+/** What the owner does on a sanction escalation: acknowledge it, lift the suspension, or record a retirement. */
+export type ApprovalAction = 'acknowledge' | 'lift' | 'retire';
+
+/** A sanction on the register. `lifted` is set once the owner has lifted it. */
+export interface Sanction {
+  id: number; cid: number; law: string; title: string; severity: string; count: number; tool: string; at_ms: number;
+  sanction: string; outcome: string; fine: number; entry: number | null; until_ms: number | null;
+  lifted: { at_ms: number; by: 'owner'; why: string } | null; approval: string | null;
+}
+/** A suspension: the agent may not use `tool` until `until_ms`. `active` is false once it has run out or been lifted. */
+export interface Suspension { id: number; cid: number; tool: string; law: string; until_ms: number; active: boolean }
+export interface SanctionsView { sanctions: Sanction[]; suspensions: Suspension[] }
 /** `autonomous` acts freely, `ask` queues changes for approval, `read_only` refuses them. */
 export type PermissionMode = 'autonomous' | 'ask' | 'read_only';
+
+// ---- Foundry (the Lab) -----------------------------------------------------
+// The training lab's apid routes (`/v1/foundry/...`): recipes, datasets, the device fleet, jobs and
+// the model registry. Live progress arrives on the console socket as `training` frames (see
+// `views/lab-common.ts`). A non-2xx answer throws an `ApiError` carrying the hub's `error` text.
+
+export interface Recipe {
+  id: string; name: string; repo: string; commit: string; schema: unknown;
+  vetted_by: string | null; vetted_ms: number | null; local_dev: boolean;
+}
+
+export type DatasetKind = 'cascade' | 'tasks' | 'usage' | 'upload' | 'all';
+export interface Dataset {
+  id: string; name: string; kind: DatasetKind; created_ms: number; from_ms: number; to_ms: number;
+  rows: number; frozen_rows: number; label_balance: Record<string, number>; taint: string[];
+  provenance: Record<string, unknown>; file: string; frozen_file: string; sha256: string;
+}
+/** An export from the plaza's records; `since_ms` is inclusive and `until_ms` exclusive, both on a row's `ts`. */
+export interface DatasetSpec { kind: Exclude<DatasetKind, 'upload'>; name: string; since_ms?: number; until_ms?: number }
+
+export interface Device {
+  index: number; vendor: string; name: string; backend: string; memory_mib: number; mem_used_mib: number;
+  busy: boolean; util_pct: number; allocated_to: string | null;
+}
+export interface DeviceMachine { id: string; online: boolean; trainer_ok: boolean; devices: Device[] }
+export interface DevicesView { machines: DeviceMachine[] }
+
+export type FoundryMode = 'single' | 'tight' | 'loose';
+/** The job document's `devices` block: what placement may use. Unknown keys are refused. */
+export interface DeviceRequest {
+  min_devices?: number; max_devices?: number; min_memory_mib?: number; backends?: string[];
+  mode?: FoundryMode; machines?: string[]; allow_cpu?: boolean;
+}
+/** What the New job form sends. `recipe` is `name@version`. */
+export interface JobDocument {
+  job_id?: string; recipe: string; datasets: string[]; search?: unknown; budget_gpu_hours: number;
+  target?: 'x86_64' | 'aarch64' | 'any'; export?: 'onnx'; devices?: DeviceRequest; mode?: FoundryMode;
+  train?: Record<string, unknown>;
+}
+
+export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export interface JobSummary {
+  id: string; status: JobStatus; mode: FoundryMode; recipe: string; datasets: string[];
+  created_ms: number; updated_ms: number; gpu_hours: number; budget_gpu_hours: number;
+  error: string | null; runs: number;
+}
+export interface JobIsland { id: string; backend: string; leader: string; rdzv: string; machines: { id: string; devices: number[] }[] }
+export interface JobPlan {
+  mode: FoundryMode; islands: JobIsland[]; inner_steps: number; staleness: number; devices_total: number;
+  datasets: Record<string, string>; frozen: string | null; output_dir: string; train: Record<string, unknown>; rounds?: number;
+}
+export interface JobRun {
+  node_job: string; node: string; island: string; devices: number[]; started_ms: number; ended_ms: number | null;
+  state: string; exit_code: number | null; next: number; gpu_hours: number;
+}
+/** One point of a job's series. `t` is the time it was recorded, ms. */
+export interface SeriesPoint {
+  kind: 'step' | 'eval' | 'round' | 'trial'; island: string; t: number;
+  step?: number; loss?: number; lr?: number; samples?: number; split?: string; metrics?: Record<string, number>;
+  round?: number; accepted?: boolean; hub_round?: number; trial?: number; objective?: number;
+}
+/** A job in full. Its `runs` are the run records (the summary's `runs` is their count). */
+export interface JobView extends Omit<JobSummary, 'runs'> {
+  plan: JobPlan | null; runs: JobRun[]; series: SeriesPoint[]; metrics: Record<string, unknown> | null;
+  outputs: string[]; outputs_remote: boolean; seq: number;
+}
+/** One stored event: `seq` orders them, `event` is the trainer's own line (its name is `ev`). */
+export interface JobEvent { seq: number; island: string; node: string; event: { ev: string } & Record<string, unknown> }
+export interface JobEventsPage { job: string; events: JobEvent[]; next: number }
+
+export type ModelState = 'trained' | 'shadow' | 'promoted' | 'retired';
+export interface ModelCard {
+  id: string; name: string; version: string; input: unknown; output: unknown; features: unknown[];
+  labels: string[] | null; allowed_roles: string[]; onnx_sha256: string; created_ms: number; metrics: unknown;
+}
+export interface ShadowStats { runs: number; agreed: number; cost_saved_usd: number; updated_ms: number }
+export interface ModelView {
+  id: string; state: ModelState; card: ModelCard; source_job: string | null; agent_cid: number | null;
+  provenance: unknown; calibration: unknown; size_bytes: number; parameters: number; shadow: ShadowStats;
+  agreement_rate: number | null; created_ms: number; state_changed_ms: number;
+}
+
+/** A refused dispatch: the job is recorded as `failed` and comes back with the refusal. */
+export class JobDispatchError extends ApiError {
+  constructor(message: string, public job: JobView) {
+    super(422, message);
+  }
+}
+
+// `@` stays raw in a segment (RFC 3986 allows it): a recipe id is `name@version`, and apid reads the raw form.
+const foundryPath = (...parts: (string | number)[]): string => '/v1/foundry/' + parts.map((p) => encodeURIComponent(String(p)).replace(/%40/g, '@')).join('/');
+
+/** A request with a raw body (the JSONL upload) or none; returns the status and the parsed answer. */
+async function foundryFetch(method: string, path: string, body?: string, type = 'application/json'): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const res = await fetch(path, { method, headers: body === undefined ? {} : { 'content-type': type }, body });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? (JSON.parse(text) as unknown) : null;
+  } catch {
+    data = text || null;
+  }
+  if (res.status === 401) window.dispatchEvent(new CustomEvent('apz-auth-required'));
+  return { ok: res.ok, status: res.status, data };
+}
+
+/** The answer of a request that must succeed: its JSON, or an `ApiError` with the hub's `error`. */
+async function foundryOk<T>(method: string, path: string, body?: unknown, type?: string): Promise<T> {
+  const raw = body === undefined || typeof body === 'string' ? body : JSON.stringify(body);
+  const reply = await foundryFetch(method, path, raw, type);
+  if (!reply.ok) {
+    const error = (reply.data as { error?: string } | null)?.error ?? `${method} ${path}: ${reply.status}`;
+    throw new ApiError(reply.status, error);
+  }
+  return reply.data as T;
+}
+
+// Recipes
+
+export const listRecipes = () => foundryOk<Recipe[]>('GET', foundryPath('recipes'));
+/** The owner vets a commit of a recipe: 400 unless `commit` is 7 to 64 hex characters (or `dev-...`), 403 on a local-dev pin mismatch. */
+export const vetRecipe = (id: string, commit: string) => foundryOk<Recipe>('POST', foundryPath('recipes', id, 'vet'), { commit });
+
+// Datasets
+
+export const listDatasets = () => foundryOk<Dataset[]>('GET', foundryPath('datasets'));
+export const createDataset = (spec: DatasetSpec) => foundryOk<Dataset>('POST', foundryPath('datasets'), spec);
+/** Imports a JSONL body as a dataset. Each row needs `ts` (unix ms), `label` and the recipe's feature fields. */
+export const uploadDataset = (name: string, jsonl: string) =>
+  foundryOk<Dataset>('POST', `${foundryPath('datasets', 'upload')}?name=${encodeURIComponent(name)}`, jsonl, 'application/x-ndjson');
+
+// Devices and planning
+
+export const listDevices = () => foundryOk<DevicesView>('GET', foundryPath('devices'));
+/** The dry run: the plan a job document would get. Nothing is written or dispatched. */
+export const planJob = (doc: JobDocument) => foundryOk<JobPlan>('POST', foundryPath('plan'), doc);
+
+// Jobs
+
+/**
+ * Submits a job document and dispatches it. Throws a `JobDispatchError` (422) when the job was recorded
+ * but its dispatch failed; the job is on the error. Any other refusal is a plain `ApiError`.
+ */
+export async function submitJob(doc: JobDocument): Promise<JobView> {
+  const reply = await foundryFetch('POST', foundryPath('jobs'), JSON.stringify(doc));
+  if (reply.status === 422) {
+    const body = reply.data as { error?: string; job: JobView };
+    throw new JobDispatchError(body.error ?? 'dispatch failed', body.job);
+  }
+  if (!reply.ok) throw new ApiError(reply.status, (reply.data as { error?: string } | null)?.error ?? `POST jobs: ${reply.status}`);
+  return reply.data as JobView;
+}
+/** Every job, newest first, without the series. */
+export const listJobs = () => foundryOk<JobSummary[]>('GET', foundryPath('jobs'));
+export const getJob = (id: string) => foundryOk<JobView>('GET', foundryPath('jobs', id));
+/** The job's stored events after sequence `after`; keep `next` for the following call. */
+export const jobEvents = (id: string, after = 0) => foundryOk<JobEventsPage>('GET', `${foundryPath('jobs', id, 'events')}?after=${after}`);
+export const cancelJob = (id: string) => foundryOk<JobView>('POST', foundryPath('jobs', id, 'cancel'));
+
+// Models
+
+export const listModels = () => foundryOk<{ models: ModelView[] }>('GET', foundryPath('models')).then((r) => r.models);
+export const getModel = (id: string) => foundryOk<ModelView>('GET', foundryPath('models', id));
+/** Registers the model in a directory holding `model.onnx` and `model_card.json`; `path` is absolute. */
+export const importModel = (path: string) => foundryOk<ModelView>('POST', foundryPath('models', 'import'), { path });
+export const shadowModel = (id: string) => foundryOk<ModelView>('POST', foundryPath('models', id, 'shadow'));
+export const promoteModel = (id: string) => foundryOk<ModelView>('POST', foundryPath('models', id, 'promote'));
+export const retireModel = (id: string) => foundryOk<ModelView>('POST', foundryPath('models', id, 'retire'));
+
+// ---- Vault (docs/design/vault.md, "Routes") --------------------------------
+// Owner auth. Values go in on write and never come back: no call returns a secret value.
+
+export type VaultState = 'uninitialized' | 'sealed' | 'unsealed' | 'tampered';
+export type VaultSlotKind = 'passphrase' | 'keyfile' | 'recovery';
+export interface VaultSlot { id: string; kind: VaultSlotKind; created_ms: number }
+/** `id` is `n0` for this hub, else the node's id. */
+export interface VaultNodeRef { id: string; name: string }
+export interface VaultStatus {
+  state: VaultState;
+  slots: VaultSlot[];
+  entries: number;
+  nodes: VaultNodeRef[];
+  audit_ok: boolean;
+  rekeyed_ms: number | null;
+  /** The reason the vault is tampered (state `tampered`), else null. */
+  tampered: string | null;
+  /** Keys still in the env file that the vault has not taken (the deprecation banner). Not yet served by apid. */
+  env_file_keys?: number;
+}
+export type VaultKind = 'api_key' | 'token' | 'password' | 'generic';
+export type VaultScope = { kind: 'plaza' } | { kind: 'nodes'; nodes: string[] };
+export interface VaultVersion { v: number; created_ms: number; fp: string; hint: string }
+export interface VaultEntry {
+  id: string; name: string; kind: VaultKind; label: string; created_ms: number; updated_ms: number; created_by: string;
+  scope: VaultScope; bindings: string[]; current: number; versions: VaultVersion[];
+  /** 0 when never used. */
+  last_used_ms: number; use_count: number;
+}
+export interface VaultCreate { name: string; kind: VaultKind; label?: string; value: string; scope: VaultScope; bindings: string[] }
+export interface VaultPatch { label?: string; scope?: VaultScope; bindings?: string[] }
+/** Per node (`n0` and the node ids): the entry id that resolves, `missing`, or `out_of_scope`. */
+export interface VaultConsumer { binding: string; label: string; wants: string; per_node: Record<string, string> }
+export interface VaultTest { ok: boolean; detail: string }
+export interface VaultImportBody { format: 'dotenv'; text: string; scope: VaultScope; bindings?: Record<string, string[]> }
+export interface VaultImportResult { imported: { name: string; id: string }[]; skipped: { name: string; reason: string }[] }
+export interface VaultAuditLine {
+  seq: number; ts_ms: number; event: string; entry?: string; name?: string; actor: string;
+  binding?: string; node?: string; cid?: number; detail?: string; prev: string; mac: string;
+}
+export interface VaultAudit { entries: VaultAuditLine[]; chain_ok?: boolean }
+
+const vaultPath = (...parts: string[]) => ['/v1/vault', ...parts.map((p) => encodeURIComponent(p))].join('/');
+
+export const vaultApi = {
+  status: () => get<VaultStatus>('/v1/vault'),
+  /** `{}` tries the key file; otherwise a passphrase or a recovery code (not both). */
+  unseal: (body: { passphrase?: string; recovery_code?: string } = {}) => post<VaultStatus>('/v1/vault/unseal', body),
+  seal: () => post<VaultStatus>('/v1/vault/seal'),
+  addPassphrase: (passphrase: string) => post<VaultStatus>('/v1/vault/slots', { kind: 'passphrase', passphrase }),
+  addKeyfile: () => post<VaultStatus>('/v1/vault/slots', { kind: 'keyfile' }),
+  /** 409 when it is the last slot. */
+  removeSlot: (id: string) => del<VaultStatus>(vaultPath('slots', id)),
+  /** Shown once: the caller must not keep it. Replaces the old recovery slot. */
+  recovery: () => post<{ recovery_code: string }>('/v1/vault/recovery'),
+  /** `secrets` maps each OTHER passphrase/recovery slot id to its passphrase or code. */
+  rekey: (secrets: Record<string, string> = {}) => post<VaultStatus>('/v1/vault/rekey', { secrets }),
+  entries: () => get<VaultEntry[]>('/v1/vault/secrets'),
+  createEntry: (body: VaultCreate) => post<VaultEntry>('/v1/vault/secrets', body),
+  /** A new version of the value. */
+  rotateEntry: (id: string, value: string) => put<VaultEntry>(vaultPath('secrets', id, 'value'), { value }),
+  patchEntry: (id: string, body: VaultPatch) => patch<VaultEntry>(vaultPath('secrets', id), body),
+  rollbackEntry: (id: string, v: number) => post<VaultEntry>(vaultPath('secrets', id, 'rollback'), { v }),
+  /** Leaves a tombstone, so an env import never brings the name back. */
+  deleteEntry: (id: string) => del<unknown>(vaultPath('secrets', id)),
+  testEntry: (id: string, node?: string) => post<VaultTest>(vaultPath('secrets', id, 'test'), node ? { node } : {}),
+  importEnv: (body: VaultImportBody) => post<VaultImportResult>('/v1/vault/import', body),
+  consumers: () => get<VaultConsumer[]>('/v1/vault/consumers'),
+  audit: (after = 0, limit = 100, verify = false) => get<VaultAudit>(`/v1/vault/audit?after=${after}&limit=${limit}${verify ? '&verify=1' : ''}`),
+};
+
+// ---- MCP servers (docs/design/mcp.md, "Routes") ----------------------------
+
+export type McpTransport =
+  | { kind: 'stdio'; image: string; command?: string[]; workdir?: string }
+  | { kind: 'http'; url: string };
+/** A vault secret by name, or a plain literal. A header's `format` wraps the secret, e.g. "Bearer {}". */
+export type McpSetting = { secret: string; format?: string } | { value: string };
+export type McpRisk = 'read' | 'write' | 'irreversible';
+/** `"all"` or a list of names. */
+export type McpPick = 'all' | string[];
+export interface McpServerConfig {
+  id: string; name: string; enabled: boolean; transport: McpTransport;
+  env: Record<string, McpSetting>; headers: Record<string, McpSetting>;
+  tools: { allow: McpPick; risk: Record<string, McpRisk> };
+  access: { roles: McpPick; nodes: McpPick };
+  limits: { timeout_s: number; max_output_kb: number; idle_stop_min: number };
+  allow_private: boolean; storage: { volume: boolean };
+  created_ms: number; updated_ms: number;
+}
+/** `starting` is in the design but apid does not report it yet (a start shows `running` or `stopped`). */
+export type McpStatus = 'stopped' | 'starting' | 'running' | 'error';
+export interface McpServerInfo { name: string; version: string; protocol: string }
+/** The config, flattened, with the status over its instances. */
+export interface McpServerView extends McpServerConfig {
+  status: McpStatus; tools_count: number; last_error: string | null; last_used_ms: number; server_info: McpServerInfo | null;
+}
+export interface McpToolRow { name: string; tool: string; description: string; input_schema: unknown; annotations: unknown; risk: McpRisk; allowed: boolean }
+export interface McpProbeTool { name: string; agent_name: string; description: string; annotations: unknown; auto_risk: McpRisk; risk: McpRisk }
+export interface McpLogLine { ts_ms: number; stream: 'stdout' | 'stderr'; line: string }
+/** `ok: false` comes back as a 200 with `error` and the stderr tail. */
+export interface McpTestResult {
+  ok: boolean; ms: number; server_info?: McpServerInfo; tools?: McpProbeTool[]; resources?: unknown[]; prompts?: unknown[];
+  error?: string; stderr?: McpLogLine[];
+}
+export interface McpSpec { name: string; secret: boolean; required: boolean; help: string; format: string | null }
+export interface McpPreset {
+  id: string; name: string; description: string; transport: 'stdio' | 'http'; image: string | null; command: string[];
+  url: string | null; env: McpSpec[]; headers: McpSpec[]; docs: string; status: string; note: string;
+}
+
+export const mcpApi = {
+  catalog: () => get<McpPreset[]>('/v1/mcp/catalog'),
+  servers: () => get<McpServerView[]>('/v1/mcp/servers'),
+  server: (id: string) => get<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}`),
+  /** 400 names the bad field (`{error, field}`); 409 on a duplicate id. */
+  createServer: (config: McpServerConfig) => post<McpServerView>('/v1/mcp/servers', config),
+  patchServer: (id: string, partial: Partial<McpServerConfig>) => patch<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}`, partial),
+  /** Also removes the vault bindings `mcp:<id>`. */
+  deleteServer: (id: string) => del<unknown>(`/v1/mcp/servers/${encodeURIComponent(id)}`),
+  testServer: (id: string, node?: string) => post<McpTestResult>(`/v1/mcp/servers/${encodeURIComponent(id)}/test`, node ? { node } : {}),
+  startServer: (id: string) => post<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}/start`),
+  stopServer: (id: string) => post<McpServerView>(`/v1/mcp/servers/${encodeURIComponent(id)}/stop`),
+  serverTools: (id: string) => get<McpToolRow[]>(`/v1/mcp/servers/${encodeURIComponent(id)}/tools`),
+  serverLogs: (id: string, limit = 100) => get<McpLogLine[]>(`/v1/mcp/servers/${encodeURIComponent(id)}/logs?limit=${limit}`),
+};

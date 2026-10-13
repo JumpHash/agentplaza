@@ -1,0 +1,91 @@
+/* The MCP server wizard (views/mcp-wizard.ts): a sheet over the page. Console tokens only. */
+
+.modal.mcpw-sheet { width: min(760px, 100%); }
+
+.mcpw-body { display: grid; gap: 18px; align-content: start; min-width: 0; }
+.mcpw-step { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.mcpw-step h3 { font: 700 15px/1.2 var(--mono); margin: 0; }
+.mcpw-lede { margin: 0; font: italic 14px/1.5 var(--serif); color: var(--ink-3); }
+.mcpw-warn {
+  margin: 0; padding: 10px 12px;
+  background: var(--warn-bg); color: var(--warn-ink);
+  border-left: 3px solid var(--warn);
+  font: 400 13px/1.45 var(--mono); overflow-wrap: anywhere;
+}
+.mcpw-error { margin: 0; font: 400 13px/1.45 var(--mono); color: var(--danger); overflow-wrap: anywhere; }
+
+/* Step indicator */
+.mcpw-steps {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(6, auto);
+  border: 1px solid var(--rule);
+}
+.mcpw-steps li { min-width: 0; border-right: 1px solid var(--rule); }
+.mcpw-steps li:last-child { border-right: 0; }
+.mcpw-steps button {
+  display: flex; align-items: center; gap: 5px; width: 100%; min-width: 0;
+  padding: 9px 6px; background: none; border: 0;
+  font: 400 12px var(--mono); color: var(--ink-3); text-align: left; cursor: default;
+}
+.mcpw-steps button:disabled { cursor: default; }
+.mcpw-steps .done button { color: var(--ink-2); cursor: pointer; }
+.mcpw-steps .on button { color: var(--ink); background: var(--hover); box-shadow: inset 0 -3px 0 var(--signal); }
+.mcpw-steps button > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcpw-num {
+  display: inline-grid; place-items: center; flex: none;
+  width: 20px; height: 20px; font-size: 11px; border: 1px solid currentColor;
+}
+.mcpw-steps .on .mcpw-num { background: var(--ink); border-color: var(--ink); color: var(--sheet); }
+
+/* Step 1: source cards */
+.mcpw-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.mcpw-option {
+  display: grid; gap: 6px; min-width: 0; padding: 12px; text-align: left;
+  background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); cursor: pointer;
+  font: inherit;
+}
+.mcpw-option:hover { background: var(--hover); }
+.mcpw-option.on { border-color: var(--ink); box-shadow: inset 3px 0 0 var(--signal); }
+.mcpw-option-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mcpw-option-head strong { font: 700 14px/1.2 var(--mono); overflow-wrap: anywhere; }
+.mcpw-option-text { font: 400 13px/1.45 var(--serif); color: var(--ink-2); }
+.mcpw-note { font: italic 12px/1.4 var(--serif); color: var(--ink-3); }
+
+.mcpw-fields { display: grid; gap: 14px; min-width: 0; }
+
+/* Step 5: access groups */
+.mcpw-group { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.mcpw-group legend { font: 700 13px/1.2 var(--mono); margin-bottom: 4px; padding: 0; }
+.mcpw-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; }
+.mcpw-check {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font: 400 13px/1.4 var(--mono); cursor: pointer;
+}
+.mcpw-check span { overflow-wrap: anywhere; }
+
+/* Step 6: summary */
+.mcpw-summary { display: grid; margin: 0; border: 1px solid var(--rule); }
+.mcpw-sum-row {
+  display: grid; grid-template-columns: minmax(96px, 30%) minmax(0, 1fr); gap: 12px;
+  padding: 9px 12px; border-bottom: 1px solid var(--rule-faint);
+}
+.mcpw-sum-row:last-child { border-bottom: 0; }
+.mcpw-sum-row dt { font: 400 12px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.mcpw-sum-row dd { margin: 0; font: 400 13px/1.45 var(--mono); overflow-wrap: anywhere; }
+
+/* Footer and confirm */
+.mcpw-foot { display: grid; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--rule); background: var(--sheet); }
+.mcpw-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.mcpw-confirm { display: grid; gap: 16px; }
+.mcpw-confirm p { margin: 0; font: 400 14px/1.5 var(--serif); }
+
+@media (max-width: 640px) {
+  .modal-backdrop.mcpw-backdrop { padding: 0; }
+  .modal.mcpw-sheet { width: 100%; height: 100%; max-height: none; border: 0; box-shadow: none; }
+  .mcpw-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mcpw-steps li:nth-child(3) { border-right: 0; }
+  .mcpw-steps li:nth-child(-n+3) { border-bottom: 1px solid var(--rule); }
+  .mcpw-options { grid-template-columns: 1fr; }
+  .mcpw-sum-row { grid-template-columns: 1fr; gap: 2px; }
+  .mcpw-checks { grid-template-columns: 1fr; }
+}

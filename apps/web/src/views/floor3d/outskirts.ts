@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { footprint, glowing, LAMP, part, segDist, shadows, type Box2, type PropPalette, type Site } from './props';
+import { bakeStatic } from './bake';
 import { rng } from './textures';
 import { outline, toonMat } from './toon';
 
@@ -202,8 +203,22 @@ export function buildScatter(sites: Site[], _palette: PropPalette): { group: THR
  * into the violet haze), the towers lit by rows of windows and a warm light on top; and low
  * mounds in the middle distance.
  */
+/** The backdrop, built into `g` a step at a time (a node, then a sector's ink and bake), so a warm plaza spends a frame budget on it. */
 export function buildBackdrop(): THREE.Group {
   const g = new THREE.Group();
+  const it = buildBackdropSteps(g);
+  while (!it.next().done) {
+    // drained at once: the sync build for callers without a frame budget
+  }
+  return g;
+}
+
+export function* buildBackdropSteps(g: THREE.Group): Generator<void, void, void> {
+  // Six angular sectors, each baked on its own: one merged mesh per colour batch and sector, so the
+  // frustum still culls the parts that face away.
+  const SECTORS = 12;
+  const sectors = Array.from({ length: SECTORS }, () => new THREE.Group());
+  const sectorOf = (a: number): THREE.Group => sectors[Math.floor((((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2 / SECTORS)) % SECTORS]!;
   const rand = rng(4242);
   const rock = toonMat({ color: 0x3b3572 });
   const cap = toonMat({ color: 0x4d4794 });
@@ -247,7 +262,8 @@ export function buildBackdrop(): THREE.Group {
         part(node, new THREE.SphereGeometry(0.45, 10, 8), lit[0]!, x, h + 4.5, 0);
       }
     }
-    g.add(node);
+    sectorOf(a).add(node);
+    yield;
   }
   // The middle distance: low rolling mounds, so the land between the outskirts and the horizon
   // is not bare.
@@ -257,9 +273,16 @@ export function buildBackdrop(): THREE.Group {
     const a = rand() * Math.PI * 2;
     const radius = 55 + rand() * 45;
     const w = 3 + rand() * 5;
-    const m = part(g, new THREE.SphereGeometry(w, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2).scale(1.4, 0.4, 1), i % 2 ? mound : moundTop, Math.cos(a) * radius, 0, Math.sin(a) * radius);
+    const m = part(sectorOf(a), new THREE.SphereGeometry(w, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2).scale(1.4, 0.4, 1), i % 2 ? mound : moundTop, Math.cos(a) * radius, 0, Math.sin(a) * radius);
     m.rotation.y = rand() * Math.PI;
   }
-  outline(g, 2);
-  return g;
+  for (const sector of sectors) {
+    g.add(sector);
+    outline(sector, 2); // inked per sector, then baked: the merged result is the sector build's, one step a sector
+    sector.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = false; // out past the sun's shadow box: no shadow reaches the plaza
+    });
+    bakeStatic(sector); // nothing here moves: one mesh per colour batch and sector
+    yield;
+  }
 }

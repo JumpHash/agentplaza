@@ -39,8 +39,14 @@ uniform float thickness;
 #include <common>
 #include <fog_pars_vertex>
 void main() {
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  vec3 n = normalize(normalMatrix * normal);
+  // Instanced copies (an InstancedMesh's hull) carry their own transform; a plain mesh uses the identity.
+  #ifdef USE_INSTANCING
+    mat4 im = instanceMatrix;
+  #else
+    mat4 im = mat4(1.0);
+  #endif
+  vec4 mvPosition = modelViewMatrix * im * vec4(position, 1.0);
+  vec3 n = normalize(normalMatrix * mat3(im) * normal);
   // A constant screen-ish width: thicker the farther away, so outlines read at every zoom.
   mvPosition.xyz += n * thickness * clamp(-mvPosition.z * 0.06, 0.7, 4.0);
   gl_Position = projectionMatrix * mvPosition;
@@ -48,10 +54,11 @@ void main() {
 }`;
 const OUTLINE_FS = /* glsl */ `
 uniform vec3 color;
+uniform float fade;
 #include <common>
 #include <fog_pars_fragment>
 void main() {
-  gl_FragColor = vec4(color, 1.0);
+  gl_FragColor = vec4(color, fade);
   #include <fog_fragment>
 }`;
 
@@ -59,7 +66,7 @@ let outlineMaterial: THREE.ShaderMaterial | null = null;
 function outlineMat(): THREE.ShaderMaterial {
   if (outlineMaterial) return outlineMaterial;
   outlineMaterial = new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { thickness: { value: 0.024 }, color: { value: INK } }]),
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { thickness: { value: 0.024 }, color: { value: INK }, fade: { value: 1 } }]),
     vertexShader: OUTLINE_VS,
     fragmentShader: OUTLINE_FS,
     side: THREE.BackSide,
@@ -100,8 +107,12 @@ export function outline(root: THREE.Object3D, minSize = 0.12): void {
     meshes.push(m);
   });
   for (const m of meshes) {
-    const hull = new THREE.Mesh(hullOf(m.geometry), outlineMat());
+    // An instanced mesh gets an instanced hull that shares its instance matrices.
+    const instanced = m instanceof THREE.InstancedMesh;
+    const hull = instanced ? new THREE.InstancedMesh(hullOf(m.geometry), outlineMat(), m.count) : new THREE.Mesh(hullOf(m.geometry), outlineMat());
+    if (instanced && hull instanceof THREE.InstancedMesh) hull.instanceMatrix = (m as THREE.InstancedMesh).instanceMatrix;
     hull.userData.isOutline = true;
+    if (m.userData.detail !== undefined) hull.userData.detail = m.userData.detail; // shows and hides with its level
     hull.castShadow = false;
     hull.receiveShadow = false;
     hull.raycast = () => {};

@@ -4,7 +4,7 @@
 // Above them, the agents the orchestrator has proposed to spawn, to review or reject.
 
 import '../styles/approvals.css';
-import { api, type AgentProposal, type Approval } from '../api';
+import { api, type AgentProposal, type Approval, type ApprovalAction } from '../api';
 import { href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
@@ -14,6 +14,12 @@ import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
+
+/** The sanction a sanction escalation is about: `sanction_id` in its detail. */
+function sanctionIdOf(a: Approval): number | null {
+  const d = a.detail as { sanction_id?: unknown } | null;
+  return typeof d?.sanction_id === 'number' ? d.sanction_id : null;
+}
 
 const TONE: Record<Approval['state'], 'warn' | 'ok' | 'danger' | 'info'> = {
   pending: 'warn',
@@ -58,6 +64,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let timer: number | undefined;
   // Reasons typed but not yet sent survive a re-render, keyed by approval id.
   const drafts = new Map<string, string>();
+  // The sanctions in force as suspensions, by sanction id: only these can be lifted from here.
+  let suspended = new Set<number>();
 
   const nameOf = (cid: number): string => {
     const agent = agents.get().find((a) => a.cid === cid);
@@ -78,34 +86,58 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(decided, past.length ? past.map((a) => row(a)) : h('p.approvals-none', null, 'No decisions yet.'));
   };
 
-  // One waiting approval: who, what, the input, and the owner's call.
+  // One waiting approval: who, what, and the owner's call. A tool call shows its input; a sanction
+  // escalation and a held payment show their subject, with the buttons their kind allows.
   const entry = (a: Approval): HTMLElement => {
     const reason = textarea({ rows: 2, placeholder: 'Reason (optional)', 'aria-label': 'Reason' });
     reason.value = drafts.get(a.id) ?? '';
     reason.addEventListener('input', () => drafts.set(a.id, reason.value));
 
-    const decide = async (approve: boolean): Promise<void> => {
-      yes.disabled = true;
-      no.disabled = true;
+    // Every button of this card, so one decision disables them all while it runs.
+    const choices: HTMLButtonElement[] = [];
+    const decide = async (approve: boolean, action: ApprovalAction | undefined, done: string): Promise<void> => {
+      for (const b of choices) b.disabled = true;
       const text = reason.value.trim();
-      const done = await attempt(() => api.decideApproval(a.id, approve, text || undefined), approve ? 'Approved' : 'Denied');
-      if (done !== undefined) drafts.delete(a.id);
+      const ok = await attempt(() => api.decideApproval(a.id, approve, text || undefined, action), done);
+      if (ok !== undefined) drafts.delete(a.id);
       void load();
     };
-    const yes = button('Approve', () => void decide(true), { kind: 'primary' });
-    const no = button('Deny', () => void decide(false), { kind: 'danger' });
+    const choice = (label: string, o: { approve: boolean; action?: ApprovalAction; done: string; kind?: 'primary' | 'danger' }): HTMLButtonElement => {
+      const b = button(label, () => void decide(o.approve, o.action, o.done), { kind: o.kind });
+      choices.push(b);
+      return b;
+    };
+    const who = h('a.approval-agent', { href: href('agents', a.cid) }, nameOf(a.cid));
+    const age = h('time.approval-age', null, ago(a.created_ms));
 
-    const el = card(null, [
-      h(
-        'header.approval-head',
-        null,
-        h('a.approval-agent', { href: href('agents', a.cid) }, nameOf(a.cid)),
-        h('code.approval-tool', null, a.tool),
-        h('time.approval-age', null, ago(a.created_ms)),
-      ),
-      h('pre.approval-input', null, JSON.stringify(a.input, null, 2) ?? 'null'),
-      h('div.approval-decide', null, reason, h('div.approval-buttons', null, no, yes)),
-    ]);
+    let el: HTMLElement;
+    if (a.kind === 'sanction') {
+      const sid = sanctionIdOf(a);
+      const lift = sid !== null && suspended.has(sid) ? choice('Lift', { approve: false, action: 'lift', done: 'Lifted' }) : null;
+      const acknowledge = choice('Acknowledge', { approve: true, action: 'acknowledge', done: 'Acknowledged', kind: 'primary' });
+      const retire = choice('Retire', { approve: false, action: 'retire', done: 'Recorded', kind: 'danger' });
+      el = card(null, [
+        h('header.approval-head', null, who, h('strong', null, `Escalation: ${a.subject}`), age),
+        h('div.approval-decide', null, reason, h('div.approval-buttons', null, retire, lift, acknowledge)),
+        h('p.faint', null, 'Retire only records your decision. apid does not retire the agent.'),
+      ]);
+    } else if (a.kind === 'payment') {
+      const deny = choice('Deny', { approve: false, done: 'Denied', kind: 'danger' });
+      const approve = choice('Approve', { approve: true, done: 'Approved', kind: 'primary' });
+      el = card(null, [
+        h('header.approval-head', null, who, h('strong', null, `Payment awaiting approval: ${a.subject}`), age),
+        h('pre.approval-input', null, JSON.stringify(a.detail, null, 2) ?? 'null'),
+        h('div.approval-decide', null, reason, h('div.approval-buttons', null, deny, approve)),
+      ]);
+    } else {
+      const no = choice('Deny', { approve: false, done: 'Denied', kind: 'danger' });
+      const yes = choice('Approve', { approve: true, done: 'Approved', kind: 'primary' });
+      el = card(null, [
+        h('header.approval-head', null, who, h('code.approval-tool', null, a.tool), age),
+        h('pre.approval-input', null, JSON.stringify(a.input, null, 2) ?? 'null'),
+        h('div.approval-decide', null, reason, h('div.approval-buttons', null, no, yes)),
+      ]);
+    }
     el.classList.add('approval-card');
     el.setAttribute('data-key', `ap-${a.id}`);
     return el;
@@ -117,7 +149,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       'div.approval-row',
       { 'data-key': `ap-${a.id}` },
       badge(LABEL[a.state], TONE[a.state]),
-      h('code.approval-row-tool', null, a.tool),
+      h('code.approval-row-tool', null, a.subject || a.tool),
       h('span.approval-row-agent', null, nameOf(a.cid)),
       a.reason ? h('span.approval-row-reason', null, a.reason) : null,
       h('time.approval-row-age', null, ago(a.created_ms)),
@@ -198,6 +230,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     } catch {
       failed = true;
     }
+    // A failed register read hides every Lift until the next load, which is the safe side.
+    const register = await api.sanctions().catch(() => null);
+    suspended = new Set(register?.suspensions.filter((s) => s.active).map((s) => s.id) ?? []);
     loaded = true;
     if (alive) render();
   };

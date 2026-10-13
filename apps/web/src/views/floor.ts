@@ -11,52 +11,61 @@ import { api, type Agent, type Conversation, type Entry, type FleetApple, type F
 import { go, href } from '../router';
 import { agents, on } from '../store';
 import { ago, button, clip } from '../ui/components';
+import { plazaPaused } from '../ui/plaza-control';
 import { floorName, roleLabel } from '../roles';
 import { h } from '../ui/dom';
-import { makeRobot, ROBOT_PALETTE, robotVariant, type Robot, type RobotState } from './floor3d/robot';
-import { buildBackdrop } from './floor3d/outskirts';
+import { makeRobot, ROBOT_PALETTE, speciesOf, type Robot, type RobotState } from './floor3d/robot';
+import { buildBackdropSteps } from './floor3d/outskirts';
 import { buildFleet } from './floor3d/fleet';
 import { buildRoom } from './floor3d/rooms';
-import { ground as groundTex, rng, slabSide } from './floor3d/textures';
+import { ground as groundTex, rng } from './floor3d/textures';
 import { outline, sky, starfield, toonMat } from './floor3d/toon';
-import { bakeStatic } from './floor3d/bake';
+import { bakeStatic, routeShadowProxies } from './floor3d/bake';
+import { compileSteps, disposeTree, JobQueue, layoutCached, layoutFor, navSteps, releaseBuild, takeBuild, textWidth } from './floor3d/warm';
+import { createMeter, startPixelRatio } from './floor3d/perf';
 import { mountFloor2d } from './floor2d';
-import { boardHeightAt, layoutOnBoard, pathOnTraces, traceGraph, type BoardDistrict, type BoardLayout, type TraceGraph } from './floor3d/board-layout';
-import { buildModel, currentPulses, modelsFor, placeAtom, traceMeshes, type Built, type Model, type Params, type Pulses, type Trace } from './floor3d/hardware';
+import { boardHeightAt, scaleModel, traceGraph, type BoardDistrict, type BoardLayout, type TraceGraph } from './floor3d/board-layout';
+import { roomPlan } from './floor3d/nav-scene';
+import { NavWorld, navigateTo } from './floor3d/nav';
+import { buildNavOverlay, type NavOverlay } from './floor3d/nav-overlay';
+import { buildLift, prewarmLift, type LiftProp } from './floor3d/lift';
+import { disposeRamp, rampForPortal } from './floor3d/ramp';
+import { buildGangway, type Gangway } from './floor3d/gangway';
+import { RobotWork, straightStep, type WorkGoal } from './floor3d/robot-work';
+import type { BodyMode } from './floor3d/nav-height';
+import { registry } from './floor3d/robots/files';
+import { currentPulses, modelsFor, placeAtom, traceStrips, type Built, type Model, type Params, type Pulses, type Trace } from './floor3d/hardware';
+import { boardScene, platePieces, roomPalette as auditPalette } from './floor3d/board-rooms';
+import { groundAudit, supportField, type Support } from './floor3d/ground';
 import { MODELS } from './floor3d/hardware-index';
+import { prewarmFx } from './floor3d/robots/fx';
+import { DIRECT_START, EntrySequence, beginEntry, ownRoomMaterials, prepareFade, setReturn, takeEntry, takeReturn, type EntryContext, type Exterior, type Handoff, type Pose } from './floor3d/entry';
 import type { Cleanup } from './index';
+import { engineWanted, mountEngine } from './engine-mount';
 
 const PACKET_MS = 1500;
-const SPEED = 1.6; // grid units per second; one grid cell is one world unit
 const MAX_PACKETS = 60;
-const RAMP = 1; // the sloped band round a room: the same band boardHeightAt slopes over
-const GRAVITY = 9.8; // world units per second squared
 const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 const AZIMUTH = Math.PI / 4;
-const SOCIAL_NEAR = 9.5; // districts this close count as neighbours for a visit or a chat
+const BIG_BOARD = 72; // a board this many units across (the server's 88) is big: its default view is higher (viewDir)
+const BIG_POLAR = 0.42; // a big board's default view, from vertical: about 24 degrees, near top-down (POLAR is 55)
 const BOARD_DROP = 14; // the night's ground sits this far under the board, so the board floats
 const GLOW_OPACITY = 0.4; // a working component's glow plate, at full strength
-const ROBOT_R = 0.55; // robot footprint radius for collisions
-const STEER = [0, 30, -30, 60, -60].map((d) => (d * Math.PI) / 180); // headings tried when a step is blocked
 const DUST_N = 90;
 const LABEL_CSS =
   'position:absolute;left:0;top:0;display:none;align-items:center;gap:6px;max-width:200px;padding:3px 7px;' +
   'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--print);color:var(--ink);' +
   'font:600 10.5px/1.35 var(--mono);white-space:nowrap;' +
   'pointer-events:none;will-change:transform';
-const FIT_FILL = 0.85; // the plaza spans this share of the stage on its tighter axis
+const FIT_FILL = 0.85;
+const DRIFT_AMP = (3 * Math.PI) / 180; // the settled plaza's idle sway: this far either way about the framed target (radians)
+const DRIFT_RATE = (0.35 * Math.PI) / 180; // at about 3.5 degrees per 10 s (radians a second)
+const FRAME_MIN_SHARE = 0.3; // the default view frames at least this share of the board's width and depth (fitBox)
+const LOAD_BUDGET_MS = 20; // while an arrival waits for its build (the loading card): the build runs at a fuller pace
+const WORLD_BUDGET_MS = 6; // the district build's time per frame (stepWorld): a few districts a frame // the plaza spans this share of the stage on its tighter axis
 
 /** A room on its component: its centre on the board (cx, cy), its slot's top (y) and its cell (w, d). */
 type District = BoardDistrict;
-
-/** A robot's visit or chat. In a `talk` the partner stands still, facing it. */
-interface Social {
-  phase: 'go' | 'talk';
-  partner: Bot | null;
-  gx: number; // where it walks to, grid units
-  gy: number;
-  until: number; // when the social ends, ms; Infinity until the walk is done
-}
 
 interface Bot {
   agent: Agent;
@@ -64,18 +73,11 @@ interface Bot {
   home: [number, number]; // console position
   x: number; // current position, grid units
   y: number;
-  tx: number; // wander target
-  ty: number;
   heading: number; // radians about the vertical axis
-  route: [number, number][]; // the trace walkway still to walk to reach the goal (empty within a room)
-  routeKey: string; // the goal the route was found for
+  goalKey: string; // the goal the robot was last sent to (navigateTo runs when it changes)
   moving: boolean;
   py: number; // height of the feet
-  vy: number; // vertical speed (falling)
   state: RobotState | null;
-  nextWander: number;
-  nextSocial: number; // when an idle robot next considers a visit, chat or stroll
-  social: Social | null;
   activity: string; // what the agent is doing right now, shown on its label and card
   robot: Robot;
   robotKey: string;
@@ -152,6 +154,7 @@ interface BoardScene {
   pulses: { on: string; pulses: Pulses }[];
   plates: Map<string, GlowPlate>; // by the slot id
   atom: ((t: number) => void) | null;
+  atomGroup: THREE.Group | null; // the atom's object, for the ENTER sequence's glow
 }
 
 /** The board shown when no machine is known: the workstation, with its one GPU. */
@@ -218,30 +221,9 @@ function clamp(v: number, lo: number, hi: number): number {
 /** A room's floor height: its slot's top. */
 const topOf = (d: District): number => d.y;
 
-/** A prop's ground footprint, in grid units. */
-interface Footprint {
-  x0: number;
-  x1: number;
-  z0: number;
-  z1: number;
-}
 
 /** Whether (x, y) lies within a robot's width of a prop footprint. */
-const near = (p: Footprint, x: number, y: number): boolean =>
-  x > p.x0 - ROBOT_R && x < p.x1 + ROBOT_R && y > p.z0 - ROBOT_R && y < p.z1 + ROBOT_R;
 
-/** Free geometry, materials and textures under an object. */
-function disposeTree(obj: THREE.Object3D): void {
-  obj.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    mesh.geometry?.dispose();
-    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-    for (const m of mats) {
-      (m as THREE.MeshBasicMaterial).map?.dispose();
-      m.dispose();
-    }
-  });
-}
 
 /** The cid a tool call hands a message or a task to, if any. */
 function recipientOf(tool: string, inp: Record<string, unknown>): number | null {
@@ -264,19 +246,33 @@ function toolActivity(tool: string, inp: Record<string, unknown>, nameOf: (cid: 
 }
 
 /** A WebGL renderer, or null when the browser refuses to make one. */
-function newRenderer(): THREE.WebGLRenderer | null {
+function newRenderer(antialias = true): THREE.WebGLRenderer | null {
   try {
-    return new THREE.WebGLRenderer({ antialias: true });
+    const r = new THREE.WebGLRenderer({ antialias });
+    r.debug.checkShaderErrors = false; // the info log is read only when a shader fails: reading it per program costs ms on the select path
+    return r;
   } catch {
     return null;
   }
 }
 
+/**
+ * The plazas' renderer: one per page, created once (the Machines mount creates it ahead of a popup, so the popup does
+ * not pay for the context). A plaza's canvas moves with it; the Machines view keeps its own, which the popup shows.
+ */
+let plazaGl: THREE.WebGLRenderer | null | undefined;
+function plazaRenderer(): THREE.WebGLRenderer | null {
+  if (plazaGl === undefined) plazaGl = newRenderer();
+  return plazaGl;
+}
+/** Which plaza's frame loop owns the shared renderer: a torn-down plaza stops the loop only if it still owns it. */
+let loopOwner: object | null = null;
+
 /** The plaza of one machine (today's Floor). Without WebGL the 2.5D canvas floor takes over. */
-function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
-  const probe = document.createElement('canvas');
-  const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
-  const renderer = gl ? newRenderer() : null;
+function mountPlaza(root: HTMLElement, machineId: string | null, warm: { fleet: FleetResponse } | null = null): Cleanup {
+  // The shared renderer (cached): null when the browser refuses WebGL, which is the 2.5D canvas floor's cue. A probe
+  // canvas per mount would keep one more WebGL context alive each time (a context is released only when it is collected).
+  const renderer = plazaRenderer();
   if (!renderer) return mountFloor2d(root);
   const palette = readPalette();
   // The scene's own sci-fi grade, the same in either console theme: hull slate and steel for the
@@ -294,19 +290,37 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
 
   // Renderer, scene, camera, controls: the night and the orbit are the same in every view.
   const canvas = viewCanvas(renderer, 'The plaza floor');
+  const loopToken = {}; // this plaza's frame loop, for the teardown (loopOwner)
   const { scene, ground, backdrop, skyLayer } = nightScene();
   const { camera, controls } = orbitView(canvas);
-  // The board floats on the night: no skyline, and a dark ground sheet well under it.
-  backdrop.visible = false;
-  (ground.material as THREE.Material).dispose();
-  ground.material = toonMat({ color: 0x0b0d1f });
-  ground.position.y = -BOARD_DROP;
+  // The board floats on the night: no skyline, and a dark ground sheet well under it. An ENTER starts in the
+  // Machines view's look (the skyline and the night ground) and turns to this one as the camera dives (see `look`).
+  // A warm plaza (the popup's machine, built hidden) takes its handoff from ENTER, in adopt below.
+  let handoff: Handoff | null = machineId === null || warm !== null ? null : takeEntry(machineId);
+  let host = root; // the plaza's DOM: the warm container until adopt moves it to the visible root
+  let warmShown = warm === null; // a warm plaza draws only once adopted
+  let bodyFloor = false;
+  const groundNight = ground.material as THREE.Material;
+  const groundDark = toonMat({ color: 0x0b0d1f });
+  backdrop.visible = handoff !== null;
+  if (handoff === null) {
+    groundNight.dispose();
+    ground.material = groundDark;
+    ground.position.y = -BOARD_DROP;
+  }
 
   // Shared resources: the rooms of the board, and the board itself once the machine is known.
   const districtGroup = new THREE.Group();
   scene.add(districtGroup);
   let board: BoardScene | null = null;
   let layoutNow: BoardLayout | null = null;
+  // Robot navigation: one world per plaza, on the grid of the board and its rooms; the lifts and the overlay (nav=1) follow the grid.
+  let nav: NavWorld | null = null;
+  let navLifts: { id: number; prop: LiftProp; low: number; high: number }[] = [];
+  let navRamps: THREE.Group[] = [];
+  let navGangways: Gangway[] = [];
+  let navOverlay: NavOverlay | null = null;
+  const navDebug = new URLSearchParams(location.hash.split('?')[1] ?? '').get('nav') === '1';
   const padGeo = new THREE.CircleGeometry(0.42, 28);
   const packetGeo = new THREE.SphereGeometry(0.13, 14, 10);
   const haloGeo = new THREE.SphereGeometry(0.34, 14, 10);
@@ -344,11 +358,19 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   );
   const tags = document.createElement('div');
   tags.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
-  const stage = h('div.floor-stage.floor-stage-3d', null, tags, card, legend);
+  // The loading card of an arrival that waits for its build (updateLoading): a thin progress bar and the percentage.
+  const loadBar = h('i.floor-loading-bar');
+  const loadName = h('span', null, machineId ?? '');
+  const loadPctEl = h('span.floor-loading-pct', null, '0%');
+  const loader = h('div.floor-loading', { hidden: true, role: 'status', 'aria-live': 'polite' }, h('div.floor-loading-head', null, h('span', null, 'Preparing ', loadName, '…'), loadPctEl), h('div.floor-loading-track', null, loadBar));
+  const stage = h('div.floor-stage.floor-stage-3d', null, tags, card, legend, loader);
   stage.style.position = 'relative';
   stage.prepend(canvas);
-  root.classList.add('floor-view');
-  document.body.classList.add('floor-mode');
+  if (warmShown) {
+    root.classList.add('floor-view');
+    document.body.classList.add('floor-mode');
+    bodyFloor = true;
+  }
   // Inside a machine the header names it: "Machines › name", and Back returns to the Machines view.
   const crumbName = h('span', null, machineId ?? ''); // the fleet names it once read (applyFleet)
   root.append(
@@ -360,8 +382,11 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
       h(
         'div.actions',
         null,
-        machineId === null ? null : button('Back to machines', () => go('floor')),
-        button('Reset view', () => resetView(), { icon: 'refresh' }),
+        machineId === null ? null : button('Back to machines', () => leavePlaza()),
+        button('Reset view', () => {
+          driftStopped = false; // the Reset view button is a reset: the idle sway starts again
+          resetView();
+        }, { icon: 'refresh' }),
       ),
     ),
     stage,
@@ -369,9 +394,10 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
 
   let districtSig = '';
   let bots: Bot[] = [];
+  // Debug (window.__apzLiftRide): a robot walking a ride goal in place of its work goal, until it arrives or its time is up.
+  const rides = new Map<number, { goal: { x: number; z: number }; left: number }>();
   const byCid = new Map<number, Bot>();
   const packets: Packet[] = [];
-  const propBoxes: Footprint[] = []; // prop footprints on the ground
   const litByRole = new Map<string, DistrictLight>();
   const propAnim: ((t: number) => void)[] = [];
   const tmpV = new THREE.Vector3();
@@ -384,14 +410,33 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   // The top of the rooms (set by buildWorld) and whether the user has moved the camera; until they do, the default view refits.
   let roomsTop = 2;
   let userMoved = false;
-  // The machine this plaza shows: its members (null until the fleet says, meaning every agent), its status and its board.
-  let members: Set<number> | null = null;
+  // The settled plaza's idle sway (updateDrift): stopped by any input until the next reset or arrival.
+  let driftStopped = false;
+  let driftT = 0; // the sway's clock (seconds)
+  let driftApplied = 0; // how far the camera has been turned so far (radians)
+  // The ENTER sequence while it plays (and after it, until a Back): the view is not refit while it drives the camera.
+  let entry: EntrySequence | null = null;
+  // A plaza that has arrived (ENTER) waits for its build before the flight starts; the loading card shows the progress.
+  let pendingFlight = false;
+  let loadPct = 0;
+  let directWaved = false; // a direct load plays its build wave once
+  let poseOf: { board: BoardScene; layout: BoardLayout | null; pose: Pose } | null = null;
+  // The machine this plaza shows: its members (the cids the fleet names; empty until a fleet read, so no robots before),
+  // its status and its board. Only a successful fleet read changes the members; a failed read keeps the last known ones.
+  let members = new Set<number>();
+  let fleetRead = false; // a fleet read has named the machine (members and board are its)
   let machineStatus: FleetStatus = 'online';
   let lastList: Agent[] = [];
   let alive = true;
   let settingView = false; // resetView's own camera moves are not the user's
+  let lastInput = -Infinity; // the user's last camera move: the plaza draws at the full rate while it lasts (see frame)
+  let robotsBusy = false; // a robot walks, works or rides this frame (updateBots)
+  let plazaBusy = true; // the last drawn frame's verdict: full rate while busy, the idle rate when only the sway and ambient motion remain
   controls.addEventListener('change', () => {
-    if (!settingView) userMoved = true;
+    if (!settingView) {
+      userMoved = true;
+      lastInput = performance.now();
+    }
   });
   let last = performance.now();
   const ndcVec = new THREE.Vector2();
@@ -401,6 +446,10 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   const slopeN = new THREE.Vector3();
   const tiltQ = new THREE.Quaternion();
   const yawQ = new THREE.Quaternion();
+  // Any orbit, pan or zoom gesture stops the idle sway (pointer and wheel input on the stage does too, below).
+  controls.addEventListener('start', () => {
+    driftStopped = true;
+  });
 
   // Plaques and rooms.
   function plaqueTexture(text: string, orch: boolean): THREE.CanvasTexture {
@@ -425,7 +474,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     g.textBaseline = 'middle';
     const base = '500 48px ui-monospace, SFMono-Regular, Menlo, monospace';
     g.font = base;
-    const w = g.measureText(text).width;
+    const w = textWidth(g, text);
     if (w > 460) g.font = `500 ${Math.floor((48 * 460) / w)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     g.fillText(text, 256, 66);
     const tex = new THREE.CanvasTexture(cv);
@@ -434,26 +483,20 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   }
 
   /**
-   * A room on its component: a terrace body from the PCB up to the slot's top (filling the cell, sloping down over
-   * RAMP as boardHeightAt does), the room's floor at the slot's top, and the role's plaque at its open front.
+   * A room on its component: a thin terrace plate seated on the component's top (its top at the slot's top, nothing
+   * below the component's top), the room's floor at the slot's top, and the role's plaque at its open front. The
+   * ramps and lifts to the board are placed by the nav grid (applyNav). `index` is the district's place in the layout
+   * (with the machine and role, it seeds the room's generator).
    */
-  function districtMesh(d: District, pcb: number): THREE.Group {
+  function districtMesh(d: District, index: number, support: Support): THREE.Group {
     const g = new THREE.Group();
     const orch = d.role === 'orchestrator';
     const round = d.shape === 'round';
     const hs = Math.min(d.w, d.d) / 2; // the cell's half-size: the terrace's flat top
-    const rise = Math.max(0.05, d.y - pcb);
-    const body = round
-      ? new THREE.CylinderGeometry(hs, hs + RAMP, rise, 48)
-      : new THREE.CylinderGeometry(hs * Math.SQRT2, (hs + RAMP) * Math.SQRT2, rise, 4, 1).rotateY(Math.PI / 4);
-    const slab = new THREE.Mesh(body, slabSide(d.hue));
-    slab.position.set(d.cx, pcb + rise / 2, d.cy);
-    slab.castShadow = true;
-    slab.receiveShadow = true;
-    g.add(slab);
-    // Neon in the district's hue along the terrace's top edge and round its foot.
+    g.add(platePieces(d, support)); // the plate rests on what is under it, columns where it stands over lower ground (board-rooms.ts)
+    // Neon in the district's hue along the terrace's top edge.
     const neon = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.95, 0.62, THREE.SRGBColorSpace), toneMapped: false });
-    for (const [rr, y] of [[hs, d.y + 0.01], [hs + RAMP, pcb + 0.03]] as const) {
+    for (const [rr, y] of [[hs, d.y + 0.01]] as const) {
       const edge = round
         ? new THREE.Mesh(new THREE.TorusGeometry(rr, 0.045, 6, 72), neon)
         : new THREE.Mesh(new THREE.TorusGeometry(rr * Math.SQRT2, 0.045, 6, 4), neon);
@@ -462,11 +505,20 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
       edge.userData.outline = false;
       g.add(edge);
     }
-    // The room faces the board's centre: square rooms turn in quarter turns so they stay square to their cell.
-    const facing = Math.atan2(-d.cx, -d.cy);
-    const turn = round ? facing : Math.round(facing / (Math.PI / 2)) * (Math.PI / 2);
-    const room = buildRoom(d.role, d.r, d.hue, roomPalette);
-    const top = new THREE.Mesh(round ? new THREE.CircleGeometry(d.r, 48) : new THREE.PlaneGeometry(2 * d.r, 2 * d.r), room.floor);
+    // The room's turn, door, seed and desks come from the layout (roomPlan), the same values the nav grid reads. The turn
+    // faces the aisle the room opens onto (a square room) or the board's centre (a round room). The room is 2r - 0.15
+    // across: the cell less the wall margin. A slot below the role's minimum is built at the slot size, not enlarged
+    // (enlarging would overlap the neighbours); buildRoom warns, and the room's required items may not place there.
+    const plan = roomPlan(d, index, machineId, layoutNow);
+    const turn = plan.turn;
+    const { seed, door, agents } = plan;
+    const room = buildRoom(d.role, d.r, d.hue, roomPalette, { seed, door, agents: Math.max(1, agents), w: 2 * d.r - 0.15, d: 2 * d.r - 0.15 });
+    work.addRoom(d, turn, room.spots, room.layout.items); // the room's stations (where its robots work)
+    // The floor covers the cell, or the built room where that is larger (its walls stand just outside the inner size).
+    const top = new THREE.Mesh(
+      round ? new THREE.CircleGeometry(d.r, 48) : new THREE.PlaneGeometry(Math.max(2 * d.r, room.w + 0.15), Math.max(2 * d.r, room.d + 0.15)),
+      room.floor,
+    );
     top.rotation.set(-Math.PI / 2, 0, turn);
     top.position.set(d.cx, d.y + 0.004, d.cy);
     top.receiveShadow = true;
@@ -475,12 +527,6 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     room.group.rotation.y = turn;
     g.add(room.group);
     room.group.updateMatrixWorld(true);
-    for (const part of room.group.children) {
-      if (part.userData.walk) continue; // rugs and floor markings
-      const box = new THREE.Box3().setFromObject(part);
-      if (box.isEmpty() || box.min.y > d.y + 2.2) continue; // overhead pieces do not block the floor
-      propBoxes.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z });
-    }
     litByRole.set(d.role, { screens: room.screens, lit: false });
     propAnim.push(room.animate);
     // Role plaque lies flat on the room's open front, readable from the board.
@@ -500,30 +546,66 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   }
 
   /** The rooms, rebuilt whenever the layout changes; the old ones are disposed first. */
-  function buildWorld(ds: District[], pcb: number): void {
+  /** The district build in progress: its districts are built and baked one group per step, across frames (stepWorld). */
+  let worldJob: { ds: BoardDistrict[]; pcb: number; next: number; support: Support; drawn: Support[] } | null = null;
+  /** The drawn supports of the built world (board, rooms, aisles), once it is complete: the nav's walk heights bake from them. */
+  let drawnSups: Support[] | null = null;
+  /** The plaza's budgeted jobs (floor3d/warm.ts): the exterior, the board, its nav grid. The frame loop runs them. */
+  const jobs = new JobQueue();
+  let boardPending: string | null = null; // the key of the board a job is building
+
+  /**
+   * Starts the districts of a new world (the old one is disposed here). The districts are built by stepWorld, a few per
+   * frame, so no frame carries the whole plaza: the default view and the ENTER sequence's dive wait for the last one.
+   */
+  function buildWorld(ds: BoardDistrict[], pcb: number, support: Support): void {
     for (const child of [...districtGroup.children]) {
       districtGroup.remove(child);
       disposeTree(child);
     }
     litByRole.clear();
     propAnim.length = 0;
-    propBoxes.length = 0;
-    for (const d of ds) districtGroup.add(districtMesh(d, pcb));
-    // The world was just rebuilt (the old one is disposed above), so bake only this fresh static subtree.
-    const stats = { districts: bakeStatic(districtGroup) };
-    console.debug('floor: baked', stats);
-    const box = new THREE.Box3().setFromObject(districtGroup);
-    roomsTop = box.isEmpty() ? 2 : box.max.y;
+    work.beginRooms();
+    drawnSups = null; // the nav's walk heights wait for the new world (its grid heights until then)
+    nav?.setDrawn(null);
+    worldJob = { ds, pcb, next: 0, support, drawn: [support] };
+  }
+
+  /** Builds and bakes districts of the world job until the budget (ms) is spent, one group each (its own bake). */
+  function stepWorld(budgetMs: number): void {
+    const job = worldJob;
+    if (!job) return;
+    const until = performance.now() + budgetMs;
+    while (job.next < job.ds.length) {
+      const g = districtMesh(job.ds[job.next]!, job.next, job.support);
+      job.drawn.push({ field: supportField(g), scale: 1 }); // the drawn tops, read before the bake merges the meshes
+      bakeStatic(g, { shadowProxies: true }); // bake this group alone: the world is not rebaked as a whole
+      ownRoomMaterials(g); // the room's own material copies, for the ENTER sequence's fade
+      districtGroup.add(g);
+      job.next++;
+      if (performance.now() >= until) break;
+    }
+    if (job.next >= job.ds.length) {
+      worldJob = null;
+      drawnSups = job.drawn;
+      nav?.setDrawn(drawnSups);
+      // The new rooms' shaders, a material a step (warm.ts); the night ground's material too, which ENTER swaps in.
+      if (renderer) jobs.replace('compile-rooms', compileSteps(renderer, scene, camera, [new THREE.Mesh(ground.geometry, groundNight), new THREE.Mesh(ground.geometry, groundDark)]));
+      const box = new THREE.Box3().setFromObject(districtGroup);
+      roomsTop = box.isEmpty() ? 2 : box.max.y;
+      if (!userMoved) resetView();
+    }
   }
 
   /**
    * A machine's board as the plaza: the model at the origin with its copper traces, the current running along each
    * component's traces, the atom over its anchor, and a glow plate over each slot (lit while its rooms work).
    */
-  function buildBoard(model: Model, params: Params, key: string): BoardScene {
+  function* buildBoard(model: Model, params: Params, key: string): Generator<void, BoardScene, void> {
     const group = new THREE.Group();
-    const built = buildModel(model, params);
-    group.add(built.group, traceMeshes(model));
+    const built = yield* takeBuild(key, model, params); // a part at a time, or the pooled model of this board
+    group.add(built.group, traceStrips(model));
+    yield;
     const plates = new Map<string, GlowPlate>();
     for (const slot of model.slots ?? []) {
       if (!built.parts.has(slot.on)) continue; // a slot whose part is hidden by its `when` does not exist
@@ -533,6 +615,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
       mesh.rotation.x = -Math.PI / 2;
       mesh.position.set(x0 + w / 2, slot.top + 0.012, z0 + d / 2);
       mesh.userData.outline = false;
+      mesh.userData.dynamic = true; // its opacity and visibility follow the work every frame
       mesh.visible = false;
       group.add(mesh);
       plates.set(slot.id, { slot: slot.id, on: slot.on, mesh, mat, level: 0 });
@@ -546,16 +629,65 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     const pulses = [...walkways].map(([on, traces]) => ({ on, pulses: currentPulses({ ...model, traces }) }));
     for (const p of pulses) group.add(p.pulses.group);
     const atom = placeAtom(model, group);
+    prepareFade(group);
     scene.add(group);
-    return { key, model, params, group, built, graph: traceGraph(model), pulses, plates, atom: atom?.animate ?? null };
+    return { key, model, params, group, built, graph: traceGraph(model), pulses, plates, atom: atom?.animate ?? null, atomGroup: atom?.atom ?? null };
+  }
+
+  /** The nav grid of the board and its rooms, rebuilt with them: robots keep their places, the lifts and overlay follow the grid. */
+  function rebuildNav(): void {
+    if (!board || !layoutNow) return;
+    jobs.replace('nav', applyNav(board, layoutNow));
+  }
+
+  /** The nav grid of a board and its layout, a room plan a step (navSteps), applied if the board and layout are still current. */
+  function* applyNav(b: BoardScene, lay: BoardLayout): Generator<void, void, void> {
+    const built = yield* navSteps(b.model, b.params, lay, machineId);
+    if (board !== b || layoutNow !== lay) return;
+    if (nav) nav.setGrid(built.grid);
+    else {
+      nav = new NavWorld(built.grid);
+      nav.setDrawn(drawnSups);
+      nav.onUnreachable((cid) => work.unreachable(cid));
+      nav.onRespawn((cid) => work.unreachable(cid)); // a respawn at home ends the walk the same way: the next decision starts clean
+    }
+    for (const l of navLifts) {
+      scene.remove(l.prop.group);
+      l.prop.dispose();
+    }
+    navLifts = built.grid.lifts.map((lift) => {
+      const prop = buildLift(lift, roomPalette); // the cab's look; its mechanics are the nav world's (NavWorld.lift)
+      scene.add(prop.group);
+      return { id: lift.id, prop, low: lift.low, high: lift.high };
+    });
+    // The gangways: one per plate whose landing is a gangway, bridging from the plate edge to its lift shaft.
+    for (const g of navGangways) {
+      scene.remove(g.group);
+      g.dispose();
+    }
+    navGangways = lay.plates.flatMap((p) => (p.landing?.kind === 'gangway' ? [buildGangway(p.landing, p.y, lay.pcbTop, roomPalette)] : []));
+    for (const g of navGangways) scene.add(g.group);
+    // The ramps: one per ramp portal (a plate landing at most NAV_LIFT_RISE above the PCB), from the plate cell to the board.
+    for (const r of navRamps) {
+      scene.remove(r);
+      disposeRamp(r);
+    }
+    navRamps = built.grid.portals.flatMap((p) => (p.kind === 'ramp' ? [rampForPortal(built.grid, p, roomPalette).group] : []));
+    for (const r of navRamps) scene.add(r);
+    if (navOverlay) navOverlay.setGrid(built.grid);
+    else if (navDebug) {
+      navOverlay = buildNavOverlay(built.grid);
+      scene.add(navOverlay.group);
+    }
   }
 
   // Robots, labels, pads.
   function createBot(agent: Agent, district: District, hx: number, hy: number): Bot {
     const orch = agent.tier === 'orchestrator';
-    const robot = makeRobot(district.hue, orch, ROBOT_PALETTE, agentHue(agent.cid), robotVariant(agent.cid));
+    const robot = makeRobot(district.hue, orch, ROBOT_PALETTE, agentHue(agent.cid), speciesOf(agent.species, agent.cid));
+    robot.group.updateMatrixWorld(true); // not in the scene yet: local is world, so the part scales below are right
     robot.group.traverse((o) => {
-      o.castShadow = true;
+      o.castShadow = o instanceof THREE.Mesh && robotPartCasts(o);
       o.receiveShadow = true;
     });
     robot.group.userData.dynamic = true; // walks, turns, is picked
@@ -579,24 +711,19 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     labelName.style.cssText = 'overflow:hidden;text-overflow:ellipsis;min-width:0';
     label.append(labelKey, labelName);
     tags.append(label);
+    // The robot walks the nav grid at its species' gait speed (0.9 when the species has none).
+    nav?.add({ id: agent.cid, x: hx, z: hy, speed: registry().species[robot.species]?.gait.speed ?? 0.9, turnRate: 4, priority: 0, floats: registry().species[robot.species]?.floats ?? false });
     return {
       agent,
       district,
       home: [hx, hy],
       x: hx,
       y: hy,
-      tx: hx,
-      ty: hy,
       heading: 0,
-      route: [],
-      routeKey: '',
+      goalKey: '',
       moving: false,
       py: 0,
-      vy: 0,
       state: null,
-      nextWander: performance.now() + Math.random() * 3000,
-      nextSocial: performance.now() + 4000 + Math.random() * 10000,
-      social: null,
       activity: 'idle',
       robot,
       robotKey: `${district.hue}|${orch}`,
@@ -612,6 +739,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   }
 
   function removeBot(b: Bot): void {
+    nav?.remove(b.agent.cid);
     scene.remove(b.robot.group);
     b.robot.dispose();
     scene.remove(b.pad);
@@ -624,15 +752,31 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   function sync(list: Agent[]): void {
     lastList = list;
     if (!board) return; // the board comes with the machine (refresh); until then there is nothing to lay out
-    const mine = list.filter((a) => !members || members.has(a.cid));
-    const laid = layoutOnBoard(mine, board.model, board.params);
+    const mine = list.filter((a) => members.has(a.cid));
+    const cached = layoutCached(board.key, mine);
+    if (cached === null) {
+      // A new roster or board: the layout is computed as a job (the frame budget), then this sync runs again on a hit.
+      const b = board;
+      jobs.replace('layout', (function* (): Generator<void, void, void> {
+        layoutFor(b.key, mine, b.model, b.params);
+        if (board === b) sync(lastList);
+      })());
+      return;
+    }
+    const laid = cached;
     layoutNow = laid;
-    const sig = JSON.stringify(laid.districts);
+    // The board's key (its model and params) is part of the signature: a new board changes the trace graph the doors use.
+    const sig = `${board.key}|${JSON.stringify(laid.districts)}`;
     if (sig !== districtSig) {
       districtSig = sig;
-      buildWorld(laid.districts, laid.pcbTop);
-      if (!userMoved) resetView();
+      // The board's world scale (layout.boardScale): its group and its walkway graph follow the scaled layout.
+      board.group.scale.setScalar(laid.boardScale);
+      board.graph = traceGraph(scaleModel(board.model, laid.boardScale));
+      buildWorld(laid.districts, laid.pcbTop, { field: board.built.support, scale: laid.boardScale });
+      work.setBoard(board.model, board.params, board.graph, laid);
+      rebuildNav();
     }
+    work.setLayout(laid);
     const seen = new Set<number>();
     for (const agent of mine) {
       const slot = laid.homes.get(agent.cid);
@@ -645,10 +789,13 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
         bot = undefined;
       }
       if (!bot) {
-        bot = createBot(agent, district, hx, hy);
-        byCid.set(agent.cid, bot);
+        // A new robot is made a budgeted step at a time (stepBots), not all in this task.
+        pendingBots = pendingBots.filter((q) => q.agent.cid !== agent.cid);
+        pendingBots.push({ agent, district, hx, hy });
+        continue;
       }
       Object.assign(bot, { agent, district, home: [hx, hy] as [number, number] });
+      nav?.setHome(agent.cid, hx, hy); // the layout moved the home (the board scale follows the agent count): a respawn returns there
       bot.pad.position.set(hx, topOf(district) + 0.02, hy);
     }
     for (const [cid, bot] of byCid) {
@@ -662,53 +809,93 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     renderCard();
   }
 
+  /** Robots waiting to be made (sync queues them). stepBots makes them a few per frame, within the budget. */
+  let pendingBots: { agent: Agent; district: District; hx: number; hy: number }[] = [];
+  let robotsCompiled = false; // the robots' shaders compile once their first batch is made (their materials are new)
+  function stepBots(budgetMs: number): void {
+    if (pendingBots.length === 0 || jobs.has('nav')) return; // a robot joins the nav grid it is made on (createBot): the grid comes first
+    const until = performance.now() + budgetMs;
+    while (pendingBots.length > 0) {
+      const p = pendingBots.shift()!;
+      if (!byCid.has(p.agent.cid)) {
+        const bot = createBot(p.agent, p.district, p.hx, p.hy);
+        byCid.set(p.agent.cid, bot);
+        Object.assign(bot, { agent: p.agent, district: p.district, home: [p.hx, p.hy] as [number, number] });
+        bot.pad.position.set(p.hx, topOf(p.district) + 0.02, p.hy);
+      }
+      if (performance.now() >= until) break;
+    }
+    bots = [...byCid.values()];
+    if (pendingBots.length === 0 && !robotsCompiled && renderer) {
+      robotsCompiled = true;
+      jobs.replace('compile-robots', compileSteps(renderer, scene, camera)); // the robots' programs, before ENTER pops them in
+    }
+    renderCard();
+  }
+
   /** Shows the named board with its params, building it unless it is the one already shown, then lays the agents on it. */
   function showBoard(name: string, params: Params): void {
     const key = `${name}|${JSON.stringify(params)}`;
-    if (board?.key !== key) {
-      if (board) {
-        scene.remove(board.group);
-        disposeTree(board.group);
-      }
-      board = buildBoard(MODELS[name] ?? MODELS[DEFAULT_BOARD.name]!, params, key);
+    if (board?.key === key) {
+      sync(lastList);
+      return;
     }
+    if (boardPending === key && jobs.has('board')) return; // this board is already being built
+    boardPending = key;
+    jobs.replace('board', boardJob(MODELS[name] ?? MODELS[DEFAULT_BOARD.name]!, params, key));
+  }
+
+  /** The board, built a budgeted step at a time (buildBoard); it replaces the shown one, then the agents are laid on it. */
+  function* boardJob(model: Model, params: Params, key: string): Generator<void, void, void> {
+    const next = yield* buildBoard(model, params, key);
+    boardPending = null;
+    if (board) retireBoard(board);
+    board = next;
+    if (renderer) jobs.replace('compile-board', compileSteps(renderer, scene, camera)); // the board's programs before its fade shows them
     sync(lastList);
+  }
+
+  /** Takes a board off the scene and frees it. Its built model goes back to the pool (warm.ts), not freed: it may come back. */
+  function retireBoard(b: BoardScene): void {
+    scene.remove(b.group);
+    b.group.remove(b.built.group); // before the tree is freed: the built model is pooled, not disposed
+    disposeTree(b.group);
+    releaseBuild(b.key, b.built);
   }
 
   /** Reads the fleet and shows its machine (the one named, else the hub) with its agents and status. */
   function applyFleet(fleet: FleetResponse): void {
     const m = fleet.machines.find((x) => x.id === machineId) ?? fleet.machines.find((x) => x.role === 'hub') ?? fleet.machines[0];
-    if (!m) return applyDefault();
+    if (!m) return;
     if (machineId !== null) crumbName.textContent = m.name;
     const { name, params } = boardOf(m);
     members = new Set(m.agents);
+    fleetRead = true;
     machineStatus = m.status;
     showBoard(name, params);
   }
 
-  /** The workstation board, every agent on it: for when neither the fleet nor the machines list can be read. */
-  function applyDefault(): void {
-    members = null;
-    showBoard(DEFAULT_BOARD.name, DEFAULT_BOARD.params);
-  }
-
   /**
-   * Reads the fleet every few seconds. When it cannot be read, the machines list's first node (n0, the hub) shows
-   * its board; when that fails too, the workstation board. The old ring is never shown.
+   * Reads the fleet every few seconds. A read that fails keeps the machine shown last (its board and its members);
+   * before any fleet read, the machines list's first node (n0, the hub) shows its board, and failing that the
+   * workstation board. The members are never "all agents": until a fleet read names them there are no robots.
    */
   async function refresh(): Promise<void> {
+    let fleet: FleetResponse | null = null;
     try {
-      const fleet = await api.fleet();
+      fleet = await api.fleet();
+    } catch {
+      fleet = null; // read below: a failed read is not a rendering error (applyFleet runs outside this catch)
+    }
+    if (fleet !== null && fleet.machines.length > 0) {
       if (alive) applyFleet(fleet);
       return;
-    } catch {
-      // the machines list below
     }
+    if (!alive || fleetRead) return; // the last known machine stays
     try {
       const nodes = await api.machines();
       const node = nodes.find((n) => n.id === 'n0') ?? nodes[0];
-      if (alive && node) {
-        members = null;
+      if (alive && node && !fleetRead) {
         const { name, params } = boardOf(node);
         showBoard(name, params);
         return;
@@ -716,7 +903,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     } catch {
       // the workstation board below
     }
-    if (alive) applyDefault();
+    if (alive && !fleetRead) showBoard(DEFAULT_BOARD.name, DEFAULT_BOARD.params);
   }
 
   /** Each frame: the board's fans and lights follow the machine, glow plates ease toward their components' work, and a lit component's current runs faster. */
@@ -743,6 +930,11 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
       p.pulses.update(dt, level);
     }
     board.atom?.(t);
+    // Detail by distance; the cutaways toward the board's atom (its centre of interest).
+    const at = board.model.anchors?.atom;
+    if (at) board.built.group.localToWorld(focusPoint.set(at[0], at[1], at[2]));
+    else focusPoint.copy(controls.target);
+    board.built.frame(camera, focusPoint, dt, plazaArea());
   }
 
   /**
@@ -752,21 +944,91 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
    * bisection. Perspective puts the near side of the ring lower on screen than the far side is high, so the aim moves
    * to the ring's projected middle and the fit is run again.
    */
-  /** The board's footprint (layout bounds) from the floor to the rooms' top, as its eight corners, and its centre. */
-  function fitBox(): { centre: THREE.Vector3; ring: THREE.Vector3[] } {
-    const b = layoutNow?.bounds ?? { cx: 0, cz: 0, w: 64, d: 56 };
-    const top = Math.max(roomsTop, (board?.model.anchors?.atom?.[1] ?? 0) + 1);
-    const ring: THREE.Vector3[] = [];
-    for (const x of [b.cx - b.w / 2, b.cx + b.w / 2]) {
-      for (const z of [b.cz - b.d / 2, b.cz + b.d / 2]) for (const y of [0, top]) ring.push(new THREE.Vector3(x, y, z));
-    }
-    return { centre: new THREE.Vector3(b.cx, top / 2, b.cz), ring };
+  /** The rooms that seat a robot: the layout's districts with a home (layout.homes), in the layout's order. */
+  function occupiedRooms(): BoardDistrict[] {
+    if (!layoutNow) return [];
+    const seated = new Set<object>(); // the homes' districts are the layout's own objects
+    for (const [district] of layoutNow.homes.values()) seated.add(district);
+    return layoutNow.districts.filter((r) => seated.has(r));
   }
 
-  function fitView(): { dist: number; target: THREE.Vector3 } {
-    const { centre, ring } = fitBox();
+  /**
+   * The footprint a view frames, as its eight corners and their centre. Occupied: the rooms that seat a robot, from the
+   * PCB's top to the rooms' top, with a margin of 15% of the box on each side (the default view). Otherwise the whole
+   * board: its layout bounds from the floor to the rooms' top (the orbit's zoom limit reaches it).
+   */
+  function fitBox(occupied: boolean): { centre: THREE.Vector3; ring: THREE.Vector3[] } {
+    const b = layoutNow?.bounds ?? { cx: 0, cz: 0, w: 64, d: 56 };
+    const top = Math.max(roomsTop, (board?.model.anchors?.atom?.[1] ?? 0) * (layoutNow?.boardScale ?? 1) + 1);
+    let lo = new THREE.Vector3(b.cx - b.w / 2, 0, b.cz - b.d / 2);
+    let hi = new THREE.Vector3(b.cx + b.w / 2, top, b.cz + b.d / 2);
+    const rooms = occupied ? occupiedRooms() : [];
+    if (layoutNow && rooms.length > 0) {
+      lo = new THREE.Vector3(Infinity, layoutNow.pcbTop, Infinity);
+      hi = new THREE.Vector3(-Infinity, top, -Infinity);
+      for (const r of rooms) {
+        // A room's footprint: its cell, or the built room where that is larger (the floor is at least 2r across).
+        const hx = Math.max(r.r, r.w / 2);
+        const hz = Math.max(r.r, r.d / 2);
+        lo.x = Math.min(lo.x, r.cx - hx);
+        hi.x = Math.max(hi.x, r.cx + hx);
+        lo.z = Math.min(lo.z, r.cy - hz);
+        hi.z = Math.max(hi.z, r.cy + hz);
+      }
+      // A few rooms on a big board still frame a share of its footprint: one room alone does not fill the stage.
+      for (const axis of ['x', 'z'] as const) {
+        const want = (axis === 'x' ? b.w : b.d) * FRAME_MIN_SHARE;
+        const mid = (lo[axis] + hi[axis]) / 2;
+        const half = Math.max(want, hi[axis] - lo[axis]) / 2;
+        lo[axis] = mid - half;
+        hi[axis] = mid + half;
+      }
+      const margin = hi.clone().sub(lo).multiplyScalar(0.15);
+      lo.sub(margin);
+      hi.add(margin);
+    }
+    const ring: THREE.Vector3[] = [];
+    for (const x of [lo.x, hi.x]) for (const z of [lo.z, hi.z]) for (const y of [lo.y, hi.y]) ring.push(new THREE.Vector3(x, y, z));
+    return { centre: lo.clone().add(hi).multiplyScalar(0.5), ring };
+  }
+
+  /**
+   * The direction the default view looks from: the board's own camera anchor (from its look point), else the isometric
+   * default. A big board (BIG_BOARD across or more) keeps the anchor's heading but is seen from higher, BIG_POLAR from
+   * vertical: its tall GPU shrouds hide the plates from the anchor's oblique angle.
+   */
+  function viewDir(): THREE.Vector3 {
+    const cam = board?.model.anchors?.camera;
+    let d = new THREE.Vector3().setFromSphericalCoords(1, POLAR, AZIMUTH);
+    if (cam) {
+      const v = new THREE.Vector3(cam.at[0] - cam.look[0], cam.at[1] - cam.look[1], cam.at[2] - cam.look[2]);
+      if (v.lengthSq() > 1e-6) d = v.normalize();
+    }
+    const size = board?.model.size;
+    if (size && Math.max(size[0], size[2]) >= BIG_BOARD) {
+      const h = Math.hypot(d.x, d.z) || 1;
+      d = new THREE.Vector3((d.x / h) * Math.sin(BIG_POLAR), Math.cos(BIG_POLAR), (d.z / h) * Math.sin(BIG_POLAR));
+    }
+    return d;
+  }
+
+  /** The plaza the default view frames (fitBox's occupied box), for the cutaways; found once per layout. */
+  let plazaBox: { layout: unknown; box: THREE.Box3 } | null = null;
+  function plazaArea(): THREE.Box3 {
+    if (plazaBox?.layout !== layoutNow) {
+      // The framed plaza plus a third of its size on each side: the shrouds beside it also stand in the view.
+      const box = new THREE.Box3().setFromPoints(fitBox(true).ring);
+      const grow = box.getSize(new THREE.Vector3()).multiplyScalar(1 / 3);
+      box.min.x -= grow.x; box.max.x += grow.x; box.min.z -= grow.z; box.max.z += grow.z;
+      plazaBox = { layout: layoutNow, box };
+    }
+    return plazaBox.box;
+  }
+
+  function fitView(occupied = true): { dist: number; target: THREE.Vector3 } {
+    const { centre, ring } = fitBox(occupied);
     const target = centre;
-    const dir = new THREE.Vector3().setFromSphericalCoords(1, POLAR, AZIMUTH);
+    const dir = viewDir();
     const place = (dist: number): void => {
       camera.position.copy(target).addScaledVector(dir, dist);
       camera.lookAt(target);
@@ -811,150 +1073,241 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
 
   /** Where the camera sits for the default view: the plaza framed by fitView, the orbit aimed at its centre. */
   function resetView(): void {
+    if (entry?.driving || pendingFlight) return; // the ENTER sequence owns the camera (and an arrival holds it at the Machines pose)
     const { dist, target } = fitView();
-    controls.maxDistance = Math.max(300, dist * 2); // the orbit limit never pulls a large plaza in
+    controls.maxDistance = Math.max(300, fitView(false).dist * 2); // the orbit limit still reaches the whole board
+    driftT = 0; // the idle sway starts again from the framed view
+    driftApplied = 0;
     if (scene.fog instanceof THREE.Fog) {
       // The haze keeps its look at the fitted distance: the plaza stays clear and the far horizon still fades.
       scene.fog.near = dist * 0.8;
       scene.fog.far = dist * 3;
     }
     controls.target.copy(target);
-    camera.position.copy(target).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
+    camera.position.copy(target).addScaledVector(viewDir(), dist);
     settingView = true;
     controls.update();
     settingView = false;
     userMoved = false;
   }
 
-  // Social behaviour: an idle robot may visit a neighbour, chat, or stroll to the ring.
-  const nearby = (a: District, c: District): boolean => a.role === c.role || Math.hypot(a.cx - c.cx, a.cy - c.cy) <= SOCIAL_NEAR;
-
-  function startSocial(b: Bot, now: number): void {
-    b.nextSocial = now + 8000 + Math.random() * 12000;
-    const pool = bots.filter((o) => o !== b && o.agent.status === 'idle' && !o.social && nearby(o.district, b.district));
-    const partner = pool[Math.floor(Math.random() * pool.length)];
-    if (!partner) return;
-    b.social = { phase: 'go', partner, gx: partner.x - 1, gy: partner.y, until: Infinity };
-    partner.social = { phase: 'talk', partner: b, gx: partner.x, gy: partner.y, until: Infinity };
+  /**
+   * The idle sway of the settled plaza: the camera turns about the board's vertical axis through the framed target, a
+   * few degrees either way (a triangle wave, so the framed board stays in view). It holds while an ENTER sequence drives,
+   * while the plaza loads (defaultPose is null) and after any input (driftStopped). Its turn is applied inside
+   * settingView, so the sway is not the user's move; the frame's controls.update() is unchanged.
+   */
+  function updateDrift(dt: number): void {
+    if (driftStopped || entry?.driving || pendingFlight || defaultPose() === null) return;
+    driftT += dt;
+    const period = (4 * DRIFT_AMP) / DRIFT_RATE;
+    const u = (driftT / period) % 1;
+    const next = DRIFT_AMP * (u < 0.25 ? 4 * u : u < 0.75 ? 2 - 4 * u : 4 * u - 4);
+    const turn = next - driftApplied;
+    if (turn === 0) return;
+    driftApplied = next;
+    tmpV.copy(camera.position).sub(controls.target).applyAxisAngle(UP, turn);
+    camera.position.copy(controls.target).add(tmpV);
+    settingView = true;
+    controls.update();
+    settingView = false;
   }
 
-  function endSocial(b: Bot, now: number): void {
-    const s = b.social;
-    b.social = null;
-    b.nextWander = now;
-    if (s?.partner && s.partner.social?.partner === b) {
-      s.partner.social = null;
-      s.partner.nextWander = now;
-    }
-  }
+  // The robots' work: the behaviour engine decides what each robot does (floor3d/robot-work); the floor walks it there.
+  const work = new RobotWork();
+  // Reachability for the work: a point's nav component (-1 off the walk); a robot only goes to spots in its own component.
+  work.setReach((x, z) => nav?.debugCell(x, z)?.component ?? -1);
 
   /** The surface under (x, y): a room's floor, its ramp down to the PCB, or the PCB top (boardHeightAt). */
   function surfaceAt(x: number, y: number): number {
     return layoutNow ? boardHeightAt(x, y, layoutNow) : 0;
   }
 
+  /** The body clip of a vertical mode (gravity and heights, nav-height.ts): none on the ground, in a lift or in the respawn fade in. */
+  function bodyClip(mode: BodyMode): string | null {
+    switch (mode) {
+      case 'crouch': return 'jump.crouch';
+      case 'jump': return 'jump.air';
+      case 'fall':
+      case 'glide':
+      case 'out': return 'fall.air';
+      case 'land': return 'land';
+      default: return null;
+    }
+  }
+
   /**
-   * The point a robot walks to next on its way to (gx, gy). Within a room it is the goal itself; to another room it is
-   * the walk along the traces (pathOnTraces), point by point, when the traces join the two; else the goal.
+   * THE MOVEMENT SEAM: walks one robot toward its goal (from robot-work) for one frame. With the nav world: the goal is
+   * sent with navigateTo when its key changes, and the robot's position, height and moving flag come from world.pose;
+   * returns the pose's yaw. Without it (the fallback): a straight-line step (robot-work's straightStep) on the robot's
+   * own x and y; returns the travel yaw, or null when it stands. navigateTo is the only call into nav; nothing else moves a robot.
    */
-  function nextStop(b: Bot, gx: number, gy: number): [number, number] {
-    if (!board || !layoutNow) return [gx, gy];
-    const key = `${gx},${gy}`;
-    if (b.routeKey !== key) {
-      b.routeKey = key;
-      b.route = [];
-      const to = roomAt(layoutNow, gx, gy);
-      if (to && to !== roomAt(layoutNow, b.x, b.y)) {
-        const path = pathOnTraces(board.graph, [b.x, b.y], [gx, gy]);
-        if (path) b.route = path.slice(1);
+  function moveRobot(world: NavWorld | null, b: Bot, g: WorkGoal | null, dt: number): number | null {
+    if (!world) {
+      b.robot.setBody(null);
+      b.robot.group.scale.setScalar(1);
+      if (!g) {
+        b.moving = false;
+        return null;
       }
+      const travel = straightStep(b, g.goal.x, g.goal.z, dt);
+      b.py = surfaceAt(b.x, b.y);
+      return travel;
     }
-    while (b.route.length && Math.hypot(b.route[0]![0] - b.x, b.route[0]![1] - b.y) < 0.05) b.route.shift();
-    return b.route[0] ?? [gx, gy];
+    const cid = b.agent.cid;
+    // A robot made while there was no nav world (createBot's nav?.add was a no-op) joins it here, at its own place.
+    if (!world.has(cid)) world.add({ id: cid, x: b.x, z: b.y, speed: registry().species[b.robot.species]?.gait.speed ?? 0.9, turnRate: 4, priority: 0, floats: registry().species[b.robot.species]?.floats ?? false });
+    if (g && b.goalKey !== g.key) {
+      b.goalKey = g.key;
+      navigateTo(world, cid, g.goal);
+    }
+    const pose = world.pose(cid);
+    b.x = pose.x;
+    b.y = pose.z;
+    b.py = pose.y;
+    b.moving = pose.moving;
+    b.robot.setBody(bodyClip(pose.body));
+    b.robot.group.scale.setScalar(pose.scale);
+    return pose.heading;
   }
 
-  /** Whether a robot centred at (x, y) would clash with a prop, leave its slab, or overlap another robot. */
-  function blocked(b: Bot, x: number, y: number, checkProps: boolean): boolean {
-    if (checkProps) {
-      for (const p of propBoxes) if (near(p, x, y) && !near(p, b.x, b.y)) return true;
-    }
-    const partner = b.social?.partner ?? null;
-    for (const o of bots) {
-      if (o === b || o === partner) continue;
-      const d = Math.hypot(o.x - x, o.y - y);
-      if (d < ROBOT_R * 2 && d < Math.hypot(o.x - b.x, o.y - b.y)) return true;
-    }
-    return false;
+  // Debug (headless runs): window.__apzShove(cid, x, z) moves a robot without the commit (a forced push). Its body then falls,
+  // lands or, past NAV_DROP_DOWN or off the board, respawns at home. False for an unknown robot or no nav world.
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __apzShove?: (cid: number, x: number, z: number) => boolean }).__apzShove = (cid, x, z) => {
+      if (!nav || !nav.has(cid)) return false;
+      nav.shove(cid, x, z);
+      return true;
+    };
+    // window.__apzNavCell(x, z): the nav cell at a point (walk, blocked, region, component, and its surface height y), or null.
+    (window as unknown as { __apzNavCell?: (x: number, z: number) => unknown }).__apzNavCell = (x, z) => nav?.debugCell(x, z) ?? null;
+    // window.__apzGroundAudit(): the grounding audit of the live board (ground.ts): every resting object that floats or sinks.
+    (window as unknown as { __apzGroundAudit?: () => unknown }).__apzGroundAudit = () =>
+      board && layoutNow ? groundAudit(boardScene(board.model, board.params, layoutNow, auditPalette())) : null;
+    // window.__apzNavAudit(): the ground audit so far (robot-frames, floating and sinking grounded frames). Null without nav.
+    (window as unknown as { __apzNavAudit?: () => unknown }).__apzNavAudit = () => nav?.audit() ?? null;
+  }
+  // Debug (headless runs): window.__apzLifts() lists each lift's place and its controller (lift-ctrl.ts); window.__apzLookAt(x, y, z,
+  // dist, polar, azimuth) aims the camera at a point. Both are for captures only; the lift itself is not changed by them.
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __apzLifts?: () => unknown; __apzLookAt?: (x: number, y: number, z: number, dist: number, polar: number, azimuth: number) => void };
+    // x, z: the shaft's world position; yLow, yHigh: the stops' world heights (the cab's floor at each stop).
+    w.__apzLifts = () => navLifts.map((l) => ({ id: l.id, low: l.low, high: l.high, x: l.prop.group.position.x, z: l.prop.group.position.z, yLow: l.low, yHigh: l.high, ctrl: nav?.lift(l.id), at: l.prop.group.position.toArray(), face: l.prop.group.rotation.y, meshes: ((k) => { l.prop.group.traverse((o) => { if ((o as THREE.Mesh).isMesh) k++; }); return k; })(0) }));
+    w.__apzLookAt = (x, y, z, dist, polar, azimuth) => {
+      controls.target.set(x, y, z);
+      camera.position.set(x, y, z).add(new THREE.Vector3().setFromSphericalCoords(dist, polar, azimuth));
+      camera.lookAt(controls.target);
+    };
+  }
+  // Debug (headless runs): window.__apzLiftRide(i, n) sends the n robots nearest lift i (off its plate) on a real trip through
+  // it: a goal on the plate beyond the lift's plate edge, walked by navigateTo, so the nav world boards them. Returns the goal
+  // and the robot ids. A robot's ride ends on arrival or after 120 s; its work goal then takes over again.
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __apzLiftRide?: (i: number, n: number) => unknown }).__apzLiftRide = (index, n) => {
+      const l = navLifts[index];
+      if (!nav || !l) return { ok: false, reason: 'no nav or no such lift' };
+      const yaw = l.prop.group.rotation.y;
+      const ox = l.prop.group.position.x;
+      const oz = l.prop.group.position.z;
+      // The robots' level decides the way: robots on the plate ride down to a goal on the board beyond the front, robots on
+      // the board ride up to a goal on the plate beyond the plate edge.
+      const fromHigh = bots.filter((b) => Math.abs(b.py - l.high) < 0.05 && !rides.has(b.agent.cid)).length >= Math.max(1, Math.floor(n));
+      const sg = fromHigh ? 1 : -1; // +1: out toward the walkway (the board), -1: back toward the plate
+      const lvl = fromHigh ? l.low : l.high;
+      let goal: { x: number; z: number } | null = null;
+      for (let d = 0.3; d < 3 && !goal; d += 0.05) {
+        for (const lat of [0, 0.1, -0.1, 0.2, -0.2]) {
+          const x = ox + sg * Math.sin(yaw) * d + Math.cos(yaw) * lat;
+          const z = oz + sg * Math.cos(yaw) * d - Math.sin(yaw) * lat;
+          const c = nav.debugCell(x, z);
+          if (c && c.walk && (fromHigh ? c.region === 0 : c.region !== 0) && Math.abs(c.y - lvl) < 0.03) {
+            goal = { x, z };
+            break;
+          }
+        }
+      }
+      if (!goal) return { ok: false, reason: 'no walk cell beyond the lift on the other level' };
+      const near = bots
+        .filter((b) => Math.abs(b.py - (fromHigh ? l.high : l.low)) < 0.05 && !rides.has(b.agent.cid))
+        .sort((a, b) => Math.hypot(a.x - ox, a.y - oz) - Math.hypot(b.x - ox, b.y - oz))
+        .slice(0, Math.max(0, Math.floor(n)));
+      for (const b of near) rides.set(b.agent.cid, { goal, left: 120 });
+      return { ok: true, goal, robots: near.map((b) => b.agent.cid), bots: bots.length, ofPlate: bots.map((b) => [b.agent.cid, +b.x.toFixed(1), +b.y.toFixed(1), +b.py.toFixed(2)]) };
+    };
+  }
+  // Debug (headless runs): window.__apzBots() reports each robot's work, goal and walk, the frame count, held and whether nav exists. Read-only.
+  let botFrames = 0;
+  /** Debug: a point's nav cell, its walk flag and its component (-1 off the walk), from nav's debugCell. */
+  const probeCell = (x: number, z: number): unknown => nav?.debugCell(x, z) ?? null;
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __apzBots?: () => unknown }).__apzBots = () => ({
+      frames: botFrames,
+      nav: nav !== null,
+      held: plazaPaused(),
+      bots: bots.map((b) => {
+        const cid = b.agent.cid;
+        let navPose: unknown = null;
+        let navPath: number | null = null;
+        if (nav) {
+          try {
+            navPose = nav.pose(cid);
+            navPath = nav.path(cid)?.length ?? null;
+          } catch (e) {
+            navPose = String(e);
+          }
+        }
+        return {
+          cid,
+          role: b.agent.role,
+          tier: b.agent.tier,
+          status: b.agent.status,
+          activity: b.activity,
+          state: b.state,
+          goalKey: b.goalKey,
+          moving: b.moving,
+          pos: { x: +b.x.toFixed(3), y: +b.y.toFixed(3), py: +b.py.toFixed(3) },
+          heading: +b.heading.toFixed(3),
+          work: work.debugOf(cid),
+          nav: navPose,
+          navPath,
+          navStart: probeCell(b.x, b.y),
+          navGoal: probeCell((work.debugOf(cid) as { target: { x: number; z: number } | null }).target?.x ?? b.x, (work.debugOf(cid) as { target: { x: number; z: number } | null }).target?.z ?? b.y),
+        };
+      }),
+    });
   }
 
-  /** Robots: wander or socialise when idle, head home when working or offline, animate, tint pads. */
+  /** Robots: their decisions and goals (floor3d/robot-work), the walk (moveRobot), then their animation and pads. */
   function updateBots(dt: number, now: number): void {
+    botFrames += 1;
+    robotsBusy = false;
     const t = now / 1000;
     for (const p of litByRole.values()) p.lit = false;
+    const world = nav;
+    world?.step(dt);
+    if (world) for (const l of navLifts) { const h = world.lift(l.id); if (h) l.prop.setState(h.state()); }
+    work.frame(dt, bots, plazaPaused());
     for (const b of bots) {
       const status = b.agent.status;
-      const roaming = status === 'idle';
-      const partner = b.social?.partner ?? null;
-      if (b.social && (!roaming || (partner && (byCid.get(partner.agent.cid) !== partner || partner.agent.status !== 'idle')))) {
-        endSocial(b, now);
+      const cid = b.agent.cid;
+      const ride = rides.get(cid);
+      const g = ride ? { key: `ride:${cid}:${ride.goal.x.toFixed(2)},${ride.goal.z.toFixed(2)}`, goal: ride.goal, activity: 'ride' } : work.goalFor(b);
+      const travel = moveRobot(world, b, g, dt);
+      if (ride || b.moving || status === 'working') robotsBusy = true;
+      if (ride) {
+        ride.left -= dt;
+        if (ride.left <= 0 || (!b.moving && Math.hypot(b.x - ride.goal.x, b.y - ride.goal.z) < 0.15)) rides.delete(cid);
       }
-      if (roaming && !b.social) {
-        if (now >= b.nextWander) {
-          const span = Math.max(0.5, b.district.r - 0.7);
-          b.tx = b.district.cx + (Math.random() * 2 - 1) * span;
-          b.ty = b.district.cy + (Math.random() * 2 - 1) * span;
-          b.nextWander = now + 3000 + Math.random() * 4000;
-        }
-        if (now >= b.nextSocial) startSocial(b, now);
-      }
-      const s = b.social;
-      let gx = b.home[0];
-      let gy = b.home[1];
-      if (roaming) {
-        gx = s ? s.gx : b.tx;
-        gy = s ? s.gy : b.ty;
-      }
-      // The next stop on the way: the goal, or the trace walkway's next point when the goal is in another room.
-      const [stopX, stopY] = nextStop(b, gx, gy);
-      const dx = stopX - b.x;
-      const dy = stopY - b.y;
-      const dist = Math.hypot(dx, dy);
-      b.moving = dist > 0.02;
-      // Step toward the stop. A blocked step tries nearby headings, else the robot waits this frame.
-      const checkProps = Math.hypot(b.home[0] - b.x, b.home[1] - b.y) > 0.9;
-      let travel: number | null = null;
-      if (b.moving) {
-        const step = Math.min(SPEED * dt, dist);
-        const toGoal = Math.atan2(dx, dy);
-        for (const off of STEER) {
-          const ang = toGoal + off;
-          const nx = b.x + Math.sin(ang) * step;
-          const ny = b.y + Math.cos(ang) * step;
-          if (blocked(b, nx, ny, checkProps)) continue;
-          b.x = nx;
-          b.y = ny;
-          travel = ang;
-          break;
-        }
-      }
-      // Social arrivals: a visitor that has reached its partner starts the chat.
-      if (s && roaming) {
-        if (s.phase === 'go' && !b.moving) {
-          const until = now + 3000 + Math.random() * 2000;
-          s.phase = 'talk';
-          s.until = until;
-          if (s.partner?.social) s.partner.social.until = until;
-        }
-        if (now >= s.until) endSocial(b, now);
-      }
-      // Local +Z is forward. Talkers face each other; walkers face their direction of travel.
-      const talker = s && s.phase === 'talk' ? s.partner : null;
-      let want: number | null = null;
-      if (talker) want = Math.atan2(talker.x - b.x, talker.y - b.y);
-      else if (b.moving) want = travel ?? Math.atan2(dx, dy);
+      // Yielding: a working robot keeps its way, a walking one yields to it, an idle one yields to both.
+      if (world) world.setPriority(cid, status === 'working' ? 2 : b.moving ? 1 : 0);
+      work.arrived(b);
+      // Local +Z is forward. A station or a partner sets the heading; the rest face the way they walk (or the nav pose points).
+      const want = work.facing(b);
       if (want !== null) {
         const diff = Math.atan2(Math.sin(want - b.heading), Math.cos(want - b.heading));
         b.heading += diff * Math.min(1, dt * 8);
+      } else if (travel !== null) {
+        b.heading = travel;
       }
       const state: RobotState = status === 'working' ? 'working' : status === 'offline' ? 'offline' : b.moving ? 'walking' : 'idle';
       if (state !== b.state) {
@@ -965,16 +1318,6 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
       if (highlight !== b.highlighted) {
         b.highlighted = highlight;
         b.robot.setHighlighted(highlight);
-      }
-      // Gravity: walk up slopes, fall where the ground drops away.
-      const ground = surfaceAt(b.x, b.y);
-      if (b.py > ground + 0.001) {
-        b.vy -= GRAVITY * dt;
-        b.py = Math.max(ground, b.py + b.vy * dt);
-        if (b.py === ground) b.vy = 0;
-      } else {
-        b.py = ground;
-        b.vy = 0;
       }
       b.robot.group.position.set(b.x, b.py, b.y);
       // Lean with the ground: the slope's normal from the surface around the robot, then the heading.
@@ -998,6 +1341,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
         b.token.rotation.y += dt * 1.8;
       }
     }
+    if (world) navOverlay?.update(world, bots.map((b) => b.agent.cid));
     for (const p of litByRole.values()) {
       const want = p.lit ? 1.2 : 0.05;
       for (const m of p.screens) if (m.emissiveIntensity !== want) m.emissiveIntensity = want;
@@ -1017,7 +1361,8 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
 
   // Packets: glowing spheres on a curved arc between two robots.
   function sendPacket(from: number, to: number, tone: 'accent' | 'ok'): void {
-    if (from === to) return;
+    // A packet is a world-space sphere, so none is sent while the ENTER sequence drives the scene (its board is scaled).
+    if (from === to || entry?.driving) return;
     const core = new THREE.Mesh(packetGeo, tone === 'ok' ? mats.ok : mats.accent);
     const halo = new THREE.Mesh(haloGeo, tone === 'ok' ? mats.okHalo : mats.accentHalo);
     core.userData.dynamic = true; // moved along its arc every frame
@@ -1054,7 +1399,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   }
 
   /** What labels and the card show: offline overrides whatever the transcript last said; a chat shows dots. */
-  const shown = (b: Bot): string => (b.agent.status === 'offline' ? 'offline' : b.social?.phase === 'talk' ? '· · ·' : b.activity);
+  const shown = (b: Bot): string => (b.agent.status === 'offline' ? 'offline' : work.talking(b.agent.cid) ? '· · ·' : b.activity);
 
   const nameOf = (cid: unknown): string => {
     const b = typeof cid === 'number' ? byCid.get(cid) : undefined;
@@ -1079,7 +1424,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
 
   function updateLabels(): void {
     for (const b of bots) {
-      const s = labelShown(b) ? toScreen(b.robot.labelAnchor(new THREE.Vector3())) : null;
+      const s = labelShown(b) && b.robot.group.scale.x > 0.05 ? toScreen(b.robot.labelAnchor(new THREE.Vector3())) : null;
       if (!s?.visible) {
         if (b.label.style.display !== 'none') b.label.style.display = 'none';
         continue;
@@ -1174,6 +1519,139 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   };
   const ro = new ResizeObserver(() => resize());
   ro.observe(stage);
+
+  // The ENTER sequence (floor3d/entry.ts). A handoff from the Machines view builds that machine's fleet here and plays
+  // the fly-in and the dive; a direct load plays only the build wave (see the frame loop).
+  let exterior: Exterior | null = null;
+  // The exterior is built from the handoff, or for a warm plaza from the fleet the popup showed.
+  const exteriorOf: { machineId: string; fleet: FleetResponse } | null =
+    handoff ?? (warm !== null && machineId !== null ? { machineId, fleet: warm.fleet } : null);
+  // The flight's light: in the scene from the build on, at no intensity, so its shaders never change at ENTER (a light
+  // added then would relink every program). entry.ts sets its intensity and place.
+  const entryLight = new THREE.PointLight(0xffb070, 0, 40, 1.6);
+  const buildExterior = (x: { machineId: string; fleet: FleetResponse }): void => {
+    const fleet = buildFleet(x.fleet);
+    prepareFade(fleet.group); // its fades never change a program (entry.ts): set now, while the part is built
+    scene.add(entryLight);
+    prewarmFx(scene); // the robot effects' programs compile in warm (their pieces wait in a hidden holder)
+    prewarmLift(scene, roomPalette); // the lift's and gangway's materials, compiled here (lift.ts)
+    scene.add(fleet.group);
+    const m = x.fleet.machines.find((y) => y.id === x.machineId);
+    if (m) exterior = { fleet, data: x.fleet, machineId: x.machineId, model: MODELS[modelsFor(m).exterior] ?? MODELS['exterior/workstation']! };
+  };
+  if (exteriorOf !== null) {
+    // A warm plaza builds its exterior as a job (the popup is up); ENTER finishes it first if it is not done (adopt).
+    if (warm !== null) {
+      jobs.replace('exterior', (function* (): Generator<void, void, void> {
+        buildExterior(exteriorOf);
+        jobs.replace('compile-exterior', compileSteps(renderer, scene, camera, [new THREE.Mesh(ground.geometry, groundNight), new THREE.Mesh(ground.geometry, groundDark)]));
+      })());
+    }
+    else buildExterior(exteriorOf);
+  }
+  // The plaza's default view (the pose resetView frames), cached per board and layout.
+  const defaultPose = (): Pose | null => {
+    if (!board || worldJob !== null || pendingBots.length > 0 || jobs.busy) return null; // the rooms are built before the default view (and the dive) can use them
+    if (!poseOf || poseOf.board !== board || poseOf.layout !== layoutNow) {
+      const { dist, target } = fitView();
+      const position = target.clone().addScaledVector(viewDir(), dist);
+      poseOf = { board, layout: layoutNow, pose: { position, target, fog: { near: dist * 0.8, far: dist * 3 } } };
+    }
+    return poseOf.pose;
+  };
+  // The look from the Machines view's night (k 0) to the plaza's board floor (k 1): skyline, ground and fog.
+  const look = (k: number): void => {
+    if (handoff === null) return;
+    const night = k < 0.5;
+    backdrop.visible = night;
+    ground.material = night ? groundNight : groundDark;
+    ground.position.y = night ? 0 : -BOARD_DROP;
+    const from = handoff.from.fog;
+    const to = defaultPose()?.fog;
+    if (scene.fog instanceof THREE.Fog && from && to) {
+      scene.fog.near = from.near + (to.near - from.near) * k;
+      scene.fog.far = from.far + (to.far - from.far) * k;
+    }
+  };
+  const entryContext = (x: Exterior | null): EntryContext => ({
+    camera,
+    orbit: controls,
+    scene,
+    exterior: x,
+    light: entryLight,
+    from: handoff?.from ?? null,
+    board: () => (board ? { group: board.group, model: board.model, atom: board.atomGroup } : null),
+    rooms: districtGroup,
+    bots: () => bots.map((b) => b.robot.group),
+    defaultPose,
+    look,
+    onLeft: () => {
+      if (handoff !== null) setReturn(handoff.from, handoff.fleet);
+      go('floor');
+    },
+  });
+  // The arrival (ENTER): the camera holds at the Machines pose and the parts wait hidden; the flight starts once the plaza
+  // is ready (its builds done, its default view known), and the loading card shows the progress until then.
+  const arrive = (h: Handoff): void => {
+    handoff = h;
+    pendingFlight = true;
+    driftStopped = false; // an arrival is a reset: the idle sway waits for the flight to end
+    driftApplied = 0;
+    driftT = 0;
+    loadPct = 0;
+    loadName.textContent = h.fleet.machines.find((m) => m.id === h.machineId)?.name ?? h.machineId;
+    camera.position.copy(h.from.position);
+    controls.target.copy(h.from.target);
+    camera.lookAt(h.from.target);
+    camera.updateMatrixWorld();
+    controls.enabled = false;
+    if (scene.fog instanceof THREE.Fog && h.from.fog) {
+      scene.fog.near = h.from.fog.near;
+      scene.fog.far = h.from.fog.far;
+    }
+    look(0);
+    // The sequence exists from the arrival, held at its start: its state applies while the build finishes, and no part
+    // changes its visibility (a visibility change relinks shaders) when the flight starts.
+    if (exterior !== null) {
+      entry = new EntrySequence(entryContext(exterior), 0);
+      entry.hold(true);
+    }
+  };
+  /** Keeps the flight's parts hidden until it starts: the rooms, the board and the robots (new ones too). */
+  const holdParts = (): void => {
+    districtGroup.visible = false;
+    if (board) board.group.visible = false;
+    for (const b of bots) b.robot.group.visible = false;
+  };
+  /** The loading card: the jobs' progress, never back down. */
+  const updateLoading = (): void => {
+    loadPct = Math.max(loadPct, jobs.progress);
+    if (loader.hidden) loader.hidden = false;
+    loadBar.style.transform = `scaleX(${loadPct.toFixed(3)})`;
+    const pct = `${Math.floor(loadPct * 100)}%`;
+    if (loadPctEl.textContent !== pct) loadPctEl.textContent = pct;
+  };
+  /** The flight starts: the parts show, and the sequence takes the camera. */
+  const startFlight = (): void => {
+    pendingFlight = false;
+    loader.hidden = true;
+    districtGroup.visible = true;
+    if (entry === null) entry = new EntrySequence(entryContext(exterior), 0);
+    else entry.hold(false);
+  };
+  if (handoff !== null) arrive(handoff);
+  // The fleet's shaders compile before its first draw. A warm plaza compiles its exterior and rooms as budgeted jobs instead.
+  if (warm === null) void renderer.compileAsync(scene, camera);
+  entryTime = () => entry?.time ?? null;
+  // Back (and Esc) reverse the sequence from where it stands; before it starts, they leave at once.
+  // Back (and Esc): a handoff plaza flies back out from wherever it stands, its end included; a direct load (no handoff)
+  // mid-sequence reverses as before, and once its own sequence has finished it navigates to the Machines view.
+  const leavePlaza = (): void => {
+    if (pendingFlight) go('floor'); // a Back during the loading card cancels the arrival (the plaza is torn down)
+    else if (entry && (handoff !== null || !entry.isFinished)) entry.back();
+    else go('floor');
+  };
+  plazaBack = leavePlaza;
   resize();
   resetView();
 
@@ -1199,10 +1677,22 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   listen('pointerleave', () => {
     hovered = null;
   });
+  // Any pointer or wheel input on the stage stops the idle sway for good (until the next reset or arrival).
+  for (const type of ['pointerdown', 'pointermove', 'wheel'] as const) stage.addEventListener(type, () => (driftStopped = true), { signal: ac.signal, passive: true });
   listen('dblclick', (ev) => {
     const bot = pick(ev);
     if (bot) go('agents', bot.agent.cid);
   });
+  // Esc closes the card, else steps back out of the machine.
+  document.addEventListener(
+    'keydown',
+    (ev) => {
+      if (ev.key !== 'Escape' || !warmShown) return;
+      if (selected !== null) select(null);
+      else leavePlaza();
+    },
+    { signal: ac.signal },
+  );
 
   // Live data: the machine's board and members first (refresh, then every few seconds), then the agents.
   void refresh();
@@ -1221,6 +1711,7 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
       case 'tool_request': {
         const tool = str(e.data.tool) || str(e.data.name) || 'tool';
         const inp = (e.data.input ?? {}) as Record<string, unknown>;
+        work.noteTool(e.cid, tool, inp);
         if (bot) setActivity(bot, toolActivityFor(tool, inp));
         const to = recipientOf(tool, inp);
         if (to !== null) sendPacket(e.cid, to, 'accent');
@@ -1253,49 +1744,134 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     const c = data as Conversation;
     sendPacket(c.from_cid, c.to_cid, 'ok');
   });
+  // The bus frames that give robots their stand-ups, deliveries and responses (floor3d/robot-work busFrame).
+  const offBus = [
+    on('project', (data) => work.busFrame('project', data)),
+    on('file', (data) => work.busFrame('file', data)),
+    on('work', (data) => work.busFrame('work', data)),
+  ];
 
   // Loop.
-  // Capped at 60 fps: a frame that comes too soon is skipped whole, and `last` moves only on rendered frames.
+  // Capped at 60 fps while the plaza is busy, and at 15 fps when only the idle sway and the ambient motion move (the
+  // busy verdict is taken at the end of each drawn frame). A frame that comes too soon is skipped whole, and `last`
+  // moves only on rendered frames.
   let lastRender = -Infinity;
+  const meter = createMeter(renderer, 'floor', stage);
   const frame = (now: number): void => {
-    if (now - lastRender < 1000 / 60 - 1) return;
+    if (now - lastRender < (plazaBusy ? 1000 / 60 - 1 : 1000 / 15 - 1)) return;
+    if (!warmShown) {
+      // A warm plaza that is not drawn still builds, on the same budget (the popup is up meanwhile).
+      plazaBusy = true;
+      jobs.run(WORLD_BUDGET_MS);
+      stepWorld(WORLD_BUDGET_MS);
+      stepBots(WORLD_BUDGET_MS);
+      return;
+    }
+    if (!meter.ready()) return; // a hidden tab or an offscreen canvas does not draw
     lastRender = now;
-    const dt = Math.min(0.05, (now - last) / 1000);
+    const rawDt = (now - last) / 1000; // the wall time: the sequence's clock (entry.ts smooths it and caps a hidden tab's gap)
+    const dt = Math.min(plazaBusy ? 0.05 : 0.1, rawDt); // an idle frame is 1/15 s apart: the sway keeps its wall-clock speed
     last = now;
     const t = now / 1000;
     updateBots(dt, now);
     updatePackets(now);
     updateDust(t);
+    const budget = pendingFlight ? LOAD_BUDGET_MS : WORLD_BUDGET_MS;
+    jobs.run(budget);
+    stepWorld(budget);
+    stepBots(budget);
     updateBoard(dt, t);
+    if (pendingFlight) {
+      if (entry === null) holdParts(); // no sequence yet (no exterior): the parts wait hidden
+      if (defaultPose() !== null && exterior !== null) startFlight();
+      else updateLoading();
+    }
+    // A direct load plays the build wave once its board is built; the sequence then sets the board's and rooms' state.
+    if (entry === null && handoff === null && !directWaved && board !== null && defaultPose() !== null) {
+      directWaved = true;
+      entry = new EntrySequence(entryContext(null), DIRECT_START);
+    }
+    entry?.step(rawDt);
     skyLayer.animate(t);
     for (const fn of propAnim) fn(t);
-    controls.update();
-    renderer.render(scene, camera);
+    updateDrift(dt); // the settled plaza's idle sway (no ENTER drives, nothing loads)
+    if (!entry?.driving && !pendingFlight) controls.update();
+    meter.render(scene, camera);
     updateLabels();
     positionCard();
+    plazaBusy =
+      entry?.driving === true || pendingFlight || jobs.busy || pendingBots.length > 0 || worldJob !== null ||
+      robotsBusy || packets.length > 0 || selected !== null || hovered !== null || now - lastInput < 1500;
   };
+  loopOwner = loopToken;
   renderer.setAnimationLoop(frame);
 
-  return () => {
+  // ENTER on a warm plaza: its DOM moves to the visible root, and its look and sequence start from the handoff.
+  const adopt = (real: HTMLElement, h: Handoff | null): void => {
+    finishBackdrop(); // the night's backdrop is part of the look ENTER starts from (built once per page: normally done already)
+    host = real; // the builds are not finished here: the flight waits for them (arrive), with the loading card shown
+    real.append(...Array.from(root.childNodes));
+    real.classList.add('floor-view');
+    document.body.classList.add('floor-mode');
+    bodyFloor = true;
+    warmShown = true;
+    if (h !== null) arrive(h);
+  };
+  const teardown = (): void => {
     alive = false;
+    pendingFlight = false; // a Back during the loading card cancels the arrival: the plaza is torn down
+    jobs.clear(); // a build that is still queued never finishes into a torn-down plaza
+    boardPending = null;
     window.clearInterval(poll);
     ac.abort();
-    renderer.setAnimationLoop(null);
+    plazaBack = null;
+    entryTime = null;
+    entry?.dispose();
+    entry = null;
+    if (exterior) disposeTree(exterior.fleet.group);
+    groundNight.dispose();
+    groundDark.dispose();
+    if (loopOwner === loopToken) {
+      renderer.setAnimationLoop(null);
+      loopOwner = null;
+    }
+    meter.dispose();
     ro.disconnect();
     offAgents();
     offTranscript();
     offDelta();
     offConversation();
+    for (const off of offBus) off();
     controls.dispose();
     for (const b of [...bots]) removeBot(b);
+    if (navOverlay) {
+      scene.remove(navOverlay.group);
+      navOverlay.dispose();
+      navOverlay = null;
+    }
+    for (const l of navLifts) {
+      scene.remove(l.prop.group);
+      l.prop.dispose();
+    }
+    navLifts = [];
+    for (const g of navGangways) {
+      scene.remove(g.group);
+      g.dispose();
+    }
+    navGangways = [];
+    for (const r of navRamps) {
+      scene.remove(r);
+      disposeRamp(r);
+    }
+    navRamps = [];
+    nav = null;
     bots = [];
     byCid.clear();
     for (const p of packets.splice(0)) dropPacket(p);
     disposeTree(districtGroup);
-    if (board) disposeTree(board.group);
+    if (board) retireBoard(board);
     disposeTree(ground);
     disposeTree(skyLayer.group);
-    disposeTree(backdrop);
     dustGeo.dispose();
     dustMat.dispose();
     padGeo.dispose();
@@ -1303,18 +1879,35 @@ function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
     haloGeo.dispose();
     tokenGeo.dispose();
     for (const m of Object.values(mats)) m.dispose();
-    renderer.dispose();
-    root.classList.remove('floor-view');
-    document.body.classList.remove('floor-mode');
-    root.replaceChildren();
+    // The renderer is shared by the plazas (plazaRenderer): it is not disposed here; its program cache serves the next one.
+    host.classList.remove('floor-view');
+    if (bodyFloor) document.body.classList.remove('floor-mode');
+    host.replaceChildren();
   };
+  if (warm !== null && machineId !== null) warmHandle = { machineId, adopt, teardown };
+  return teardown;
 }
 
+/** A robot part casts a shadow only when its world bounding radius reaches this (units): smaller parts do not read in the shadow map. */
+const ROBOT_SHADOW_MIN_RADIUS = 0.6;
+
+/** Whether a robot part casts: the body and limbs do, the bolts and eyes do not (each caster is one more draw in the shadow pass). */
+function robotPartCasts(m: THREE.Mesh): boolean {
+  const geo = m.geometry;
+  if (!geo.boundingSphere) geo.computeBoundingSphere();
+  const s = m.getWorldScale(new THREE.Vector3());
+  return (geo.boundingSphere?.radius ?? 0) * Math.max(s.x, s.y, s.z) >= ROBOT_SHADOW_MIN_RADIUS;
+}
+
+/** The point the board's cutaways look toward, in world space (reused every frame). */
+const focusPoint = new THREE.Vector3();
+
 /** The canvas every view draws into: pixel ratio, soft cartoon shadows, filling its stage. */
-function viewCanvas(renderer: THREE.WebGLRenderer, label: string): HTMLCanvasElement {
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+function viewCanvas(renderer: THREE.WebGLRenderer, label: string, maxRatio?: number): HTMLCanvasElement {
+  renderer.setPixelRatio(startPixelRatio(maxRatio)); // maxRatio: a view's own cap (the default is the plaza's)
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap; // crisp, cartoon shadows
+  routeShadowProxies(renderer); // static casters cast from their merged proxies (bake.ts)
   const canvas = renderer.domElement;
   canvas.classList.add('floor-canvas');
   canvas.setAttribute('aria-label', label);
@@ -1323,7 +1916,55 @@ function viewCanvas(renderer: THREE.WebGLRenderer, label: string): HTMLCanvasEle
 }
 
 /** The night every view shares: sky and stars, moonlight, the ground sheet and the outskirts. */
-function nightScene(): { scene: THREE.Scene; ground: THREE.Mesh; backdrop: ReturnType<typeof buildBackdrop>; skyLayer: ReturnType<typeof starfield> } {
+/**
+ * The night backdrop: built once per page, in idle steps from the first mount, and shared. Every scene gets its own
+ * copies of the baked sectors, which share their geometry and materials; no teardown disposes them (they outlive a view).
+ */
+let backdropMaster: THREE.Group | null = null;
+let backdropSteps: Generator<void, void, void> | null = null;
+const backdropHolders: THREE.Group[] = [];
+function fillBackdrop(holder: THREE.Group): void {
+  for (const s of backdropMaster!.children) holder.add(s.clone(true)); // clone(true) shares the geometry and materials
+}
+/** One step of the page's build; true once it is built (and every holder waiting for it is filled). */
+function backdropStep(): boolean {
+  if (backdropSteps === null) return true;
+  if (!backdropSteps.next().done) return false;
+  backdropSteps = null;
+  for (const h of backdropHolders.splice(0)) fillBackdrop(h);
+  return true;
+}
+/** The idle callback: steps of the build for about 6 ms, then the next idle time, until the build is done. */
+function idleBackdrop(): void {
+  const until = performance.now() + 6;
+  while (backdropSteps !== null && performance.now() < until) backdropStep();
+  if (backdropSteps !== null) scheduleIdleBackdrop();
+}
+function scheduleIdleBackdrop(): void {
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(idleBackdrop, { timeout: 500 });
+  else window.setTimeout(idleBackdrop, 16);
+}
+/** A scene's backdrop holder: filled now if the page's build is done, else when it is (the idle steps build it). */
+function requestBackdrop(holder: THREE.Group): void {
+  if (backdropMaster !== null && backdropSteps === null) {
+    fillBackdrop(holder);
+    return;
+  }
+  backdropHolders.push(holder);
+  if (backdropMaster === null) {
+    backdropMaster = new THREE.Group();
+    backdropSteps = buildBackdropSteps(backdropMaster);
+    scheduleIdleBackdrop();
+  }
+}
+/** Finishes the page's build now: ENTER needs the backdrop, so a build the idle steps have not reached is done here. */
+function finishBackdrop(): void {
+  while (!backdropStep()) {
+    // run to the end
+  }
+}
+
+function nightScene(): { scene: THREE.Scene; ground: THREE.Mesh; backdrop: THREE.Group; skyLayer: ReturnType<typeof starfield> } {
   const scene = new THREE.Scene();
   // Night: a deep blue zenith banded down to a violet horizon glow, stars and a ringed planet.
   const SKY_TOP = new THREE.Color(0x05071a);
@@ -1353,8 +1994,9 @@ function nightScene(): { scene: THREE.Scene; ground: THREE.Mesh; backdrop: Retur
   ground.position.y = -0.01;
   ground.receiveShadow = true;
   scene.add(ground);
-  const backdrop = buildBackdrop();
+  const backdrop = new THREE.Group(); // the page's shared backdrop, copied in (requestBackdrop)
   scene.add(backdrop);
+  requestBackdrop(backdrop);
   return { scene, ground, backdrop, skyLayer };
 }
 
@@ -1375,6 +2017,16 @@ function orbitView(canvas: HTMLCanvasElement): { camera: THREE.PerspectiveCamera
 
 /** The Machines view polls the fleet this often, ms. */
 const FLEET_POLL_MS = 5000;
+/** The Machines view repaints this often while idle, for the ambient animation (LED pulses, cable packets). */
+const AMBIENT_FPS = 12;
+/** A change (hover, select, resize, camera, fleet data) keeps the Machines view rendering at full rate this long, ms. */
+const BUSY_MS = 700;
+/** The retry gap for a frame the meter could not draw (a hidden tab, or a canvas off the screen), ms. */
+const RETRY_MS = 250;
+/** The Machines view's pixel-ratio cap (its canvas is not the plaza's): one device pixel per CSS pixel. */
+const MACHINES_MAX_RATIO = 1;
+/** The Machines view's antialiasing (MSAA). Off for now: the on/off screenshot comparison was not finished (see the report). */
+const MACHINES_ANTIALIAS = false;
 /** The fleet's bounding sphere fills this share of the frame on its tighter axis. */
 const MACHINE_FILL = 0.8;
 /** How many agent names the popup lists before "+N more". */
@@ -1391,8 +2043,25 @@ const FLEET_KEYS = [
  * fleet loads, and the plaza itself when it does not.
  */
 export function mount(root: HTMLElement, params: string[] = []): Cleanup {
+  exposeHooks();
+  // The plazas' renderer, ahead of a popup (not in its frame). Not in engine mode: one GPU context per page.
+  if (!engineWanted()) window.setTimeout(() => plazaRenderer(), 0);
   const machineId = params[0];
-  if (machineId !== undefined) return mountPlaza(root, machineId);
+  // A Back from a machine returns with the fleet it showed: the Machines view mounts at once, with no refetch.
+  const back = takeReturn();
+  if (machineId === undefined && engineWanted()) return mountEngine(root); // ?engine=wasm: the Machines view on the wasm canvas
+  if (back) return mountMachines(root, back.fleet, back.pose);
+  if (machineId !== undefined) {
+    const w = warmHandle;
+    if (w !== null && w.machineId === machineId) {
+      // ENTER on the popup's machine: its warm plaza is attached now, so no build runs at the click.
+      warmHandle = null;
+      window.clearTimeout(warmTimer);
+      w.adopt(root, takeEntry(machineId));
+      return w.teardown;
+    }
+    return mountPlaza(root, machineId);
+  }
   let stop: Cleanup | undefined;
   let alive = true;
   api.fleet().then(
@@ -1409,12 +2078,79 @@ export function mount(root: HTMLElement, params: string[] = []): Cleanup {
   };
 }
 
+/** The ENTER hooks: the mounted Machines view's enter, and the mounted plaza's Back. window.__apzEnter / __apzBack call them (headless recording). */
+let enterHook: ((id: string) => void) | null = null;
+let openHook: ((id: string) => void) | null = null; // the popup of a machine, for headless runs (__apzOpen)
+let plazaBack: (() => void) | null = null;
+/** The warm plaza (the popup's machine, built hidden): ENTER adopts it; it is dropped WARM_MS after the popup closes. */
+let warmHandle: { machineId: string; adopt: (real: HTMLElement, h: Handoff | null) => void; teardown: () => void } | null = null;
+let warmTimer = 0;
+const WARM_MS = 30000;
+function dropWarm(): void {
+  const w = warmHandle;
+  warmHandle = null;
+  window.clearTimeout(warmTimer);
+  w?.teardown();
+}
+/** The popup opened on a machine: its plaza is built hidden now (or kept, if it is already warm). Another machine's is dropped. */
+function warmPlaza(machineId: string, fleet: FleetResponse): void {
+  if (warmHandle?.machineId !== machineId) {
+    dropWarm();
+    mountPlaza(document.createElement('div'), machineId, { fleet });
+  }
+  window.clearTimeout(warmTimer);
+  warmTimer = window.setTimeout(dropWarm, WARM_MS);
+}
+let entryTime: (() => number | null) | null = null; // the ENTER sequence's time, seconds (headless checks)
+/** Exposes the headless hooks on window, from mount (never at load: the tests run under Node, which has no window). */
+function exposeHooks(): void {
+  if (typeof window === 'undefined') return;
+  Object.assign(window, {
+    __apzEnter: (id: string): void => (enterHook ? enterHook(id) : go('floor', id)),
+    __apzBack: (): void => plazaBack?.(),
+    __apzOpen: (id: string): void => openHook?.(id),
+    __apzEntryTime: (): number | null => entryTime?.() ?? null,
+    // Headless audit: the plaza renderer's programs (name and cache key), to name the ones an ENTER links.
+    __apzPrograms: (): { name: string; key: string }[] => (plazaGl ? plazaGl.info.programs ?? [] : []).map((p) => ({ name: p.name, key: String((p as unknown as { cacheKey: string }).cacheKey) })),
+  });
+}
+
+/** A Machines view kept alive through an ENTER: its renderer, scene and DOM wait for the Back, and are released KEPT_MS after. */
+interface KeptMachines {
+  resume: (root: HTMLElement, fleet: FleetResponse, pose: Pose) => Cleanup;
+  release: () => void;
+}
+let kept: KeptMachines | null = null;
+let keptTimer = 0;
+const KEPT_MS = 30000;
+/** Set by ENTER just before its navigation: the Machines view it leaves is kept (parked), not disposed. */
+let keepMachines = false;
+function releaseKept(): void {
+  const k = kept;
+  kept = null;
+  window.clearTimeout(keptTimer);
+  k?.release();
+}
+function keepView(k: KeptMachines): void {
+  releaseKept();
+  kept = k;
+  keptTimer = window.setTimeout(releaseKept, KEPT_MS);
+}
+
 /** The Machines view: every machine of the plaza as its model (floor3d/fleet.ts), polled every few seconds. */
-function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
-  const renderer = newRenderer();
+function mountMachines(root: HTMLElement, first: FleetResponse, back: Pose | null = null): Cleanup {
+  if (back !== null && kept !== null) {
+    // A Back from the plaza: the kept view comes back as it left (no renderer, no build, no shader compile).
+    const k = kept;
+    kept = null;
+    window.clearTimeout(keptTimer);
+    return k.resume(root, first, back);
+  }
+  releaseKept(); // a Machines mount that is not a Back: a kept view is released first
+  const renderer = newRenderer(MACHINES_ANTIALIAS);
   if (!renderer) return mountFloor2d(root);
-  const canvas = viewCanvas(renderer, 'The machines');
-  const { scene, ground, backdrop, skyLayer } = nightScene();
+  const canvas = viewCanvas(renderer, 'The machines', MACHINES_MAX_RATIO);
+  const { scene, ground, skyLayer } = nightScene(); // the backdrop is the page's shared one (requestBackdrop)
   const { camera, controls } = orbitView(canvas);
   const fleetScene = buildFleet(first);
   scene.add(fleetScene.group);
@@ -1423,7 +2159,7 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
   let fitSig = fleetSig(first);
 
   // DOM: the stage with the canvas, the machine tags, the popup card and the legend.
-  const card = h('div.floor-card', { hidden: true });
+  const card = h('div.floor-card.machine-card', { hidden: true }); // fits its stage: it scrolls inside itself (floor.css)
   const legend = h(
     'div.floor-legend',
     null,
@@ -1436,10 +2172,10 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
   stage.prepend(canvas);
   root.classList.add('floor-view');
   document.body.classList.add('floor-mode');
-  root.append(
-    h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { icon: 'refresh' }))),
-    stage,
-  );
+  const viewHead = h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { icon: 'refresh' })));
+  const viewNodes: HTMLElement[] = [viewHead, stage]; // the view's DOM: a kept view moves these into the next Floor's root
+  let host = root; // the element the view is in now
+  root.append(...viewNodes);
 
   let width = 0;
   let height = 0;
@@ -1447,13 +2183,51 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
   let selectedId: string | null = null;
   let cardSig = '';
   let seenEl: HTMLElement | null = null; // the card's last-seen value, updated in place each frame
-  let userMoved = false; // until the user moves the camera, the view refits on resize and when the machines change
+  // A Back from a machine returns here at the pose it left (floor3d/entry.ts): the view is not refit then.
+  let userMoved = back !== null; // until the user moves the camera, the view refits on resize and when the machines change
   let settingView = false; // resetView's own camera moves are not the user's
+
+  // Rendering is on demand. A frame runs when something changed (wake() moves busyUntil on, kick() asks for a frame);
+  // a frame that finds nothing moving schedules the next one from a timer at AMBIENT_FPS, so the LED pulses and the
+  // cable packets keep going. The popup open draws nothing: its canvas keeps the last image.
+  let running = true; // false while parked (stopLive) and after free
+  let rafId = 0; // the pending animation frame, 0 when none
+  let timer = 0; // the pending ambient or retry timer, 0 when none
+  let busyUntil = 0; // performance.now() until which frames run at full rate
+  let shadowsDue = true; // the next frame redraws the shadow map (the first frame, a data change, a resize, a resume)
+  let paintOnce = false; // a resize clears the canvas: one frame draws it even with the popup open
+  let lastRender = -Infinity;
+  const wake = (): void => {
+    busyUntil = performance.now() + BUSY_MS;
+  };
+  const cancelFrame = (): void => {
+    if (rafId !== 0) window.cancelAnimationFrame(rafId);
+    window.clearTimeout(timer);
+    rafId = 0;
+    timer = 0;
+  };
+  /** Asks for a frame, unless one is pending or the view draws nothing now (parked, or the popup is open). */
+  const kick = (): void => {
+    if (!alive || !running || rafId !== 0) return;
+    if (selectedId !== null && !paintOnce) return;
+    window.clearTimeout(timer);
+    timer = 0;
+    rafId = window.requestAnimationFrame(onFrame);
+  };
+  /** The timer's callback: a frame again (the ambient step, or a retry after a frame the meter did not draw). */
+  const later = (ms: number): void => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      timer = 0;
+      kick();
+    }, ms);
+  };
   controls.addEventListener('change', () => {
     if (!settingView) userMoved = true;
+    wake();
+    kick();
   });
   let last = performance.now();
-  let lastRender = -Infinity;
   const ndcVec = new THREE.Vector2();
   const raycaster = new THREE.Raycaster();
   const camDir = new THREE.Vector3();
@@ -1558,12 +2332,29 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
             names.length > FLEET_CARD_AGENTS ? h('span', null, `+${names.length - FLEET_CARD_AGENTS} more`) : null,
           ),
         ),
-        h('footer.machine-card-foot', null, button('ENTER', () => go('floor', m.id), { kind: 'primary' })),
+        h('footer.machine-card-foot', null, button('ENTER', () => enterMachine(m), { kind: 'primary' })),
       );
     }
     const seen = ago(m.last_seen_ms, now);
     if (seenEl && seenEl.textContent !== seen) seenEl.textContent = seen;
   }
+
+  /** ENTER: the sequence starts from this camera and fleet (floor3d/entry.ts), and the machine's plaza plays it. */
+  function enterMachine(m: FleetMachine): void {
+    const fog = scene.fog instanceof THREE.Fog ? { near: scene.fog.near, far: scene.fog.far } : undefined;
+    beginEntry({ machineId: m.id, fleet: latest, from: { position: camera.position.clone(), target: controls.target.clone(), fog } });
+    select(null);
+    keepMachines = true; // this view is parked for a Back (its cleanup), not disposed
+    go('floor', m.id);
+  }
+  const setHooks = (): void => {
+    openHook = (id: string): void => select(id);
+    enterHook = (id: string): void => {
+      const m = latest.machines.find((x) => x.id === id);
+      if (m) enterMachine(m);
+    };
+  };
+  setHooks();
 
   /** The card sits beside its machine's tag, kept on the stage. */
   function positionCard(): void {
@@ -1579,9 +2370,16 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
 
   function select(id: string | null): void {
     selectedId = id;
+    controls.enabled = id === null; // the popup open: the camera is still (the canvas keeps its image)
+    if (id !== null) cancelFrame(); // no frame is pending while the popup is open
+    const opened = id === null ? undefined : latest.machines.find((x) => x.id === id);
+    // The popup's machine builds hidden, ready for ENTER: after the card has painted (a frame, then a task).
+    if (opened) window.requestAnimationFrame(() => window.setTimeout(() => warmPlaza(opened.id, latest), 0));
     cardSig = '';
     renderCard(Date.now());
     positionCard();
+    wake();
+    kick(); // on a close, the next frame runs updateTags and positionCard; on an open, kick does nothing
   }
 
   /**
@@ -1604,6 +2402,8 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
     controls.update();
     settingView = false;
     userMoved = false;
+    wake();
+    kick();
   }
 
   // Resize.
@@ -1616,11 +2416,30 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     if (!userMoved) resetView(); // a view the user has not moved keeps the whole fleet in frame
+    shadowsDue = true; // a new size clears the canvas: the next frame draws it, even with the popup open
+    paintOnce = true;
+    wake();
+    kick();
   };
   const ro = new ResizeObserver(() => resize());
   ro.observe(stage);
   resize();
-  resetView();
+  /** A Back's pose: the camera, the orbit and the haze as the plaza left them (a fresh view and a resumed one alike). */
+  const setPose = (pose: Pose): void => {
+    camera.position.copy(pose.position);
+    controls.target.copy(pose.target);
+    camera.lookAt(pose.target);
+    if (pose.fog && scene.fog instanceof THREE.Fog) {
+      scene.fog.near = pose.fog.near;
+      scene.fog.far = pose.fog.far;
+    }
+  };
+  if (back) setPose(back);
+  else resetView();
+  if (back) {
+    renderer.shadowMap.needsUpdate = true;
+    renderer.render(scene, camera);
+  }
 
   // Pointer: drag to orbit and pan, hover lifts a machine and shows the pointer, a click opens its popup.
   const listen = <K extends keyof HTMLElementEventMap>(type: K, fn: (ev: HTMLElementEventMap[K]) => void): void =>
@@ -1635,6 +2454,8 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
     if (id !== hoveredId) {
       hoveredId = id;
       fleetScene.hover(id);
+      wake();
+      kick();
     }
     canvas.style.cursor = id ? 'pointer' : 'grab';
   });
@@ -1647,6 +2468,8 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
   listen('pointerleave', () => {
     hoveredId = null;
     fleetScene.hover(null);
+    wake();
+    kick();
   });
   // A click outside the stage, or Esc, closes the popup.
   document.addEventListener(
@@ -1665,23 +2488,66 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
   );
 
   // Live data: the fleet is polled; the popup's agent names follow the agent list.
+  /** The card's text and place while the popup is open (its frames are not drawn): the agents and the poll update it. */
+  const refreshOpenCard = (): void => {
+    if (selectedId === null) return;
+    renderCard(Date.now());
+    positionCard();
+  };
   const offAgents = agents.watch(() => {
     cardSig = '';
+    refreshOpenCard();
   });
-  const poll = window.setInterval(() => {
-    api.fleet().then(
-      (f) => {
-        if (alive) latest = f;
-      },
-      () => undefined, // keep the last fleet until the next poll
-    );
-  }, FLEET_POLL_MS);
+  let poll = 0;
+  const startPoll = (): void => {
+    poll = window.setInterval(() => {
+      api.fleet().then(
+        (f) => {
+          if (!alive) return;
+          if (JSON.stringify(f) !== JSON.stringify(latest)) {
+            // The fleet's data changed: the view draws it (a fresh shadow map too), and an open popup shows it.
+            latest = f;
+            shadowsDue = true;
+            wake();
+            kick();
+            refreshOpenCard();
+          }
+        },
+        () => undefined, // keep the last fleet until the next poll
+      );
+    }, FLEET_POLL_MS);
+  };
+  startPoll();
+
+  // A hidden tab stops animation frames: the view draws again when it is shown.
+  document.addEventListener(
+    'visibilitychange',
+    () => {
+      if (!document.hidden) {
+        wake();
+        kick();
+      }
+    },
+    { signal: ac.signal },
+  );
 
   // Loop: capped at 60 fps, as the plaza's.
-  const frame = (now: number): void => {
-    if (now - lastRender < 1000 / 60 - 1) return;
+  const meter = createMeter(renderer, 'machines', stage);
+  /** One animation frame: the updates and the draw, then the next frame (busy) or the ambient timer (idle). */
+  function onFrame(now: number): void {
+    rafId = 0;
+    if (!alive || !running) return;
+    if (selectedId !== null && !paintOnce) return; // the popup open: no frame
+    if (now - lastRender < 1000 / 60 - 1) {
+      rafId = window.requestAnimationFrame(onFrame); // a 120 Hz display: at most 60 frames a second
+      return;
+    }
+    if (!meter.ready()) {
+      later(RETRY_MS); // a hidden or offscreen canvas: try again shortly
+      return;
+    }
     lastRender = now;
-    const dt = Math.min(0.05, (now - last) / 1000);
+    const dt = Math.min(0.1, (now - last) / 1000); // the ambient step (12 fps) is longer than the old cap
     last = now;
     fleetScene.update(dt, latest);
     const sig = fleetSig(latest);
@@ -1690,20 +2556,42 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
       if (!userMoved) resetView();
     }
     skyLayer.animate(now / 1000);
-    controls.update();
-    renderer.render(scene, camera);
+    if (controls.update()) wake(); // the orbit moved (the damping too): keep drawing at full rate
+    fleetScene.lod(camera, controls.target, dt);
+    const shadows = shadowsDue;
+    shadowsDue = false;
+    meter.render(scene, camera, shadows);
+    paintOnce = false;
     updateTags();
     renderCard(Date.now());
     positionCard();
-  };
-  renderer.setAnimationLoop(frame);
+    if (rafId !== 0 || selectedId !== null) return; // a change in this frame asked for the next one, or the popup is open
+    if (performance.now() < busyUntil) rafId = window.requestAnimationFrame(onFrame);
+    else later(1000 / AMBIENT_FPS);
+  }
+  wake();
+  kick(); // the first frame
 
-  return () => {
-    alive = false;
-    ac.abort();
+  /** Stops the loop and the live data, and takes the view's DOM off the page: a view that is away draws and polls nothing. */
+  const stopLive = (): void => {
+    running = false;
+    cancelFrame();
     window.clearInterval(poll);
-    renderer.setAnimationLoop(null);
     ro.disconnect();
+    hoveredId = null;
+    fleetScene.hover(null);
+    enterHook = null;
+    openHook = null;
+    for (const n of viewNodes) n.remove();
+    host.classList.remove('floor-view');
+    document.body.classList.remove('floor-mode');
+  };
+  /** Frees the view's geometry, materials, renderer and listeners: the view is not used again. */
+  const free = (): void => {
+    alive = false;
+    cancelFrame();
+    ac.abort();
+    meter.dispose();
     offAgents();
     controls.dispose();
     for (const t of tagEls.values()) t.el.remove();
@@ -1711,12 +2599,56 @@ function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
     disposeTree(fleetScene.group);
     disposeTree(ground);
     disposeTree(skyLayer.group);
-    disposeTree(backdrop);
     renderer.dispose();
-    root.classList.remove('floor-view');
-    document.body.classList.remove('floor-mode');
-    root.replaceChildren();
   };
+  /** A kept view comes back in a new Floor root, at the Back's pose, with the fleet the Back returned with. No renderer, build or shader compile. */
+  const resume = (next: HTMLElement, fleet: FleetResponse, pose: Pose): Cleanup => {
+    host = next;
+    host.classList.add('floor-view');
+    document.body.classList.add('floor-mode');
+    host.append(...viewNodes);
+    setHooks();
+    latest = fleet;
+    fitSig = fleetSig(fleet);
+    userMoved = true; // the Back's pose holds, as a fresh Back mount's does
+    ro.observe(stage);
+    resize();
+    setPose(pose);
+    fleetScene.update(0, fleet);
+    renderer.shadowMap.needsUpdate = true;
+    renderer.render(scene, camera);
+    startPoll();
+    last = performance.now();
+    lastRender = -Infinity;
+    shadowsDue = true;
+    running = true;
+    wake();
+    kick();
+    return leave;
+  };
+  /** An ENTER parks the view: stopped and detached, kept for a Back for KEPT_MS. */
+  const park = (): void => {
+    stopLive();
+    keepView({
+      resume,
+      release: () => {
+        free();
+        renderer.forceContextLoss(); // the context goes now, not at a garbage collection
+      },
+    });
+  };
+  /** Leaving the view: an ENTER parks it (kept); any other navigation disposes it, as before. */
+  const leave = (): void => {
+    if (keepMachines) {
+      keepMachines = false;
+      park();
+      return;
+    }
+    stopLive();
+    free();
+    host.replaceChildren();
+  };
+  return leave;
 }
 
 // ---- Pure helpers (the Machines view's text and camera distance; tested) ----------------------
@@ -1751,14 +2683,27 @@ export function machineSubtitle(m: Pick<FleetMachine, 'kind' | 'model'>): string
   return m.model ? `${m.kind} · ${m.model}` : m.kind;
 }
 
+/**
+ * The GPUs as one line per kind: identical cards grouped, "8× NVIDIA H100 · 80 GiB". A GPU's memory is null when the
+ * fleet does not know it: its name stands alone. The kinds keep the order their first card has in the fleet.
+ */
+export function gpuLines(gpus: FleetMachine['gpus']): string {
+  if (gpus.length === 0) return 'none';
+  const kinds = new Map<string, number>();
+  for (const g of gpus) {
+    const label = g.memory_mib == null ? g.name : `${g.name} · ${gibText(g.memory_mib)}`;
+    kinds.set(label, (kinds.get(label) ?? 0) + 1);
+  }
+  return [...kinds].map(([label, n]) => (n > 1 ? `${n}× ${label}` : label)).join('\n');
+}
+
 /** The facts the popup lists, in order. The last-seen time is live, so the card adds it itself. */
 export function machineFacts(m: FleetMachine): [string, string][] {
   return [
     ['CPU', m.cpu.model || '—'],
     ['Cores', `${m.cpu.cores} cores · ${m.cpu.threads} threads`],
     ['Memory', gibText(m.memory_mib)],
-    // A GPU's memory is null when the fleet does not know it: its name stands alone.
-    ['GPUs', m.gpus.length ? m.gpus.map((g) => (g.memory_mib == null ? g.name : `${g.name} · ${gibText(g.memory_mib)}`)).join('\n') : 'none'],
+    ['GPUs', gpuLines(m.gpus)],
     ['Arch', m.arch || '—'],
     ['Backend', m.backend || '—'],
     ['OS', m.os || '—'],

@@ -153,11 +153,19 @@ export function icon(name: IconName, cls = ''): SVGSVGElement {
 
 /** A filled single-path SVG (brand logos). */
 export function pathSvg(d: string, viewBox = '0 0 24 24'): SVGSVGElement {
+  return markSvg([{ d }], viewBox);
+}
+
+/** A multi-colour mark: each path keeps its own fill, so the parent's colour never applies. */
+export function markSvg(paths: { d: string; fill?: string }[], viewBox = '0 0 24 24'): SVGSVGElement {
   const svg = document.createElementNS(SVG, 'svg');
   svg.setAttribute('viewBox', viewBox);
   svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS(SVG, 'path');
-  path.setAttribute('d', d);
-  svg.appendChild(path);
+  for (const { d, fill } of paths) {
+    const path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', d);
+    if (fill) path.setAttribute('fill', fill);
+    svg.appendChild(path);
+  }
   return svg;
 }

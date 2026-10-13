@@ -6,6 +6,8 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { outline, toonMat } from './toon';
+import { buildModel } from './hardware';
+import { MODELS } from './hardware-index';
 
 /** A machine's kind, as the fleet reports it. */
 export type MachineKind = 'server' | 'workstation' | 'laptop' | 'edge' | 'phone';
@@ -42,6 +44,7 @@ function openStudio(): Studio | null {
     if (!(canvas.getContext('webgl2') ?? canvas.getContext('webgl'))) return (studio = null);
     // Transparent: the model and its shadow sit straight on the page.
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+    renderer.debug.checkShaderErrors = false; // the info log is read only when a shader fails
     renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(1);
     renderer.setSize(W, H, false);
@@ -69,20 +72,44 @@ function openStudio(): Studio | null {
   }
 }
 
+// Thumbnails share their toon materials and geometries for the whole session: one per key, never disposed, so a shader
+// compiles once and a buffer uploads once. A material is keyed by its colour, emissive and emissive intensity; a
+// geometry by its type, size and radius.
+const toons = new Map<string, THREE.MeshToonMaterial>();
+const geos = new Map<string, THREE.BufferGeometry>();
+
 function paint(color: number, glow = 0): THREE.MeshToonMaterial {
-  return glow ? toonMat({ color, emissive: color, emissiveIntensity: glow }) : toonMat({ color });
+  const key = `${color}|${glow ? color : 0}|${glow}`;
+  let m = toons.get(key);
+  if (!m) {
+    m = glow ? toonMat({ color, emissive: color, emissiveIntensity: glow }) : toonMat({ color });
+    toons.set(key, m);
+  }
+  return m;
+}
+
+/** The session's geometry for `key`, made by `make` the first time it is asked for. */
+function shared(key: string, make: () => THREE.BufferGeometry): THREE.BufferGeometry {
+  let g = geos.get(key);
+  if (!g) {
+    g = make();
+    geos.set(key, g);
+  }
+  return g;
 }
 
 /** A rounded box centred on `at`. */
 function block(g: THREE.Group, size: V, radius: number, color: number, at: V, glow = 0): void {
-  const m = new THREE.Mesh(new RoundedBoxGeometry(size[0], size[1], size[2], 3, radius), paint(color, glow));
+  const geo = shared(`rbox|${size.join('|')}|${radius}`, () => new RoundedBoxGeometry(size[0], size[1], size[2], 3, radius));
+  const m = new THREE.Mesh(geo, paint(color, glow));
   m.position.set(at[0], at[1], at[2]);
   g.add(m);
 }
 
 /** A cylinder centred on `at`, its axis along `axis`. */
 function cylinder(g: THREE.Group, radius: number, length: number, color: number, at: V, axis: 'x' | 'y' | 'z', glow = 0): void {
-  const m = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 24), paint(color, glow));
+  const geo = shared(`cyl|${radius}|${length}`, () => new THREE.CylinderGeometry(radius, radius, length, 24));
+  const m = new THREE.Mesh(geo, paint(color, glow));
   if (axis === 'x') m.rotation.z = Math.PI / 2;
   if (axis === 'z') m.rotation.x = Math.PI / 2;
   m.position.set(at[0], at[1], at[2]);
@@ -91,7 +118,8 @@ function cylinder(g: THREE.Group, radius: number, length: number, color: number,
 
 /** A ball: a lamp, an antenna tip. */
 function ball(g: THREE.Group, radius: number, color: number, at: V, glow = 0): void {
-  const m = new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 12), paint(color, glow));
+  const geo = shared(`sphere|${radius}`, () => new THREE.SphereGeometry(radius, 16, 12));
+  const m = new THREE.Mesh(geo, paint(color, glow));
   m.position.set(at[0], at[1], at[2]);
   g.add(m);
 }
@@ -205,6 +233,54 @@ function build(look: Look, gpu: boolean, active: boolean): THREE.Group {
   return g;
 }
 
+/** The exterior model each look draws, as the desktop picks it (an Apple laptop is the MacBook, other Apple machines the mini). */
+export const EXTERIOR: Record<Look, string> = {
+  macbook: 'exterior/apple-laptop',
+  mac: 'exterior/apple-desktop',
+  laptop: 'exterior/laptop',
+  edge: 'exterior/edge',
+  phone: 'exterior/phone',
+  server: 'exterior/server',
+  workstation: 'exterior/workstation',
+};
+
+/**
+ * The machine's exterior from the asset model (hardware.ts buildModel, the model the floor uses), framed to its bounds,
+ * as a PNG data URL cached per look. Null where WebGL or the model is unavailable: the caller falls back to the line art.
+ */
+export function exteriorImage(look: Look, opts: { gpus: number; active: boolean }): string | null {
+  const name = EXTERIOR[look];
+  const key = `${name}|${opts.gpus}|${opts.active}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const st = openStudio();
+  const model = MODELS[name];
+  if (!st || !model) return null;
+  const built = buildModel(model, { gpus: opts.gpus });
+  built.update(0, { status: 'online', working: opts.active ? 1 : 0, open: 1 });
+  built.group.traverse((o) => {
+    o.castShadow = true;
+    o.receiveShadow = true;
+  });
+  st.scene.add(built.group);
+  const box = new THREE.Box3().setFromObject(built.group);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const cam = st.camera as THREE.PerspectiveCamera;
+  cam.aspect = W / H;
+  const tan = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+  const dist = Math.max(size.y / 2 / tan, size.x / 2 / (tan * cam.aspect)) * 1.12 + size.z / 2;
+  const a = model.anchors?.camera;
+  const dir = a ? new THREE.Vector3(...a.at).sub(new THREE.Vector3(...a.look)).normalize() : new THREE.Vector3(0, 0, 1);
+  cam.position.copy(center).addScaledVector(dir, dist);
+  cam.lookAt(center);
+  st.renderer.render(st.scene, cam);
+  const url = st.renderer.domElement.toDataURL('image/png');
+  st.scene.remove(built.group);
+  cache.set(key, url);
+  return url;
+}
+
 /** The machine's picture as a PNG data URL, or null where WebGL is unavailable. */
 export function machineImage(look: Look, opts: { gpu: boolean; active: boolean }): string | null {
   const key = `${look}|${opts.gpu}|${opts.active}`;
@@ -222,13 +298,8 @@ export function machineImage(look: Look, opts: { gpu: boolean; active: boolean }
   st.scene.add(model);
   st.renderer.render(st.scene, st.camera);
   const url = st.renderer.domElement.toDataURL('image/png');
+  // Nothing to free: the geometries and toon materials are the session's shared ones (see paint and shared).
   st.scene.remove(model);
-  model.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (!m.isMesh || m.userData.isOutline) return;
-    m.geometry.dispose();
-    (m.material as THREE.Material).dispose();
-  });
   cache.set(key, url);
   return url;
 }

@@ -1,0 +1,54 @@
+/* Vault status card. Colours come from the tokens in tokens.css, so both themes follow. */
+
+.vault-status { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.vault-status-banner { margin: 0; text-transform: none; letter-spacing: 0; font: inherit; line-height: 1.5; }
+.vault-status-banner p { margin: 0 0 4px; }
+.vault-status-banner code { font-family: var(--mono); font-size: 12.5px; }
+
+.vault-status-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+.vault-status-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 14px; }
+.vault-status-copy { flex: 1 1 260px; min-width: 0; }
+.vault-status-copy p { margin: 0 0 4px; }
+.vault-status-copy p:last-child { margin-bottom: 0; }
+
+.vault-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px 22px;
+  margin: 16px 0 0;
+}
+.vault-fact { min-width: 0; }
+.vault-fact dt {
+  font: 600 11px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: 0 0 4px;
+}
+.vault-fact dd { margin: 0; overflow-wrap: anywhere; }
+
+.vault-slots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.vault-slot { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
+.vault-slot-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.vault-slot .btn { white-space: nowrap; flex: none; }
+.vault-slot .muted { font-size: 12.5px; white-space: nowrap; }
+
+.vault-status-dialog { display: flex; flex-direction: column; gap: 14px; }
+.vault-status-dialog > p { margin: 0; }
+.vault-status-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.vault-status-row:has(> .vault-status-code) { justify-content: flex-start; }
+.vault-status-choice { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.vault-status-choice label,
+.vault-status-check { display: inline-flex; align-items: center; gap: 6px; }
+.vault-status-error { margin: 0; color: var(--crit); font-size: 13px; }
+.vault-status-error[hidden] { display: none; }
+.vault-status-dialog input[readonly] { font-family: var(--mono); width: 100%; min-width: 0; }
+.vault-status-dialog .vault-status-row > input[readonly] { flex: 1 1 200px; }
+
+@media (max-width: 480px) {
+  .vault-status-actions { justify-content: stretch; }
+  .vault-status-actions .btn { flex: 1 1 auto; }
+  .vault-status-row .btn { flex: 1 1 auto; }
+}

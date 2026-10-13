@@ -11,6 +11,11 @@ import { ago, attempt, badge, button, clip, field, input, modal, select, textare
 import { h, icon, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
+// The task budget's default and minimum: the hub's apz_plaza::tasks constants (DEFAULT_TASK_BUDGET,
+// MIN_TASK_BUDGET). The web console cannot import Rust, so these mirror them; keep them in step.
+const DEFAULT_TASK_BUDGET = 2000;
+const MIN_TASK_BUDGET = 200;
+
 const LANES = [
   { label: 'Open', idle: 'Nothing open.' },
   { label: 'In progress', idle: 'Nothing in progress.' },
@@ -198,7 +203,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const acceptance = textarea({ rows: 3 });
     const roles = Array.from(new Set(agents.get().filter((a) => a.tier === 'worker').map((a) => a.role).filter(Boolean))).sort();
     const role = select([{ value: '', label: 'Any' }, ...roles.map((r) => ({ value: r, label: r }))]);
-    const budget = input({ type: 'number', min: 0, step: 1, value: 100 });
+    // Empty leaves the budget to the hub's default (the hint shows it).
+    const budget = input({ type: 'number', min: MIN_TASK_BUDGET, step: 1, placeholder: `${DEFAULT_TASK_BUDGET} (hub default)` });
     const assignee = select([
       { value: '', label: 'Let the scheduler choose' },
       ...idleWorkers().map((a) => ({ value: String(a.cid), label: agentName(a) })),
@@ -222,6 +228,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         return;
       }
       const detail = details.value.trim();
+      const budgetText = budget.value.trim();
+      const budgetCredits = budgetText === '' ? undefined : Number(budgetText);
+      if (budgetCredits !== undefined && (!Number.isInteger(budgetCredits) || budgetCredits < MIN_TASK_BUDGET)) {
+        budget.setCustomValidity(`Budget must be a whole number of at least ${MIN_TASK_BUDGET} credits.`);
+        budget.reportValidity();
+        return;
+      }
+      budget.setCustomValidity('');
       submit.disabled = true;
       const created = await attempt(
         () =>
@@ -229,7 +243,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
             goal: detail ? `${goalTitle}\n\n${detail}` : goalTitle,
             acceptance: acceptance.value.trim() || undefined,
             role: role.value || undefined,
-            budget: budget.value === '' ? 100 : Number(budget.value),
+            budget: budgetCredits,
             assignee: assignee.value ? Number(assignee.value) : undefined,
           }),
         'Task created',

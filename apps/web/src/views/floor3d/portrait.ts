@@ -3,7 +3,7 @@
 // offscreen renderer takes every picture; pictures are cached as data URLs per agent and look.
 
 import * as THREE from 'three';
-import { makeRobot, ROBOT_PALETTE, robotVariant, type RobotPose, type RobotState } from './robot';
+import { makeRobot, ROBOT_PALETTE, speciesOf, type RobotPose, type RobotState } from './robot';
 
 const SIZE = 384;
 const POSES: RobotPose[] = ['wave', 'proud', 'think', 'cheer'];
@@ -16,6 +16,7 @@ function openStudio(): typeof studio {
     const canvas = document.createElement('canvas');
     if (!(canvas.getContext('webgl2') ?? canvas.getContext('webgl'))) return (studio = null);
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.debug.checkShaderErrors = false; // the info log is read only when a shader fails
     renderer.setSize(SIZE, SIZE, false);
     renderer.shadowMap.enabled = true;
     const scene = new THREE.Scene();
@@ -92,16 +93,18 @@ export interface PortraitSpec {
   bodyHue: number;
   orchestrator: boolean;
   state: RobotState;
+  /** The agent record's species (`speciesOf`: the cid's deal when missing). */
+  species?: string | null;
 }
 
 /** The agent's portrait as a PNG data URL, or null where WebGL is unavailable. */
 export function portrait(spec: PortraitSpec): string | null {
-  const key = `${spec.cid}|${spec.roleHue}|${Math.round(spec.bodyHue)}|${spec.orchestrator}|${spec.state === 'offline'}`;
+  const key = `${spec.cid}|${spec.roleHue}|${Math.round(spec.bodyHue)}|${spec.orchestrator}|${spec.state === 'offline'}|${speciesOf(spec.species, spec.cid)}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const st = openStudio();
   if (!st) return null;
-  const robot = makeRobot(spec.roleHue, spec.orchestrator, ROBOT_PALETTE, spec.bodyHue, robotVariant(spec.cid));
+  const robot = makeRobot(spec.roleHue, spec.orchestrator, ROBOT_PALETTE, spec.bodyHue, speciesOf(spec.species, spec.cid));
   robot.setState(spec.state === 'offline' ? 'offline' : 'idle');
   robot.pose(POSES[spec.cid % POSES.length]!);
   robot.group.rotation.y = -0.35;

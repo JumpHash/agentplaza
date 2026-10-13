@@ -1,11 +1,11 @@
 // Agent detail: one agent's transcript, its composer, and its model, details and queue.
 
 import '../styles/agent.css';
-import { api, ApiError, type Agent, type Block, type Delta, type Entry, type ModelInfo, type Settings } from '../api';
+import { api, ApiError, isContributor, type Agent, type Block, type Delta, type Entry, type ModelInfo, type Sanction, type SanctionsView, type Settings, type Suspension } from '../api';
 import { go, href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, clip, compact, empty, field, modal, tabs, textarea } from '../ui/components';
+import { ago, attempt, badge, button, card, clip, compact, empty, field, modal, tabs, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountMemory } from './memory';
@@ -65,6 +65,8 @@ export function tierChoices(
   if (current && !out.some((c) => c.value === current)) {
     out.push({ value: current, label: current, provider: current.split('/')[0] ?? '' });
   }
+  const trainers = new Set(models.filter(isContributor).map((m) => `${m.provider}/${m.id}`));
+  for (const c of out) c.trains = trainers.has(c.value.replace(/@.*$/, ''));
   return out;
 }
 
@@ -420,6 +422,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   ];
   const permissionHost = h('div.stack');
   const harness = harnessCard(cid);
+  const conduct = conductCard(cid);
   let permission: PermissionMode | null = null;
   let permissionFailed = false;
   const renderPermission = (): void => {
@@ -509,6 +512,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
           card('Model', h('div.stack', null, modelLine, field('Change model', picker.el), field('Reasoning effort', effortSel))),
           card('Harness', harness.el),
           card('Permissions', permissionHost),
+          card('Conduct', conduct.el),
           card('Details', details),
           card('Queue', queue),
         ),
@@ -541,12 +545,132 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   return () => {
     alive = false;
     harness.destroy();
+    conduct.destroy();
     window.clearInterval(profileTimer);
     offs.forEach((off) => off());
     live.clear();
     unmountMemory?.();
     unmountMemory = null;
   };
+}
+
+/**
+ * The Conduct section: the agent's suspensions in force, each with a Lift, then its sanctions on the
+ * register, newest first. Read from the sanctions register; refreshed every 15 s and after a lift.
+ */
+function conductCard(cid: number): { el: HTMLElement; destroy: () => void } {
+  const body = h('div.stack');
+  let view: SanctionsView | null = null;
+  let failed = false;
+  let error: string | null = null;
+  let busy = false;
+  let alive = true;
+
+  const sanctionRow = (r: Sanction): HTMLElement =>
+    h(
+      'li.conduct-row',
+      { title: r.title },
+      h('div.conduct-row-head', null, h('strong', null, r.sanction), h('code.conduct-law', null, r.law), badge(r.severity, severityTone(r.severity))),
+      h(
+        'div.conduct-row-meta',
+        null,
+        h('span', null, `offence ${r.count}`),
+        h('span', null, r.outcome),
+        h('span', null, r.fine > 0 ? `fined ${compact(r.fine)} cr` : 'no fine'),
+        h('time', null, ago(r.at_ms)),
+      ),
+      r.lifted ? h('p.conduct-lifted', null, `lifted by owner: ${r.lifted.why}`) : null,
+    );
+
+  const suspensionRow = (s: Suspension, now: number): HTMLElement =>
+    h(
+      'li.conduct-susp',
+      null,
+      h('div.conduct-susp-main', null, h('code', null, s.tool), h('span.faint', null, s.law)),
+      h(
+        'div.conduct-susp-side',
+        null,
+        h('span.faint', null, timeLeft(s.until_ms, now)),
+        button('Lift', () => void liftSuspension(s), { size: 'sm', disabled: busy }),
+      ),
+    );
+
+  const render = (): void => {
+    if (!view) {
+      replace(body, failed ? h('p.danger', null, 'Could not load conduct.') : h('p.faint', null, 'Loading…'));
+      return;
+    }
+    const now = Date.now();
+    const suspensions = view.suspensions.filter((s) => s.cid === cid && s.active).sort((x, y) => x.until_ms - y.until_ms);
+    const sanctions = view.sanctions.filter((r) => r.cid === cid).sort((x, y) => y.at_ms - x.at_ms);
+    replace(
+      body,
+      h('h3.conduct-h', null, 'Suspended now'),
+      suspensions.length ? h('ul.conduct-list', null, suspensions.map((s) => suspensionRow(s, now))) : h('p.faint', null, 'Not suspended.'),
+      error ? h('p.danger', null, error) : null,
+      h('h3.conduct-h', null, 'Sanctions'),
+      sanctions.length ? h('ul.conduct-list', null, sanctions.map((r) => sanctionRow(r))) : h('p.faint', null, 'No sanctions on record.'),
+    );
+  };
+
+  const refresh = async (): Promise<void> => {
+    try {
+      view = await api.sanctions({ cid });
+      failed = false;
+    } catch {
+      failed = true;
+    }
+    if (alive) render();
+  };
+
+  const liftSuspension = async (s: Suspension): Promise<void> => {
+    const answer = window.prompt(`Lift the suspension of ${s.tool} (${s.law})? Give a reason.`);
+    if (answer === null) return;
+    const reason = answer.trim();
+    error = null;
+    if (!reason) {
+      error = 'Give a reason to lift a suspension.';
+      render();
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      await api.liftSanction(s.id, reason);
+      toast('Suspension lifted');
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+    busy = false;
+    await refresh();
+  };
+
+  render();
+  void refresh();
+  const timer = window.setInterval(() => void refresh(), 15_000);
+  return {
+    el: body,
+    destroy: () => {
+      alive = false;
+      window.clearInterval(timer);
+    },
+  };
+}
+
+/** Time left until `untilMs`, as "2h 5m left". */
+function timeLeft(untilMs: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((untilMs - now) / 1000));
+  if (s < 60) return `${s}s left`;
+  if (s < 3600) return `${Math.floor(s / 60)}m left`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m left`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h left`;
+}
+
+/** A sanction's severity as a badge tone: the serious ones red, the middling ones amber. */
+function severityTone(severity: string): Tone {
+  if (/crit|high|severe/i.test(severity)) return 'danger';
+  if (/med|moderate/i.test(severity)) return 'warn';
+  return 'muted';
 }
 
 function responseNodes(data: Record<string, unknown>): Node[] {

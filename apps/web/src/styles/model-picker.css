@@ -85,13 +85,22 @@
   /* At least as wide as the trigger, wider in a narrow column; it opens leftwards. */
   width: max(100%, min(420px, 90vw));
   z-index: 50;
+  /* A column: the search stays put and only the list scrolls. */
+  display: flex;
+  flex-direction: column;
   max-height: 420px;
-  overflow: auto;
+  overflow: hidden;
   background: var(--sheet);
   color: var(--ink);
   border: 1px solid var(--ink);
   border-radius: 0;
   box-shadow: 4px 4px 0 var(--ink);
+}
+
+.mp-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .mp-search {
@@ -128,6 +137,32 @@
   border-bottom: 1px solid var(--rule);
 }
 
+.mp-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mp-count {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A vendor subgroup inside the openrouter group. Not sticky: the provider header stays on top. */
+.mp-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 22px;
+  background: var(--sheet);
+  color: var(--ink-2);
+  font-size: 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
 .mp-opt {
   display: flex;
   align-items: baseline;
@@ -148,8 +183,37 @@
   background: var(--paper);
 }
 
+.mp-opt.mp-nested {
+  padding-left: 22px;
+}
+
 .mp-opt[aria-selected='true'] {
   border-left-color: var(--signal);
+}
+
+.mp-more {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px 6px 22px;
+  background: transparent;
+  color: var(--ink-2);
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mp-more:hover {
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.mp-more:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: -1px;
 }
 
 .mp-id {

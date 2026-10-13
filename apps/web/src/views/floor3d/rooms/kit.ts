@@ -132,7 +132,7 @@ export class Room {
     const it = this.item(x, z, rotY);
     const { darkWood, red, blue, yellow, green, purple } = this.k;
     const spines = [red, blue, yellow, green, purple];
-    this.box(it, w, h, 0.4, darkWood, 0, 0, -0.02);
+    this.box(it, w, h, 0.4, darkWood, 0, 0, 0);
     const rows = Math.max(2, Math.round(h / 0.42));
     for (let r = 0; r < rows; r++) {
       const y = 0.1 + (r * (h - 0.2)) / rows;
@@ -140,7 +140,7 @@ export class Room {
       while (bx < w / 2 - 0.14) {
         const bw = 0.06 + this.rand() * 0.06;
         const bh = 0.2 + this.rand() * 0.1;
-        this.box(it, bw, bh, 0.26, spines[Math.floor(this.rand() * spines.length)]!, bx + bw / 2, y, 0.06);
+        this.box(it, bw, bh, 0.26, spines[Math.floor(this.rand() * spines.length)]!, bx + bw / 2, y, 0.04);
         bx += bw + 0.012;
       }
     }
@@ -176,6 +176,192 @@ export class Room {
     it.add(light);
     const phase = this.rand() * 10;
     this.anim.push((t) => (light.intensity = 0.5 * (1 + 0.04 * Math.sin(t * 7.1 + phase))));
+    return it;
+  }
+
+  // ---- Builders for the room generator (rooms/gen.ts). Each item's origin is its floor centre
+  // (y = 0); a builder never changes the old pieces above.
+
+  /** A desk's table only: top surface at y = 0.56, footprint 1.0 x 0.55, no chair and no monitor. */
+  deskTop(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { wood } = this.k;
+    this.box(it, 1.0, 0.06, 0.55, wood, 0, 0.5, 0);
+    this.box(it, 0.08, 0.5, 0.5, wood, -0.42, 0, 0);
+    this.box(it, 0.08, 0.5, 0.5, wood, 0.42, 0, 0);
+    return it;
+  }
+
+  /**
+   * A monitor standing on a desk. Its origin is the desk top: `y` is the host's top (0.56 on a deskTop, the
+   * default 0 leaves it on the floor). Relative to that origin: stand base y 0 to 0.02, neck 0.02 to 0.20,
+   * screen 0.18 to 0.56. The origin sits at desk-local z -0.12, so the screen is at local z -0.02.
+   * Footprint 0.62 x 0.18, height 0.56.
+   */
+  monitor(x: number, z: number, rotY = 0, y = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    it.position.y = y;
+    const { metal, screen } = this.k;
+    this.box(it, 0.3, 0.02, 0.18, metal, 0, 0, 0);
+    this.box(it, 0.07, 0.18, 0.05, metal, 0, 0.02, 0);
+    // The screen lights up while agents work (its emissive is animated).
+    this.box(it, 0.62, 0.38, 0.04, screen, 0, 0.18, -0.02).userData.dynamic = true;
+    return it;
+  }
+
+  /** A framed picture on a wall: 0.5 wide, 0.6 high, 0.1 deep. Its bottom is y = 0 of the group; set `position.y` to the mount height. */
+  poster(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { darkWood, paper, accent, signal, dark } = this.k;
+    this.box(it, 0.5, 0.04, 0.1, darkWood, 0, 0, 0);
+    this.box(it, 0.5, 0.04, 0.1, darkWood, 0, 0.56, 0);
+    this.box(it, 0.04, 0.52, 0.1, darkWood, -0.23, 0.04, 0);
+    this.box(it, 0.04, 0.52, 0.1, darkWood, 0.23, 0.04, 0);
+    this.box(it, 0.42, 0.52, 0.02, paper, 0, 0.04, 0);
+    this.box(it, 0.2, 0.24, 0.01, accent, -0.07, 0.2, 0.015);
+    const sun = this.cyl(it, 0.07, 0.07, 0.01, signal, 0.1, 0, 0, 16);
+    sun.rotation.x = Math.PI / 2;
+    sun.position.set(0.1, 0.38, 0.015);
+    this.box(it, 0.3, 0.03, 0.01, dark, 0, 0.14, 0.015);
+    this.box(it, 0.2, 0.03, 0.01, dark, -0.05, 0.08, 0.015);
+    return it;
+  }
+
+  /** A round wall clock: a face 0.36 across, 0.08 deep. Its bottom is y = 0 of the group; set `position.y` to the mount height. */
+  clock(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { wood, white, dark } = this.k;
+    const rim = this.cyl(it, 0.18, 0.18, 0.08, wood, 0, 0, 0, 24);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(0, 0.18, 0);
+    const face = this.cyl(it, 0.14, 0.14, 0.012, white, 0, 0, 0, 24);
+    face.rotation.x = Math.PI / 2;
+    face.position.set(0, 0.18, 0.035);
+    this.box(it, 0.012, 0.13, 0.003, dark, 0, 0.18, 0.0425);
+    this.box(it, 0.09, 0.012, 0.003, dark, 0.045, 0.174, 0.0425);
+    return it;
+  }
+
+  /** A two-seat sofa: 1.6 wide, 0.8 high, 0.7 deep; the seat faces +z. Footprint centred on the origin. */
+  sofa(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { accent, accentSoft } = this.k;
+    this.box(it, 1.2, 0.22, 0.7, accent, 0, 0, 0);
+    this.box(it, 1.6, 0.58, 0.18, accent, 0, 0.22, -0.26);
+    for (const sx of [-0.71, 0.71]) this.box(it, 0.18, 0.44, 0.52, accent, sx, 0, 0.09);
+    for (const sx of [-0.31, 0.31]) this.box(it, 0.6, 0.14, 0.52, accentSoft, sx, 0.22, 0.09);
+    return it;
+  }
+
+  /** A waste bin: 0.3 x 0.6 x 0.3, a body with a lid-coloured band on top. */
+  bin(x: number, z: number): THREE.Group {
+    const it = this.item(x, z);
+    this.box(it, 0.3, 0.54, 0.3, this.k.metal, 0, 0, 0);
+    this.box(it, 0.3, 0.06, 0.3, this.k.accent, 0, 0.54, 0);
+    return it;
+  }
+
+  /** A coat stand: a round foot 0.4 across, a pole and three hooks; 1.8 high. */
+  coatStand(x: number, z: number): THREE.Group {
+    const it = this.item(x, z);
+    const { darkWood, dark } = this.k;
+    this.cyl(it, 0.2, 0.2, 0.04, dark, 0, 0, 0, 20);
+    this.cyl(it, 0.025, 0.025, 1.68, darkWood, 0, 0.04, 0, 8);
+    this.ball(it, 0.06, dark, 0, 1.74, 0);
+    for (let i = 0; i < 3; i++) {
+      const a = (i * 2 * Math.PI) / 3;
+      const hook = this.box(it, 0.18, 0.03, 0.03, darkWood, 0, 0, 0);
+      hook.position.set(Math.sin(a) * 0.09, 1.5, Math.cos(a) * 0.09);
+      hook.rotation.y = a - Math.PI / 2;
+    }
+    return it;
+  }
+
+  /** A wall safe: dark metal 0.7 x 0.9 x 0.6, a gold dial and a handle on the front (+z). */
+  safe(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { dark, gold, metal } = this.k;
+    this.box(it, 0.7, 0.9, 0.58, dark, 0, 0, 0);
+    const dial = this.cyl(it, 0.1, 0.1, 0.02, gold, 0, 0, 0, 20);
+    dial.rotation.x = Math.PI / 2;
+    dial.position.set(0, 0.5, 0.3);
+    this.box(it, 0.04, 0.12, 0.03, metal, 0.22, 0.4, 0.29);
+    return it;
+  }
+
+  /** A 0.5 cube crate (the room's crate, the small size). */
+  smallCrate(x: number, z: number, rotY = 0): THREE.Group {
+    return this.crate(x, z, 0.5, rotY);
+  }
+
+  /** An armchair: 0.8 x 0.8, 0.85 high; a sage fabric back, two arms and a seat cushion on a base, with four short feet. Its seat faces +z. */
+  armchair(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const fabric = this.k.mat(0x6f9e8c);
+    const cushion = this.k.mat(0x8fbba9);
+    for (const [fx, fz] of [[-0.34, -0.34], [0.34, -0.34], [-0.34, 0.34], [0.34, 0.34]] as const) {
+      this.cyl(it, 0.03, 0.03, 0.06, this.k.dark, fx, 0, fz, 6);
+    }
+    this.box(it, 0.8, 0.2, 0.8, fabric, 0, 0.06, 0);
+    this.box(it, 0.8, 0.59, 0.1, fabric, 0, 0.26, -0.35);
+    for (const sx of [-0.34, 0.34]) this.box(it, 0.12, 0.3, 0.8, fabric, sx, 0.26, 0);
+    this.box(it, 0.56, 0.12, 0.6, cushion, 0, 0.26, 0);
+    return it;
+  }
+
+  /** A coffee table: 0.8 x 0.5, 0.42 high; a wooden top slab on four short legs. */
+  coffeeTable(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { wood, darkWood } = this.k;
+    this.box(it, 0.8, 0.05, 0.5, wood, 0, 0.37, 0);
+    for (const [lx, lz] of [[-0.35, -0.2], [0.35, -0.2], [-0.35, 0.2], [0.35, 0.2]] as const) {
+      this.box(it, 0.05, 0.37, 0.05, darkWood, lx, 0, lz);
+    }
+    return it;
+  }
+
+  /** A stool: 0.36 across, 0.5 high; a round seat on one pedestal and a round foot. No back. */
+  stool(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    this.cyl(it, 0.16, 0.16, 0.03, this.k.dark, 0, 0, 0, 16);
+    this.cyl(it, 0.035, 0.035, 0.41, this.k.metal, 0, 0.03, 0, 8);
+    this.cyl(it, 0.18, 0.18, 0.06, this.k.accent, 0, 0.44, 0, 20);
+    return it;
+  }
+
+  /** A low two-shelf unit: 0.8 wide, 1.0 high, 0.3 deep; its back at -z (against the wall), its front at +z. Books stand on the two lower shelves. */
+  smallShelf(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { darkWood } = this.k;
+    const spines = [this.k.red, this.k.blue, this.k.yellow, this.k.green, this.k.purple];
+    this.box(it, 0.8, 1.0, 0.02, darkWood, 0, 0, -0.14);
+    for (const sx of [-0.385, 0.385]) this.box(it, 0.03, 1.0, 0.3, darkWood, sx, 0, 0);
+    for (const y of [0, 0.485, 0.97]) this.box(it, 0.8, 0.03, 0.3, darkWood, 0, y, 0);
+    for (const y of [0.03, 0.515]) {
+      for (let i = 0; i < 5; i++) {
+        const bh = 0.2 + this.rand() * 0.1;
+        this.box(it, 0.06, bh, 0.2, spines[Math.floor(this.rand() * spines.length)]!, (i - 2) * 0.11, y, 0.02);
+      }
+    }
+    return it;
+  }
+
+  /** A small round table: 0.5 across, 0.55 high; a round top on one pedestal and a round foot. */
+  sideTable(x: number, z: number, rotY = 0): THREE.Group {
+    const it = this.item(x, z, rotY);
+    const { wood, darkWood } = this.k;
+    this.cyl(it, 0.18, 0.18, 0.03, darkWood, 0, 0, 0, 16);
+    this.cyl(it, 0.04, 0.04, 0.48, darkWood, 0, 0.03, 0, 8);
+    this.cyl(it, 0.25, 0.25, 0.04, wood, 0, 0.51, 0, 24);
+    return it;
+  }
+
+  /** Stands in for a station prop that has no JSON yet: a plain box of its footprint and height, in a neutral colour. */
+  propPlaceholder(x: number, z: number, rotY: number, w: number, h: number, d: number, label: string): THREE.Group {
+    const it = this.item(x, z, rotY);
+    it.name = `prop:${label}`;
+    it.userData.placeholder = label;
+    this.box(it, w, h, d, this.k.mat(0xb9bfc9), 0, 0, 0);
     return it;
   }
 }
@@ -214,13 +400,19 @@ export function makeKit(hue: number, p: KitPalette): Kit {
     green: mat(0x56b870), purple: mat(0x9a72d6),
     accent: mat(hsl(0.55, 0.55)), accentSoft: mat(hsl(0.6, 0.78)),
     signal: mat(p.signal), ok: mat(p.ok), info: mat(p.info),
-    screen: toonMat({ color: 0x3a4658, emissive: p.info, emissiveIntensity: 0.05 }),
-    glowOk: new THREE.MeshBasicMaterial({ color: p.ok, toneMapped: false }),
-    glowInfo: new THREE.MeshBasicMaterial({ color: p.info, toneMapped: false }),
+    screen: live(toonMat({ color: 0x3a4658, emissive: p.info, emissiveIntensity: 0.05 })),
+    glowOk: live(new THREE.MeshBasicMaterial({ color: p.ok, toneMapped: false })),
+    glowInfo: live(new THREE.MeshBasicMaterial({ color: p.info, toneMapped: false })),
     glowWarm: new THREE.MeshBasicMaterial({ color: 0xffd79a, toneMapped: false }),
     glowRed: new THREE.MeshBasicMaterial({ color: 0xff4a3a, toneMapped: false }),
     mat,
   };
+}
+
+/** Marks a material whose properties change at runtime, so static batching never shares it. */
+function live<M extends THREE.Material>(m: M): M {
+  m.userData.live = true;
+  return m;
 }
 
 // ---- Floors and walls -----------------------------------------------------------------------

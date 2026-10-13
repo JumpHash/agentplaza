@@ -35,6 +35,11 @@ function seedOf(key: string): number {
 export function canvasTexture(key: string, w: number, h: number, repeat: number, draw: Draw): THREE.CanvasTexture {
   const hit = textures.get(key);
   if (hit) return hit;
+  if (typeof document === 'undefined') { // no page (the node tests build rooms): a blank texture, never drawn
+    const blank = new THREE.Texture() as THREE.CanvasTexture;
+    textures.set(key, blank);
+    return blank;
+  }
   const cv = document.createElement('canvas');
   cv.width = w;
   cv.height = h;
