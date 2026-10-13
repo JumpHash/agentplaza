@@ -19,6 +19,10 @@ use super::hardware::{self, Built, Params, State, Status};
 use super::props::{self, PropPalette};
 use super::scene::{self, Color, Geo, Mat, Material, Obj, Shading};
 
+/// The Machines view's animated draws (cable packets, status rings, LEDs): instanced, animated in
+/// the vertex shader from a  uniform.  checks it for WebGL2.
+pub const FLEET_ANIM_WGSL: &str = include_str!("shaders/fleet_anim.wgsl");
+
 // ---- Data: GET /v1/fleet ----------------------------------------------------------------------
 
 /// `GET /v1/fleet`: the machines and the links between them.
@@ -157,6 +161,12 @@ const HOVER_LIFT: f32 = 0.3;
 const HOVER_RATE: f32 = 10.0;
 /// The status ring's pulse period, in seconds.
 const PULSE_PERIOD: f32 = 2.0;
+/// The animated draws: the packet slots per direction of a cable (the most packets in flight at
+/// `PACKET_MAX`), a packet's radius, and the period the clock wraps at (a multiple of every animation's
+/// period, so the wrap is seamless and f32 keeps its precision).
+pub const PACKET_SLOTS: usize = 10;
+const PACKET_RADIUS: f32 = 0.14;
+pub const WRAP_PERIOD: f32 = 3600.0;
 
 /// The bounding-sphere radius of a model of `size`.
 pub fn bounding_radius(size: [f32; 3]) -> f32 {
@@ -396,6 +406,8 @@ pub struct MachineScene {
     /// The status ring's material, the machine's rest position on the ground, and its hover lift.
     ring_mat: Mat,
     base: [f32; 3],
+    /// The footprint's radius: the ring's outer radius is 1.3 of it.
+    footprint: f32,
     lift: f32,
     /// How far it is opened (ENTER), 0..1.
     open: f32,
@@ -524,6 +536,7 @@ fn place_machine(
         built,
         ring_mat,
         base,
+        footprint,
         lift: 0.0,
         open: 0.0,
         atom,
@@ -629,6 +642,113 @@ fn step_flow(flow: &mut Flow, dt: f32, rate: f32, points: &[[f32; 3]]) {
         let at = if flow.reversed { 1.0 - p } else { p };
         let q = point_on(points, at);
         pk.obj.set_position(q[0], q[1], q[2]).set_visible(true);
+    }
+}
+
+/// One cable packet slot's instance data (`PacketIn` in fleet_anim.wgsl): the cable's ends, then
+/// `params` (phase, direction, alive, radius) and the colour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PacketInstance {
+    pub from: [f32; 3],
+    pub to: [f32; 3],
+    pub params: [f32; 4],
+    pub color: [f32; 4],
+}
+
+/// One status ring's instance data (`RingIn`): `centre` (xyz, and w the outer radius), `pulse` (rate,
+/// phase, online, held intensity) and the colour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RingInstance {
+    pub centre: [f32; 4],
+    pub pulse: [f32; 4],
+    pub color: [f32; 4],
+}
+
+/// The animated draws' instance data: `PACKET_SLOTS` slots each way on every cable (the live ones
+/// spread evenly in phase), then one ring per machine.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FleetInstances {
+    pub packets: Vec<PacketInstance>,
+    pub rings: Vec<RingInstance>,
+}
+
+/// The packet slots alive on a cable carrying `rate` packets a second. A packet is in flight for
+/// `1 / PACKET_SPEED` seconds, so the cable needs `rate / PACKET_SPEED` slots, rounded.
+pub fn live_slots(rate: f32) -> usize {
+    ((rate / PACKET_SPEED).round() as usize).min(PACKET_SLOTS)
+}
+
+/// One direction of a cable: `PACKET_SLOTS` slots, the first `live` alive, their phases spread evenly.
+fn direction_slots(from: [f32; 3], to: [f32; 3], live: usize, reversed: bool, color: [f32; 4]) -> Vec<PacketInstance> {
+    (0..PACKET_SLOTS)
+        .map(|j| {
+            let alive = j < live;
+            PacketInstance {
+                from,
+                to,
+                params: [
+                    if alive { j as f32 / live as f32 } else { 0.0 },
+                    if reversed { -1.0 } else { 1.0 },
+                    if alive { 1.0 } else { 0.0 },
+                    PACKET_RADIUS,
+                ],
+                color,
+            }
+        })
+        .collect()
+}
+
+/// A colour as RGBA, opaque.
+fn rgba(c: Color) -> [f32; 4] {
+    let [r, g, b] = c.to_array();
+    [r, g, b, 1.0]
+}
+
+/// Whether the cable between `a` and `b` is up, and its packet rate each way (packets a second).
+fn link_state(fleet: &FleetResponse, a: &str, b: &str) -> (bool, f32) {
+    let online = fleet.links.iter().find(|l| l.a == a && l.b == b).is_some_and(|l| l.online);
+    let working = |id: &str| fleet.machines.iter().find(|m| m.id == id).map_or(0, |m| m.working);
+    (online, packet_rate(online, working(a), working(b)))
+}
+
+/// Sample `i` of a cable, as `cable_points` has it: the quadratic Bezier with its control at the
+/// chord's midpoint, dropped by twice the sag, clamped above the ground. The shader's `cable_sample`.
+fn cable_sample_shader(from: [f32; 3], to: [f32; 3], i: f32) -> [f32; 3] {
+    let mut control = [0.0f32; 3];
+    for k in 0..3 {
+        control[k] = (from[k] + to[k]) / 2.0;
+    }
+    control[1] -= 2.0 * CABLE_SAG;
+    let t = i / CABLE_SEGMENTS as f32;
+    let u = 1.0 - t;
+    let mut p = [0.0f32; 3];
+    for k in 0..3 {
+        p[k] = u * u * from[k] + 2.0 * u * t * control[k] + t * t * to[k];
+    }
+    p[1] = p[1].max(GROUND_Y);
+    p
+}
+
+/// Where `vs_packet` puts a packet slot at `time` seconds: the Rust mirror of the shader, with its own
+/// cable samples (`cable_sample_shader`) and the lerp of `point_on`.
+pub fn packet_at_shader(from: [f32; 3], to: [f32; 3], params: [f32; 4], time: f32) -> [f32; 3] {
+    let x = params[0] + time * PACKET_SPEED;
+    let p = x - x.floor();
+    let at = if params[1] < 0.0 { 1.0 - p } else { p };
+    let segments = CABLE_SEGMENTS as f32;
+    let f = at.clamp(0.0, 1.0) * segments;
+    let i = f.floor().min(segments - 1.0);
+    let w = f - i;
+    let (a, b) = (cable_sample_shader(from, to, i), cable_sample_shader(from, to, i + 1.0));
+    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * w)
+}
+
+/// `vs_ring`'s intensity at `time` seconds: the pulse while online, the held value otherwise.
+pub fn ring_intensity_shader(pulse: [f32; 4], time: f32) -> f32 {
+    if pulse[2] > 0.5 {
+        1.0 + 0.5 * (TAU * (time * pulse[0] + pulse[1])).sin()
+    } else {
+        pulse[3]
     }
 }
 
@@ -768,25 +888,38 @@ impl FleetScene {
         }
 
         for link in self.links.iter_mut() {
-            let online = fleet
-                .links
-                .iter()
-                .find(|l| l.a == link.a && l.b == link.b)
-                .is_some_and(|l| l.online);
-            let working = |id: &str| {
-                fleet
-                    .machines
-                    .iter()
-                    .find(|m| m.id == id)
-                    .map_or(0, |m| m.working)
-            };
-            let rate = packet_rate(online, working(&link.a), working(&link.b));
+            let (online, rate) = link_state(fleet, &link.a, &link.b);
             let base = named("cable");
             link.cable.get().color = if online { base } else { base.scale(0.5) };
             step_flow(&mut link.forward, ambient_dt, rate, &link.points);
             step_flow(&mut link.backward, ambient_dt, rate, &link.points);
         }
         lifting
+    }
+
+    /// The animated draws' instance data for the scene as `fleet` describes it: each cable's slots both
+    /// ways (`live_slots` of them alive), then each machine's status ring. Rebuilt when this changes.
+    pub fn instances(&self, fleet: &FleetResponse) -> FleetInstances {
+        let mut out = FleetInstances::default();
+        for link in &self.links {
+            let (online, rate) = link_state(fleet, &link.a, &link.b);
+            let live = if online { live_slots(rate) } else { 0 };
+            let (Some(&from), Some(&to)) = (link.points.first(), link.points.last()) else {
+                continue;
+            };
+            // The forward flow runs from the node's port to the hub's; the backward one runs back.
+            out.packets.extend(direction_slots(from, to, live, false, rgba(named("copper-live"))));
+            out.packets.extend(direction_slots(from, to, live, true, rgba(named("led-info"))));
+        }
+        for m in self.machines.values() {
+            let online = m.status == Status::Online;
+            out.rings.push(RingInstance {
+                centre: [m.base[0], 0.05, m.base[2], m.footprint * 1.3],
+                pulse: [1.0 / PULSE_PERIOD, 0.0, if online { 1.0 } else { 0.0 }, 0.2],
+                color: rgba(status_led(m.status)),
+            });
+        }
+        out
     }
 
     /// The fleet's motion: Active while a machine's hover lift is still travelling, Ambient while any machine exists
@@ -992,6 +1125,40 @@ mod tests {
         let pts = cable_points([10.0, 2.0, 0.0], [0.0, 2.0, 0.0]);
         assert!(close3(point_on(&pts, 0.5), pts[12]));
         assert!(close3(point_on(&pts, 1.0), pts[24]));
+    }
+
+    #[test]
+    fn the_shader_packets_ride_the_cpu_cable_at_five_times() {
+        // A cable that sags into the ground, so the clamp takes part; one slot each way.
+        let (from, to) = ([10.0, 0.5, 0.0], [0.0, 0.5, 0.0]);
+        let points = cable_points(from, to);
+        for (params, reversed) in [([0.2, 1.0, 1.0, PACKET_RADIUS], false), ([0.6, -1.0, 1.0, PACKET_RADIUS], true)] {
+            for t in [0.0f32, 0.7, 1.3, 2.2, 3.9] {
+                let x = params[0] + t * PACKET_SPEED;
+                let p = x - x.floor();
+                let at = if reversed { 1.0 - p } else { p };
+                let cpu = point_on(&points, at);
+                let gpu = packet_at_shader(from, to, params, t);
+                assert!(close3(cpu, gpu), "t = {t}, reversed = {reversed}: the CPU packet is at {cpu:?}, the shader's at {gpu:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn live_slots_follow_the_packet_rate_and_the_ring_pulse_matches_the_cpu() {
+        assert_eq!(live_slots(PACKET_MAX), PACKET_SLOTS);
+        assert_eq!(live_slots(0.0), 0);
+        assert_eq!(live_slots(0.5), 1);
+        assert_eq!(live_slots(1.5), 4);
+        // The CPU pulse at 0.7 s, 1 + 0.5 sin(TAU t / PULSE_PERIOD), is the shader's wave at that time.
+        let cpu = 1.0 + 0.5 * (TAU * 0.7 / PULSE_PERIOD).sin();
+        assert!(close(ring_intensity_shader([1.0 / PULSE_PERIOD, 0.0, 1.0, 0.2], 0.7), cpu));
+        assert!(close(ring_intensity_shader([1.0 / PULSE_PERIOD, 0.0, 0.0, 0.2], 0.7), 0.2));
+        let fleet: FleetResponse = serde_json::from_str(FIXTURE).unwrap();
+        let scene = build_fleet(&fleet, &plaza_palette());
+        let instances = scene.instances(&fleet);
+        assert_eq!(instances.rings.len(), 3);
+        assert_eq!(instances.packets.len(), 2 * PACKET_SLOTS * scene.links.len());
     }
 
     #[test]
