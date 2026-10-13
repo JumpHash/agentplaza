@@ -351,12 +351,11 @@ mod tests {
     }
 
     #[test]
-    fn a_bound_port_counts_as_busy_until_released() {
+    fn a_bound_port_counts_as_busy() {
+        // (Not "free once released": tests run in parallel, and another may take the port first.)
         let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = held.local_addr().unwrap().port();
         assert_eq!(busy_port(&[port]), Some(port));
-        drop(held);
-        assert_eq!(busy_port(&[port]), None);
     }
 
     #[test]
