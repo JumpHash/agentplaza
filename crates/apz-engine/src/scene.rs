@@ -404,6 +404,18 @@ pub enum NodeAnim {
     /// Blinks `rate` times a second (period 1 / rate): `hi` for the first half of each period, shifted by
     /// `phase` seconds, and `lo` for the second half.
     Blink { rate: f32, phase: f32, lo: f32, hi: f32 },
+    /// A machine's status LED, activity LED or screen (`vs_machine`): its colour and emissive come from the
+    /// machine's row of the fleet's table (`FleetInstances::machine_states` / `machine_statuses`), and `glow` is the
+    /// part's own glow. With `machine` None the row is the table's zero row (idle, the baked colour).
+    Machine { led: MachineLed, glow: f32, machine: Option<usize> },
+}
+
+/// Which of a machine's parts a [`NodeAnim::Machine`] is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MachineLed {
+    Status,
+    Activity,
+    Screen,
 }
 
 /// A node's state. Reach it through [`Obj::get`].
@@ -833,6 +845,8 @@ pub const GPU_HW_ANIM: bool = true;
 pub enum AnimKind {
     Spin,
     Blink,
+    /// A machine's status LED, activity LED or screen (`vs_machine`); `params` = (LED, glow).
+    Machine,
 }
 
 /// One vertex of an animated batch, in the shader's attribute order (`SpinIn` and `BlinkIn` in
@@ -1313,6 +1327,14 @@ fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4], f
             let (p, k) = (model.transform_point3(pivot), model.transform_vector3(axis).normalize_or_zero());
             (AnimKind::Spin, [p.x, p.y, p.z, phase], [k.x, k.y, k.z, rps], machine.map_or(-1.0, |m| m as f32))
         }
+        NodeAnim::Machine { led, glow, machine } => {
+            let mode = match led {
+                MachineLed::Status => 0.0,
+                MachineLed::Activity => 1.0,
+                MachineLed::Screen => 2.0,
+            };
+            (AnimKind::Machine, [mode, glow, 0.0, 0.0], [0.0; 4], machine.map_or(-1.0, |m| m as f32))
+        }
         NodeAnim::Blink { rate, phase, lo, hi } => {
             let period = if rate > 0.0 { 1.0 / rate } else { 1.0 };
             let off = if hi != 0.0 { lo / hi } else { 0.0 };
@@ -1330,7 +1352,11 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
     let mut index: HashMap<String, usize> = HashMap::new();
     for AnimDraw { draw: d, anim } in items {
         let (kind, params, axis, machine) = anim_params(&anim, d.model);
-        let tag = if kind == AnimKind::Spin { "s" } else { "b" };
+        let tag = match kind {
+            AnimKind::Spin => "s",
+            AnimKind::Blink => "b",
+            AnimKind::Machine => "m",
+        };
         let (key, tint) = match d.kind {
             DrawKind::Outline => (format!("o|{tag}|{}|{}|{}", d.render_order, d.lod, d.fade), None),
             _ if d.geo.slots.is_empty() => (

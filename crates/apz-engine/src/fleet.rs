@@ -594,6 +594,10 @@ pub struct FleetInstances {
     pub rings: Vec<RingInstance>,
     /// Each machine's fan angle by its fleet index (`Built::set_machine`), `MACHINE_SLOTS` long.
     pub machine_angles: Vec<f32>,
+    /// Each machine's GPU row by fleet index (`Built::machine_state`): busy, activity, 0, 0. `MACHINE_SLOTS` long.
+    pub machine_states: Vec<[f32; 4]>,
+    /// Each machine's status colour by fleet index (`Built::led_status`, rgb, 0). `MACHINE_SLOTS` long.
+    pub machine_statuses: Vec<[f32; 4]>,
 }
 
 /// The packet slots alive on a cable carrying `rate` packets a second. A packet is in flight for
@@ -623,7 +627,7 @@ fn direction_slots(from: [f32; 3], to: [f32; 3], live: usize, reversed: bool, co
 }
 
 /// A colour as RGBA, opaque.
-fn rgba(c: Color) -> [f32; 4] {
+pub(crate) fn rgba(c: Color) -> [f32; 4] {
     let [r, g, b] = c.to_array();
     [r, g, b, 1.0]
 }
@@ -828,7 +832,7 @@ impl FleetScene {
     /// The animated draws' instance data for the scene as `fleet` describes it: each cable's slots both
     /// ways (`live_slots` of them alive), then each machine's status ring. Rebuilt when this changes.
     pub fn instances(&self, fleet: &FleetResponse) -> FleetInstances {
-        let mut out = FleetInstances { machine_angles: vec![0.0; MACHINE_SLOTS], ..Default::default() };
+        let mut out = FleetInstances { machine_angles: vec![0.0; MACHINE_SLOTS], machine_states: vec![[0.0; 4]; MACHINE_SLOTS], machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS], ..Default::default() };
         for link in &self.links {
             let (online, rate) = link_state(fleet, &link.a, &link.b);
             let live = if online { live_slots(rate) } else { 0 };
@@ -842,6 +846,8 @@ impl FleetScene {
         for m in self.machines.values() {
             if let Some(i) = m.built.machine().filter(|&i| i < MACHINE_SLOTS) {
                 out.machine_angles[i] = m.built.fan_angle();
+                out.machine_states[i] = m.built.machine_state();
+                out.machine_statuses[i] = rgba(m.built.led_status());
             }
             let online = m.status == Status::Online;
             out.rings.push(RingInstance {
@@ -962,9 +968,9 @@ mod tests {
 
     /// The fleet's draw items on the 15-machine feed, measured (its statics merged by colour, instances
     /// unfolded into the merge: 29 static; the merged meshes of identical rigs instanced, one draw per
-    /// content; its cables and status rings unmerged, 297 per frame, its fans and LEDs in 3 GPU batches; its packets
+    /// content; its cables and status rings unmerged, 188 per frame, its fans and LEDs in 3 GPU batches; its packets
     /// instanced, so they hold no objects). A ratchet: it must not grow.
-    const FLEET_DRAW_ITEMS: usize = 326;
+    const FLEET_DRAW_ITEMS: usize = 217;
 
     fn fleet_draw_items() -> (usize, usize) {
         let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
@@ -987,7 +993,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the Machines view budget is 300 draw items; the fleet draws 326 (see FLEET_DRAW_ITEMS): 29 static, 297 per-frame"]
     fn the_fifteen_machine_fleet_draws_within_budget() {
         let (statics, dynamic) = fleet_draw_items();
         assert!(statics + dynamic <= 300, "the Machines view draws {} items, over the 300 budget", statics + dynamic);

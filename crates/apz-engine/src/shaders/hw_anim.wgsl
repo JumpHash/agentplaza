@@ -49,6 +49,12 @@ struct Globals {
     counts: vec4<f32>,
     // The fans' angles by fleet machine, 4 per vec4 (render.rs `Globals`; the floor does not read them).
     machine_angle: array<vec4<f32>, 32>,
+    // Each fleet machine's state: x busy (1 while its activity is above 0), y activity; zw unused.
+    machine_state: array<vec4<f32>, 128>,
+    // Each machine's status colour (rgb; w unused).
+    machine_status: array<vec4<f32>, 128>,
+    // The activity LEDs' on colour (leds[0]) and off colour (leds[1]), rgb.
+    leds: array<vec4<f32>, 2>,
 }
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -261,4 +267,51 @@ fn vs_blink(v: BlinkIn) -> Out {
 @vertex
 fn vs_blink_outline(v: BlinkIn) -> Out {
     return hull(v.pos, v.normal);
+}
+
+// ---- Machines (status LEDs, activity LEDs, screens) ------------------------------------------
+
+struct MachineIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) params: vec4<f32>, // x: the LED (0 status, 1 activity, 2 screen), y: the part's glow
+    @location(5) machine: f32,      // the fleet machine whose row it reads, or -1 (no row: the baked colour, idle)
+}
+
+// vs_machine: hardware.rs `Built::update`'s rules for the tag, from the machine's row.
+//   status:   colour = the status colour; emissive = the status colour x (glow, or 1 without one).
+//   activity: colour = led on while busy and in the first 0.4 s of each 0.8 s, else led off; emissive x 1.5 or x 0.1.
+//   screen:   the baked colour; emissive x glow x (0.5 + 0.5 activity).
+// fs_emissive then shades it as the CPU material (base colour lit, plus colour x emissive).
+@vertex
+fn vs_machine(v: MachineIn) -> Out {
+    let has = v.machine >= 0.0;
+    let k = u32(clamp(v.machine, 0.0, 127.0));
+    let state = select(vec4<f32>(0.0), g.machine_state[k], has);
+    let busy = state.x > 0.5;
+    let activity = state.y;
+    var c = v.color.rgb;
+    var e = 0.0;
+    let led = v.params.x;
+    if led < 0.5 {
+        if has {
+            c = g.machine_status[k].rgb;
+        }
+        e = select(1.0, v.params.y, v.params.y > 0.0);
+    } else if led < 1.5 {
+        let on = busy && ((g.counts.z % 0.8) < 0.4);
+        c = select(g.leds[1].rgb, g.leds[0].rgb, on);
+        e = select(0.1, 1.5, on);
+    } else {
+        e = v.params.y * (0.5 + 0.5 * activity);
+    }
+    var o: Out;
+    o.clip = g.view_proj * vec4<f32>(v.pos, 1.0);
+    o.color = vec4<f32>(c, v.color.a);
+    o.normal = v.normal;
+    o.emissive = e;
+    o.world = v.pos;
+    o.view_depth = -(g.view * vec4<f32>(v.pos, 1.0)).z;
+    return o;
 }

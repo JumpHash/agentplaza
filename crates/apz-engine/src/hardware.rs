@@ -842,14 +842,17 @@ const HW_WRAP_PERIOD: f32 = 3600.0;
 /// The GPU animation of a part whose pose or colour `Built::update` sets per frame, or None when it
 /// stays on the CPU. A fan spins at its online idle rate (`Built::update` runs it at 2 rps and faster
 /// as activity rises, and stops it offline; a GPU batch cannot follow either). Other spins and blinks
-/// keep their own rates. A part with a pulse, slide or swing, or a status LED, stays on the CPU.
+/// keep their own rates. A part with a pulse, slide or swing stays on the CPU; a machine's LEDs and screens take their machine's row.
 fn gpu_anim_of(tag: Option<Tag>, spin: Option<(Vec3, f32)>, blink: Option<(f32, f32)>, glow: f32, moves: bool) -> Option<scene::NodeAnim> {
-    if moves || tag == Some(Tag::Status) {
+    if moves {
         return None;
     }
     let quantise = |rps: f32| (rps * HW_WRAP_PERIOD).round() / HW_WRAP_PERIOD;
     let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis, rps: quantise(rps), phase: 0.0, machine: None };
     match (tag, spin, blink) {
+        (Some(Tag::Status), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Status, glow, machine: None }),
+        (Some(Tag::Activity), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Activity, glow, machine: None }),
+        (Some(Tag::Screen), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Screen, glow, machine: None }),
         (Some(Tag::Fan), spin, _) => Some(spin_of(spin.map_or(Vec3::Y, |s| s.0), 2.0)),
         (_, Some((axis, rps)), _) if rps != 0.0 => Some(spin_of(axis, rps)),
         (_, _, Some((period, phase))) => Some(scene::NodeAnim::Blink { rate: 1.0 / period, phase, lo: glow * 0.1, hi: glow }),
@@ -926,6 +929,11 @@ pub struct State {
     pub open: f32,
 }
 
+/// The activity LEDs' on and off colours as the GPU's `leds` row (`hw_anim.wgsl` `vs_machine`).
+pub fn led_colours() -> [[f32; 4]; 2] {
+    [crate::fleet::rgba(named("led-ok", 0x4fa36a)), crate::fleet::rgba(named("led-off", 0x4a4f5c))]
+}
+
 fn status_color(s: Status) -> Color {
     match s {
         Status::Online => named("led-ok", 0x4fa36a),
@@ -951,6 +959,9 @@ pub struct Built {
     machine: Option<usize>,
     /// This machine's fan angle (radians): `update` turns it as the fans turn, and the GPU reads it.
     fan_angle: f32,
+    /// The machine's GPU row (busy, activity, 0, 0) and status colour, as `update` last set them.
+    led: [f32; 4],
+    led_status: Color,
 }
 
 struct Builder {
@@ -1310,7 +1321,7 @@ pub fn build_tinted(model: &Model, params: &Params, tints: &[Option<u32>]) -> Bu
         })
         .collect();
     let fade_nodes = b.fades.iter().map(|(_, node)| node.clone()).collect();
-    Built { root, parts: b.parts, fades, fade_nodes, live: b.live, t: 0.0, machine: None, fan_angle: 0.0 }
+    Built { root, parts: b.parts, fades, fade_nodes, live: b.live, t: 0.0, machine: None, fan_angle: 0.0, led: [0.0; 4], led_status: status_color(Status::Online) }
 }
 
 /// The model with its GPU cards retinted: card i (the i-th top-level card part, in model order) takes an inline material of
@@ -1494,6 +1505,25 @@ impl Built {
         for l in self.live.iter().filter(|l| l.tag == Some(Tag::Fan) && l.gpu_anim) {
             l.obj.set_anim(scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis: l.spin_axis, rps: 0.0, phase: 0.0, machine: Some(index) });
         }
+        for l in self.live.iter().filter(|l| l.gpu_anim) {
+            let led = match l.tag {
+                Some(Tag::Status) => scene::MachineLed::Status,
+                Some(Tag::Activity) => scene::MachineLed::Activity,
+                Some(Tag::Screen) => scene::MachineLed::Screen,
+                _ => continue,
+            };
+            l.obj.set_anim(scene::NodeAnim::Machine { led, glow: l.glow, machine: Some(index) });
+        }
+    }
+
+    /// This machine's GPU row (busy, activity, 0, 0) as `update` last set it (`FleetInstances::machine_states`).
+    pub fn machine_state(&self) -> [f32; 4] {
+        self.led
+    }
+
+    /// This machine's status colour as `update` last set it (`FleetInstances::machine_statuses`).
+    pub fn led_status(&self) -> Color {
+        self.led_status
     }
 
     pub fn animated_parts(&self) -> usize {
@@ -1515,6 +1545,8 @@ impl Built {
         let busy = activity > 0.0;
         let led_ok = named("led-ok", 0x4fa36a);
         let led_off = named("led-off", 0x4a4f5c);
+        self.led = [if busy { 1.0 } else { 0.0 }, activity, 0.0, 0.0];
+        self.led_status = status_color(state.status);
 
         // The fans turn together at one rate (the `rps` of each fan below), so one angle serves them all.
         let fan_rps = if online { 2.0 * (1.0 + 2.0 * activity) } else { 0.0 };
@@ -1785,6 +1817,57 @@ mod tests {
             }
         }
         assert!((built.fan_angle() - held.unwrap()).abs() < 1e-6, "an offline fan held still");
+    }
+
+    /// `vs_machine` for one machine LED or screen: its colour and emissive factor, from its row of the machine
+    /// table, the LED colours, its baked colour and glow, and the clock (the mirror of hw_anim.wgsl).
+    fn machine_led_shader(led: scene::MachineLed, glow: f32, baked: [f32; 4], row: [f32; 4], status: [f32; 4], leds: [[f32; 4]; 2], clock: f32) -> ([f32; 3], f32) {
+        let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
+        match led {
+            scene::MachineLed::Status => (rgb(status), if glow > 0.0 { glow } else { 1.0 }),
+            scene::MachineLed::Activity => {
+                let on = row[0] > 0.5 && (clock % 0.8) < 0.4;
+                (rgb(if on { leds[0] } else { leds[1] }), if on { 1.5 } else { 0.1 })
+            }
+            scene::MachineLed::Screen => (rgb(baked), glow * (0.5 + 0.5 * row[1])),
+        }
+    }
+
+    /// `vs_machine` against `Built::update`'s material for each tagged LED and screen of one machine, through idle,
+    /// busy, a draining and an offline machine: the colour and the emissive term (colour x intensity) agree.
+    #[test]
+    fn the_machine_led_shader_matches_the_cpu_material() {
+        let m: Model = parse(SAMPLE).unwrap();
+        let mut built = build(&m, &Params::default());
+        built.set_machine(2);
+        let parts: Vec<usize> = (0..built.live.len()).filter(|&i| matches!(built.live[i].tag, Some(Tag::Status | Tag::Activity | Tag::Screen))).collect();
+        assert!(!parts.is_empty(), "the sample has tagged LEDs and screens");
+        let baked: Vec<[f32; 4]> = parts.iter().map(|&i| crate::fleet::rgba(built.live[i].mat.as_ref().unwrap().get().color)).collect();
+        let (dt, mut clock) = (1.0 / 60.0_f32, 0.0_f32);
+        for (status, activity, steps) in [(Status::Online, 0.0, 60), (Status::Online, 0.8, 120), (Status::Draining, 0.8, 60), (Status::Offline, 0.0, 60)] {
+            let state = State { status, activity, open: 0.0 };
+            for step in 0..steps {
+                built.update(dt, clock, &state);
+                clock += dt;
+                let (row, status_rgb, leds) = (built.machine_state(), crate::fleet::rgba(built.led_status()), super::led_colours());
+                for (k, &i) in parts.iter().enumerate() {
+                    let l = &built.live[i];
+                    let led = match l.tag {
+                        Some(Tag::Status) => scene::MachineLed::Status,
+                        Some(Tag::Activity) => scene::MachineLed::Activity,
+                        _ => scene::MachineLed::Screen,
+                    };
+                    let (color, factor) = machine_led_shader(led, l.glow, baked[k], row, status_rgb, leds, clock);
+                    let cpu = l.mat.as_ref().unwrap().get();
+                    let (cc, ce) = (crate::fleet::rgba(cpu.color), crate::fleet::rgba(cpu.emissive));
+                    for c in 0..3 {
+                        assert!((cc[c] - color[c]).abs() < 1e-5, "{status:?} step {step}: colour {cc:?} vs shader {color:?}");
+                        let (cpu_term, shader_term) = (ce[c] * cpu.emissive_intensity, color[c] * factor);
+                        assert!((cpu_term - shader_term).abs() < 1e-5, "{status:?} step {step}: emissive {cpu_term} vs shader {shader_term}");
+                    }
+                }
+            }
+        }
     }
 
     /// `vs_blink`'s term (the half-period on or the 0.1 level off, shifted by the phase) against the CPU level.

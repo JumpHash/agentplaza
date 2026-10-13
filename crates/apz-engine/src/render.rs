@@ -325,6 +325,12 @@ struct Globals {
     counts: [f32; 4],
     /// The fans' angles by fleet machine (`fleet::FleetInstances::machine_angles`), read by hw_anim.wgsl only.
     machine_angle: [[f32; 4]; MACHINE_VEC4],
+    /// Each fleet machine's state (`fleet::FleetInstances::machine_states`): busy, activity, 0, 0. Read by hw_anim.wgsl only.
+    machine_state: [[f32; 4]; crate::fleet::MACHINE_SLOTS],
+    /// Each machine's status colour (`fleet::FleetInstances::machine_statuses`): rgb, 0. Read by hw_anim.wgsl only.
+    machine_status: [[f32; 4]; crate::fleet::MACHINE_SLOTS],
+    /// The activity LEDs' on colour and off colour (rgb, 0). Read by hw_anim.wgsl only.
+    leds: [[f32; 4]; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -592,6 +598,7 @@ struct AnimGpu {
 struct AnimPipelines {
     spin: wgpu::RenderPipeline,
     blink: wgpu::RenderPipeline,
+    machine: wgpu::RenderPipeline,
     spin_outline: wgpu::RenderPipeline,
     blink_outline: wgpu::RenderPipeline,
 }
@@ -621,6 +628,15 @@ fn machine_angles(fleet: Option<&crate::fleet::FleetInstances>) -> [[f32; 4]; MA
         for (i, a) in f.machine_angles.iter().enumerate().take(MACHINE_VEC4 * 4) {
             out[i / 4][i % 4] = *a;
         }
+    }
+    out
+}
+
+/// A fleet table of one vec4 per machine (`fleet::MACHINE_SLOTS` rows), zero past the fleet.
+fn machine_rows(rows: Option<&[[f32; 4]]>) -> [[f32; 4]; crate::fleet::MACHINE_SLOTS] {
+    let mut out = [[0.0; 4]; crate::fleet::MACHINE_SLOTS];
+    for (o, r) in out.iter_mut().zip(rows.unwrap_or(&[])) {
+        *o = *r;
     }
     out
 }
@@ -673,6 +689,7 @@ impl AnimGpu {
             let pipelines = AnimPipelines {
                 spin: anim_pipeline(device, m, layout, target, "vs_spin", Some("fs_color"), None),
                 blink: anim_pipeline(device, m, layout, target, "vs_blink", Some("fs_emissive"), None),
+                machine: anim_pipeline(device, m, layout, target, "vs_machine", Some("fs_emissive"), None),
                 spin_outline: anim_pipeline(device, m, layout, target, "vs_spin_outline", Some("fs_outline"), Some(wgpu::Face::Front)),
                 blink_outline: anim_pipeline(device, m, layout, target, "vs_blink_outline", Some("fs_outline"), Some(wgpu::Face::Front)),
             };
@@ -693,6 +710,8 @@ impl AnimGpu {
                 (super::scene::AnimKind::Blink, false) => &p.blink,
                 (super::scene::AnimKind::Spin, true) => &p.spin_outline,
                 (super::scene::AnimKind::Blink, true) => &p.blink_outline,
+                (super::scene::AnimKind::Machine, false) => &p.machine,
+                (super::scene::AnimKind::Machine, true) => &p.blink_outline,
             });
             pass.set_vertex_buffer(0, b.vertices.slice(..));
             pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1769,6 +1788,9 @@ impl Primitive {
             point_color,
             counts: [f.lights.len().min(4) as f32, 1.0 / SHADOW_SIZE as f32, f.time % WRAP_PERIOD, 0.0],
             machine_angle: machine_angles(f.animated.as_deref()),
+            machine_state: machine_rows(f.animated.as_deref().map(|x| x.machine_states.as_slice())),
+            machine_status: machine_rows(f.animated.as_deref().map(|x| x.machine_statuses.as_slice())),
+            leds: crate::hardware::led_colours(),
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         p.fleet.prepare(device, queue, p.format, samples, proj * view, f.time, f.animated.as_ref());
@@ -2156,8 +2178,8 @@ mod tests {
 
     #[test]
     fn globals_match_the_shaders_layout() {
-        // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4, all 16-byte aligned.
-        assert_eq!(std::mem::size_of::<Globals>(), 4 * 64 + 11 * 16 + 8 * 16 + 16 + MACHINE_VEC4 * 16);
+        // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4 + the fan table + the machine state and status tables + 2 LED colours, all 16-byte aligned.
+        assert_eq!(std::mem::size_of::<Globals>(), 4 * 64 + 11 * 16 + 8 * 16 + 16 + MACHINE_VEC4 * 16 + 2 * crate::fleet::MACHINE_SLOTS * 16 + 2 * 16);
         // 112 bytes of material and transform, plus the robot hues (shell, shell2, panel) as three vec4s.
         assert_eq!(std::mem::size_of::<Row>(), 112 + 3 * 16);
     }
