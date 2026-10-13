@@ -2,7 +2,7 @@
 //!
 //! - **Start locally**: hub and one node here (loopback, no owner token needed).
 //! - **Host a hub**: a hub other machines join — bound to an address, HTTPS, owner token, join codes.
-//! - **Join a hub**: this machine becomes a node of another hub (paste a join token).
+//! - **Join a hub**: this machine becomes a node of another hub (paste a join code).
 //! - **Connect to a hub**: open the console of a hub elsewhere (its URL and the owner token).
 //! The choice is remembered (`~/.config/agentplaza/desktop.json`) and offered first next time.
 //!
@@ -13,6 +13,8 @@ use std::time::Duration;
 
 use iced::widget::{button, column, container, row, text_input, Space};
 use iced::{Alignment, Border, Color, Element, Length, Subscription, Task, Theme};
+
+use apz_trust::token::JoinToken;
 
 use super::cli_link::{self, CliLink};
 use super::client::{self, Client};
@@ -46,7 +48,7 @@ impl Choice {
         match self {
             Choice::Local => "The hub and one node on this machine. Nothing leaves it.",
             Choice::Host => "Other machines join this one as nodes with one-time codes.",
-            Choice::Join => "This machine becomes a node of a hub elsewhere.",
+            Choice::Join => "This machine becomes a node of a hub elsewhere, with a one-time code from that hub.",
             Choice::Connect => "Open the console of a hub elsewhere.",
         }
     }
@@ -282,13 +284,17 @@ fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
             Task::perform(async { services::start(Mode::Hub) }, Msg::Started)
         }
         Choice::Join => {
-            let token = state.join_token.trim().to_string();
-            if token.is_empty() {
-                state.error = Some("Paste the join token from the hub.".into());
+            let code = state.join_token.trim().to_string();
+            if code.is_empty() {
+                state.error = Some("Paste the join code from the hub's Nodes screen.".into());
+                return (Task::none(), None);
+            }
+            if let Err(error) = join_code(&code) {
+                state.error = Some(error);
                 return (Task::none(), None);
             }
             state.busy = true;
-            Task::perform(async move { join_node(&token) }, Msg::Started)
+            Task::perform(async move { join_node(&code) }, Msg::Started)
         }
         Choice::Connect => {
             let url = state.url.trim().to_string();
@@ -379,6 +385,35 @@ fn join_node(token: &str) -> Result<Vec<String>, String> {
     let mut lines = vec![format!("joined as node {node}")];
     lines.extend(services::start(Mode::Node)?);
     Ok(lines)
+}
+
+/// Decodes a join code and refuses one that has expired. The message is what the form shows.
+fn join_code(text: &str) -> Result<JoinToken, String> {
+    let token = JoinToken::decode(text).map_err(|_| "Not a join code: it starts with apzj1.".to_string())?;
+    if token.expires <= now_secs() {
+        return Err("this code has expired: ask the hub for a new one".into());
+    }
+    Ok(token)
+}
+
+/// Unix seconds now (zero if the clock is before the epoch).
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The live reading under the join code field: where it joins and how long it lasts, or why it cannot be used.
+fn join_code_note<'a>(text: &str) -> Option<Element<'a, Msg>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(match join_code(text) {
+        Ok(token) => {
+            let minutes = token.expires.saturating_sub(now_secs()).div_ceil(60);
+            ui::faint(format!("Joins {} · expires in {minutes} min", token.hub_url)).into()
+        }
+        Err(error) => ui::error_line(&error),
+    })
 }
 
 /// Checks that the hub answers the owner's token; Ok carries the client back.
@@ -498,8 +533,12 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
             page.push(requirements(state));
         }
         Choice::Join => {
-            page.push(ui::label("Join token").into());
-            page.push(text_input("paste the join token", &state.join_token).on_input(Msg::JoinToken).on_submit(Msg::Go).secure(true).into());
+            page.push(ui::label("Join code").into());
+            page.push(ui::prose("On the hub, open Nodes and press “Add a node”: it shows a one-time join code (apzj1.…), valid for an hour. Paste it here. The code names the hub, so this machine connects to that hub and trusts only its certificate.").into());
+            page.push(text_input("apzj1.…", &state.join_token).on_input(Msg::JoinToken).on_submit(Msg::Go).into());
+            if let Some(note) = join_code_note(&state.join_token) {
+                page.push(note);
+            }
         }
         Choice::Connect => {
             page.push(ui::label("Hub URL").into());

@@ -69,6 +69,7 @@ dependencies = [
  "ab_glyph",
  "apz-http",
  "apz-os",
+ "apz-trust",
  "bytemuck",
  "glam 0.30.10",
  "iced",
