@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
-    /// "running" | "stopped" | "missing" (not installed).
+    /// "running" | "stopped" | "missing" (not installed) | "optional" (not set up; not required).
     pub state: String,
     pub detail: String,
 }
@@ -40,7 +40,8 @@ struct Svc {
 }
 
 enum How {
-    Container,
+    /// A Docker container, by its Docker name (the displayed name is the service's).
+    Container { docker: &'static str },
     Process {
         /// `None` when the binary (or its config) is not installed.
         bin: Option<PathBuf>,
@@ -170,10 +171,9 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
         let (base, count) = node_identity().unwrap_or((0, 0));
         return node_plan(base, count);
     }
-    let repo = repo_dir();
-    let roles = path_arg(&repo.join("docs/agents/initial-roles.json"));
-    let prompts = path_arg(&repo.join("docs/codex-draft/roles"));
-    let console = path_arg(&repo.join("apps/web/dist"));
+    let roles = path_arg(&resource("roles/initial-roles.json", "docs/agents/initial-roles.json"));
+    let prompts = path_arg(&resource("prompts", "docs/codex-draft/roles"));
+    let console = path_arg(&resource("console", "apps/web/dist"));
     let cids = local_cids();
     let internal = path_arg(&state_dir().join("internal.token"));
     let garage_bin = Path::new("/usr/bin/garage");
@@ -190,8 +190,8 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
     }
 
     vec![
-        Svc { name: "postgres", how: How::Container },
-        Svc { name: "forgejo", how: How::Container },
+        Svc { name: "postgres", how: How::Container { docker: "agentplaza-postgres" } },
+        Svc { name: "forgejo", how: How::Container { docker: "agentplaza-forgejo" } },
         Svc {
             name: "garage",
             how: How::Process {
@@ -231,7 +231,7 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
 
 /// The node's services: apz-link forwards to the hub, vsockd and noded serve the node's CIDs.
 fn node_plan(base: u64, count: u64) -> Vec<Svc> {
-    let roles = path_arg(&repo_dir().join("docs/agents/initial-roles.json"));
+    let roles = path_arg(&resource("roles/initial-roles.json", "docs/agents/initial-roles.json"));
     let token = path_arg(&data_dir().join("node/internal-token"));
     let cids = cid_list(base, count);
     let run = cid_range(base, count);
@@ -293,11 +293,14 @@ fn node_identity() -> Option<(u64, u64)> {
     (count > 0).then_some((base, count))
 }
 
+/// Garage is the Library's file store: optional, so a machine without it is not "missing".
+const OPTIONAL_SERVICE: &str = "garage";
+
 fn svc_state(svc: &Svc) -> (&'static str, String) {
     match &svc.how {
-        How::Container => match container_state(svc.name) {
+        How::Container { docker } => match container_state(docker) {
             "missing" => ("missing", "docker or the container is absent".into()),
-            state => (state, format!("container {}", svc.name)),
+            state => (state, format!("container {docker}")),
         },
         How::Process { bin, .. } => {
             if let Some(pid) = find_pids(svc.name).first() {
@@ -305,6 +308,9 @@ fn svc_state(svc: &Svc) -> (&'static str, String) {
             }
             match bin {
                 Some(_) => ("stopped", String::new()),
+                None if svc.name == OPTIONAL_SERVICE => {
+                    ("optional", "not set up: the Library keeps files on disk".into())
+                }
                 None => ("missing", "not installed".into()),
             }
         }
@@ -314,9 +320,9 @@ fn svc_state(svc: &Svc) -> (&'static str, String) {
 fn start_one(svc: &Svc) -> String {
     let name = svc.name;
     match &svc.how {
-        How::Container => match container_state(name) {
+        How::Container { docker } => match container_state(docker) {
             "running" => format!("{name}: already running"),
-            "stopped" => match Command::new("docker").args(["start", name]).stdin(Stdio::null()).output() {
+            "stopped" => match Command::new("docker").args(["start", docker]).stdin(Stdio::null()).output() {
                 Ok(out) if out.status.success() => format!("{name}: started"),
                 Ok(out) => format!("{name}: failed ({})", first_line(&out.stderr)),
                 Err(e) => format!("{name}: failed ({e})"),
@@ -328,6 +334,9 @@ fn start_one(svc: &Svc) -> String {
                 return format!("{name}: already running");
             }
             let Some(bin) = bin else {
+                if name == OPTIONAL_SERVICE {
+                    return format!("{name}: not set up (optional)");
+                }
                 return format!("{name}: not installed");
             };
             match spawn(name, bin, args, *env) {
@@ -341,7 +350,7 @@ fn start_one(svc: &Svc) -> String {
 fn stop_one(svc: &Svc) -> String {
     let name = svc.name;
     match &svc.how {
-        How::Container => format!("{name}: left running (the container persists)"),
+        How::Container { .. } => format!("{name}: left running (the container persists)"),
         How::Process { .. } => {
             let pids = find_pids(name);
             if pids.is_empty() {
@@ -492,9 +501,26 @@ fn repo_dir() -> PathBuf {
     }
 }
 
-/// `<repo>/target/debug/<name>` when built, else the first `<name>` on `$PATH`.
+/// A data file or directory of the app: under the installed resources (`apz_os::dirs::resources`)
+/// when it is there (the packaged app), else under the source repository (development).
+fn resource(rel_in_share: &str, rel_in_repo: &str) -> PathBuf {
+    if let Some(share) = apz_os::dirs::resources() {
+        let path = share.join(rel_in_share);
+        if path.exists() {
+            return path;
+        }
+    }
+    repo_dir().join(rel_in_repo)
+}
+
+/// The service binary `name`: beside this executable (the app ships its services next to itself),
+/// else `<repo>/target/debug/<name>` (development), else the first `<name>` on `$PATH`.
 fn bin_path(name: &str) -> Option<PathBuf> {
     let file = apz_os::process::exe(name);
+    let beside = env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(&file)));
+    if let Some(path) = beside.filter(|path| path.is_file()) {
+        return Some(path);
+    }
     let repo = repo_dir();
     if !repo.as_os_str().is_empty() {
         let built = repo.join("target/debug").join(&file);
