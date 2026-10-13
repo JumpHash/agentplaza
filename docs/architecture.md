@@ -164,7 +164,7 @@ JSON over HTTP/1.1 on `127.0.0.1:7700`. Errors are `{"error": "..."}` with a
 | `POST /v1/providers/{id}/test` | one tiny call; `{ok, latency_ms, model, error?}` |
 | `GET /v1/providers/{id}/models` | live model discovery |
 | `GET /v1/models` | every known model across providers |
-| `GET/PUT /v1/settings` | `{default_model, orchestrator_model, role_models{role:model}, model_policy{orchestrator[], worker[]}, dev_models (read-only), effort, max_turns, max_tokens, fetch_allow[], prices{model:{input,output}}}` |
+| `GET/PUT /v1/settings` | `{default_model, orchestrator_model, role_models{role:model}, model_policy{orchestrator[], worker[]}, dev_models (read-only), effort, max_turns, max_tokens, fetch_block[], prices{model:{input,output}}}` |
 | `GET /v1/models?tier=orchestrator\|worker` | the models an agent of that tier may use (policy ∩ known), with availability (provider configured + credential present) |
 | `GET /v1/agents` · `POST /v1/agents` | roster · spawn agents (`{role, model?, name?, count?}` → noded run) |
 | `GET/PATCH/DELETE /v1/agents/{cid}` | detail (status, model, current work, usage) · change `{model?, name?}` · kill the VM |

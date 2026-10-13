@@ -212,10 +212,10 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       copy.effort = effort.value === 'default' ? null : effort.value;
       sync();
     });
-    const allow = textarea({ rows: 5, spellcheck: 'false', placeholder: 'api.example.com' });
-    allow.value = copy.fetch_allow.join('\n');
-    allow.addEventListener('input', () => {
-      copy.fetch_allow = allow.value
+    const block = textarea({ rows: 5, spellcheck: 'false', placeholder: 'example.com\n*.example.net' });
+    block.value = copy.fetch_block.join('\n');
+    block.addEventListener('input', () => {
+      copy.fetch_block = block.value
         .split('\n')
         .map((s) => s.trim())
         .filter((s) => s !== '');
@@ -229,7 +229,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
         field('Max turns', turns),
         field('Max tokens (0 = provider default)', tokens),
         field('Effort', effort),
-        field('Fetch allowlist', allow),
+        field('Fetch blocklist (every other host is allowed)', block),
       ),
     );
   }

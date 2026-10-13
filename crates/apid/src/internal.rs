@@ -97,7 +97,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({})))
             })
         })
-        // The egress proxy asks before it dials a host for an agent: the fetch allowlist and the laws.
+        // The egress proxy asks before it dials a host for an agent: the fetch blocklist and the laws.
         .post("/internal/egress/check", |app, req, _p| {
             let check: EgressCheck = match req.json() {
                 Ok(check) => check,
@@ -138,20 +138,19 @@ pub(crate) fn authorized(
     f(cid).unwrap_or_else(|response| response)
 }
 
-/// Whether `host` is on the fetch allowlist: an exact entry, or a `*.suffix` entry, which covers
-/// the subdomains of `suffix` but not `suffix` itself. Case-insensitive. An empty list allows nothing.
-pub(crate) fn on_fetch_allowlist(allow: &[String], host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    allow.iter().any(|entry| {
-        let entry = entry.trim().to_ascii_lowercase();
-        match entry.strip_prefix("*.") {
-            Some(suffix) => {
-                !suffix.is_empty()
-                    && host.strip_suffix(format!(".{suffix}").as_str()).is_some_and(|label| !label.is_empty())
+/// Whether `host` is on the fetch blocklist: an entry `example.com` covers the host and its
+/// subdomains, `*.example.com` only the subdomains. Case-insensitive; a trailing dot is ignored.
+pub(crate) fn on_fetch_blocklist(block: &[String], host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let under = |suffix: &str| host.strip_suffix(format!(".{suffix}").as_str()).is_some_and(|label| !label.is_empty());
+    !host.is_empty()
+        && block.iter().any(|entry| {
+            let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+            match entry.strip_prefix("*.") {
+                Some(suffix) => !suffix.is_empty() && under(suffix),
+                None => !entry.is_empty() && (host == entry || under(&entry)),
             }
-            None => !entry.is_empty() && host == entry,
-        }
-    })
+        })
 }
 
 /// The law ids in a refusal `Laws::refuse_op` made: `refused by law S-013d, C-002: titles`.
@@ -169,19 +168,19 @@ pub(crate) struct EgressVerdict {
 }
 
 /// The decision for a connection to `host`: a law refusal first (it names the law, and the laws
-/// have recorded it), then the allowlist.
-pub(crate) fn egress_verdict(allowlisted: bool, law_refusal: Option<String>, host: &str) -> EgressVerdict {
+/// have recorded it), then the blocklist; anything else is allowed.
+pub(crate) fn egress_verdict(blocked: bool, law_refusal: Option<String>, host: &str) -> EgressVerdict {
     if let Some(refusal) = law_refusal {
         return EgressVerdict { allow: false, law: law_of(&refusal), reason: Some(refusal) };
     }
-    if allowlisted {
-        return EgressVerdict { allow: true, law: None, reason: None };
+    if blocked {
+        return EgressVerdict { allow: false, law: None, reason: Some(format!("refused: {host} is on the fetch blocklist")) };
     }
-    EgressVerdict { allow: false, law: None, reason: Some(format!("refused: {host} is not on the fetch allowlist")) }
+    EgressVerdict { allow: true, law: None, reason: None }
 }
 
 /// The answer to the egress proxy for agent `cid` connecting to `host`. The laws are asked for
-/// every host, so a forbidden attempt is recorded as a violation even when the allowlist would
+/// every host, so a forbidden attempt is recorded as a violation even when the blocklist would
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
 fn egress_check(app: &App, cid: u64, host: &str) -> Value {
@@ -191,8 +190,8 @@ fn egress_check(app: &App, cid: u64, host: &str) -> Value {
     // that names a group sees an empty one.
     let attrs = std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);
     let refusal = app.laws.refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
-    let allowlisted = on_fetch_allowlist(&app.settings.get().fetch_allow, host);
-    let verdict = egress_verdict(allowlisted, refusal, host);
+    let blocked = on_fetch_blocklist(&app.settings.get().fetch_block, host);
+    let verdict = egress_verdict(blocked, refusal, host);
     json!({ "allow": verdict.allow, "law": verdict.law, "reason": verdict.reason })
 }
 
@@ -520,7 +519,7 @@ mod tests {
     }
 }
 
-/// The egress check's decision: the allowlist's matching, the verdict, and the real laws' refusal.
+/// The egress check's decision: the blocklist's matching, the verdict, and the real laws' refusal.
 #[cfg(test)]
 mod egress_check_tests {
     use super::*;
@@ -531,35 +530,35 @@ mod egress_check_tests {
     }
 
     #[test]
-    fn the_allowlist_matches_exact_hosts_and_wildcard_subdomains_only() {
-        let allow = list(&["example.com", "*.pypi.org", "  Files.Example.NET "]);
-        for host in ["example.com", "EXAMPLE.com", "files.example.net", "a.pypi.org", "x.y.pypi.org"] {
-            assert!(on_fetch_allowlist(&allow, host), "{host} must be allowed");
+    fn the_blocklist_covers_a_domain_with_its_subdomains_and_a_wildcard_only_the_subdomains() {
+        let block = list(&["example.com", "*.pypi.org", "  Files.Example.NET "]);
+        for host in ["example.com", "EXAMPLE.com", "sub.example.com", "example.com.", "files.example.net", "a.pypi.org", "x.y.pypi.org"] {
+            assert!(on_fetch_blocklist(&block, host), "{host} must be blocked");
         }
-        for host in ["pypi.org", "evilpypi.org", "a.evilpypi.org", "example.com.evil.net", "sub.example.com", "pypi.org.evil.com", ".pypi.org", ""] {
-            assert!(!on_fetch_allowlist(&allow, host), "{host} must be refused");
+        for host in ["pypi.org", "evilpypi.org", "a.evilpypi.org", "example.com.evil.net", "notexample.com", "pypi.org.evil.com", "example.net", ""] {
+            assert!(!on_fetch_blocklist(&block, host), "{host} must not be blocked");
         }
     }
 
     #[test]
-    fn an_empty_allowlist_allows_nothing() {
-        assert!(!on_fetch_allowlist(&[], "example.com"));
-        assert!(!on_fetch_allowlist(&list(&[""]), ""));
+    fn an_empty_blocklist_blocks_nothing() {
+        assert!(!on_fetch_blocklist(&[], "example.com"));
+        assert!(!on_fetch_blocklist(&list(&[""]), "example.com"));
     }
 
     #[test]
-    fn a_law_refusal_wins_and_names_its_law_and_an_allowlist_miss_names_the_host() {
+    fn a_law_refusal_wins_and_names_its_law_and_a_blocked_host_is_named() {
         let refusal = "refused by law S-013d, C-002: Researchers never write to repositories".to_string();
         assert_eq!(
             egress_verdict(true, Some(refusal.clone()), "git.hub.local"),
             EgressVerdict { allow: false, law: Some("S-013d, C-002".into()), reason: Some(refusal) }
         );
-        // A law refusal stands even for a host the allowlist names.
-        assert!(!egress_verdict(true, Some("refused by law X: t".into()), "example.com").allow);
-        assert_eq!(egress_verdict(true, None, "example.com"), EgressVerdict { allow: true, law: None, reason: None });
+        // A law refusal stands even for a host the blocklist doesn't name.
+        assert!(!egress_verdict(false, Some("refused by law X: t".into()), "example.com").allow);
+        assert_eq!(egress_verdict(false, None, "example.com"), EgressVerdict { allow: true, law: None, reason: None });
         assert_eq!(
-            egress_verdict(false, None, "evil.example"),
-            EgressVerdict { allow: false, law: None, reason: Some("refused: evil.example is not on the fetch allowlist".into()) }
+            egress_verdict(true, None, "evil.example"),
+            EgressVerdict { allow: false, law: None, reason: Some("refused: evil.example is on the fetch blocklist".into()) }
         );
     }
 
@@ -580,7 +579,7 @@ mod egress_check_tests {
         let resource = jhrl::authz::Entity { ty: "Host".into(), id: "git.hub.local".into() };
         let attrs = std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str("hub-git"))]);
         let refusal = laws.refuse_op(7, "researcher", "egress.connect", resource, attrs, &Value::Null);
-        let verdict = egress_verdict(true, refusal, "git.hub.local");
+        let verdict = egress_verdict(false, refusal, "git.hub.local");
         assert!(!verdict.allow && verdict.law.as_deref().unwrap_or_default().contains("S-013d"), "{verdict:?}");
         assert!(laws.all_violations().iter().any(|(cid, violation)| *cid == 7 && violation.law == "S-013d"));
     }

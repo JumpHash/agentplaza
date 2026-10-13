@@ -238,7 +238,7 @@ pub struct Settings {
     #[serde(default)]
     pub max_tokens: i64,
     #[serde(default)]
-    pub fetch_allow: Vec<String>,
+    pub fetch_block: Vec<String>,
     #[serde(default)]
     pub prices: BTreeMap<String, Price>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,7 +443,7 @@ pub enum Msg {
     PolicyDefault(Slot, Opt),
     PolicyEffort(String),
     PolicyNumber(Num, String),
-    PolicyFetchAllow(String),
+    PolicyFetchBlock(String),
     TogglePrices,
     PolicySave,
     PolicySaved(Result<Settings, String>),
@@ -819,10 +819,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::PolicyFetchAllow(text) => {
+        Msg::PolicyFetchBlock(text) => {
             if let Some(p) = state.policy.as_mut() {
-                p.copy.fetch_allow = split_list(&text);
-                p.raw.insert("fetch_allow".to_string(), text);
+                p.copy.fetch_block = split_list(&text);
+                p.raw.insert("fetch_block".to_string(), text);
             }
             Task::none()
         }
@@ -1544,15 +1544,15 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let effort: Element<'a, Msg> = pick_list(effort_options, Some(effort_current), |v: String| Msg::PolicyEffort(v))
         .width(Length::Fill)
         .into();
-    let allow: Element<'a, Msg> = text_input("api.example.com, …", &p.shown("fetch_allow", s.fetch_allow.join(", ")))
-        .on_input(Msg::PolicyFetchAllow)
+    let block: Element<'a, Msg> = text_input("example.com, *.example.net, …", &p.shown("fetch_block", s.fetch_block.join(", ")))
+        .on_input(Msg::PolicyFetchBlock)
         .padding(8)
         .into();
     let items: Vec<Element<'a, Msg>> = vec![
         labelled("Max turns", turns),
         labelled("Max tokens (0 = provider default)", tokens),
         labelled("Effort", effort),
-        labelled("Fetch allowlist", allow),
+        labelled("Fetch blocklist (every other host is allowed)", block),
     ];
     ui::card("Limits", column(items).spacing(12).into())
 }

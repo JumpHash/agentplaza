@@ -2,7 +2,7 @@
 //! proxy traffic arrives over vsock port 5001 and the hub connects out on its
 //! behalf. One listener per served CID ([`accept_loop`]), one thread per
 //! connection, and a [`Policy`] that refuses every non-public destination.
-//! Before a connection is dialled, apid decides it: the fetch allowlist and the
+//! Before a connection is dialled, apid decides it: the fetch blocklist and the
 //! laws (`/internal/egress/check`, see [`egress_decision`]). Each connection
 //! ends in one audit line and, when apid is configured, one record POSTed to apid.
 //!
@@ -1107,7 +1107,7 @@ mod tests {
         let (_echo, port) = quiet_listener();
         let (apid, checks, token) = fake_apid("cached", |body| {
             let allow = body["host"] == "127.0.0.1";
-            json!({ "allow": allow, "reason": "refused: not on the fetch allowlist" })
+            json!({ "allow": allow, "reason": "refused: on the fetch blocklist" })
         });
         assert!(tunnel(7_003, loopback_policy(port), &apid, port).allowed);
         assert!(tunnel(7_003, loopback_policy(port), &apid, port).allowed);

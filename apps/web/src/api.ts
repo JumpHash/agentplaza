@@ -135,7 +135,7 @@ export interface Settings {
   retention?: Retention;
   default_model: string; orchestrator_model: string; role_models: Record<string, string>;
   model_policy: { orchestrator: string[]; worker: string[] };
-  effort: string | null; max_turns: number; max_tokens: number; fetch_allow: string[];
+  effort: string | null; max_turns: number; max_tokens: number; fetch_block: string[];
   prices: Record<string, { input: number; output: number }>; dev_models?: boolean;
 }
 

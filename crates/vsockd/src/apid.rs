@@ -83,7 +83,7 @@ impl Apid {
         self.post(&format!("/internal/v1/agents/{cid}/egress"), record, Duration::from_secs(2)).map(drop)
     }
 
-    /// Asks apid whether the agent at `cid` may connect to `host:port`: its fetch allowlist and its
+    /// Asks apid whether the agent at `cid` may connect to `host:port`: its fetch blocklist and its
     /// laws decide. Every failure is an `Err`, and the caller refuses.
     pub fn check_egress(&self, cid: u32, host: &str, port: u16) -> Result<EgressAnswer, String> {
         let body = json!({ "cid": cid, "host": host, "port": port }).to_string();

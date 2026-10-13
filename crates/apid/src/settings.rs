@@ -78,7 +78,10 @@ pub struct Settings {
     pub effort: Option<String>,
     pub max_turns: u32,
     pub max_tokens: u32,
-    pub fetch_allow: Vec<String>,
+    /// Hosts agents may not fetch from: `example.com` (and its subdomains) or `*.example.com`
+    /// (subdomains only). Everything else is allowed, subject to the laws; private, loopback and
+    /// link-local addresses are always refused by the egress proxy.
+    pub fetch_block: Vec<String>,
     pub prices: BTreeMap<String, Price>,
     /// Minutes between an idle agent's outreach rounds (finding people to work with); 0 = off.
     pub outreach_minutes: u32,
@@ -100,7 +103,7 @@ impl Default for Settings {
             effort: None,
             max_turns: 24,
             max_tokens: 0,
-            fetch_allow: Vec::new(),
+            fetch_block: Vec::new(),
             prices: BTreeMap::new(),
             outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
             memory_autoscale: true,
@@ -302,8 +305,8 @@ impl Store {
                 return Err(format!("unknown effort {effort:?}; expected one of {}", LEVELS.join(", ")));
             }
         }
-        if let Some(bad) = new.fetch_allow.iter().find(|h| !is_bare_host(h)) {
-            return Err(format!("fetch_allow entry {bad:?} is not a bare hostname"));
+        if let Some(bad) = new.fetch_block.iter().find(|h| !is_bare_host(h) || h.trim_start_matches("*.").contains('*')) {
+            return Err(format!("fetch_block entry {bad:?} is not a bare hostname (or *.domain)"));
         }
         let retention = &new.retention;
         for (name, max) in [
@@ -476,17 +479,17 @@ mod tests {
     }
 
     #[test]
-    fn put_rejects_bad_fetch_allow_entries() {
+    fn put_rejects_bad_fetch_block_entries() {
         let dir = temp_dir("fetch");
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::load(&dir, false).unwrap();
-        for bad in ["https://example.com", "example.com/path", "has space.com", "host:8080", ""] {
+        for bad in ["https://example.com", "example.com/path", "has space.com", "host:8080", "", "a.*.com"] {
             let mut s = Settings::default();
-            s.fetch_allow = vec![bad.to_string()];
+            s.fetch_block = vec![bad.to_string()];
             assert!(store.put(s).is_err(), "{bad:?} should be rejected");
         }
         let mut ok = Settings::default();
-        ok.fetch_allow = vec!["example.com".into()];
+        ok.fetch_block = vec!["example.com".into(), "*.example.net".into()];
         assert!(store.put(ok).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
