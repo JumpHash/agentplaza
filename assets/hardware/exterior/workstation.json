@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "kind": "workstation",
+  "view": "exterior",
+  "size": [4, 6, 4],
+  "parts": [ { "id": "body", "geo": { "type": "rbox", "w": 4, "h": 6, "d": 4, "r": 0.3 }, "at": [0, 3, 0], "mat": "case" } ],
+  "anchors": { "label": [0, 7, 0], "port": [0, 1, -2], "camera": { "at": [6, 5, 6], "look": [0, 3, 0] }, "open": "body", "atom": [0, 3, 0] }
+}

@@ -65,3 +65,46 @@ export function agentName(a: { name: string }): string {
 export function floorName(a: { cid: number; name: string }): string {
   return a.name.trim() === '' ? `agent ${a.cid}` : a.name;
 }
+
+/** The families the Society view groups agents into, in the order it draws them. */
+export type Family = 'command' | 'build' | 'operations' | 'knowledge' | 'money' | 'other';
+export const FAMILIES: readonly Family[] = ['command', 'build', 'operations', 'knowledge', 'money', 'other'];
+
+const FAMILY_LABELS: Record<Family, string> = {
+  command: 'Command',
+  build: 'Build',
+  operations: 'Operations',
+  knowledge: 'Knowledge',
+  money: 'Money',
+  other: 'Other',
+};
+
+/** A Map, not an object: a role named like an Object.prototype key must not look up a family. */
+const FAMILY_OF = new Map<string, Family>([
+  [Role.Orchestrator, 'command'],
+  [Role.Mayor, 'command'],
+  [Role.MayorOffice, 'command'],
+  [Role.Architect, 'build'],
+  [Role.Builder, 'build'],
+  [Role.Qa, 'build'],
+  [Role.Reviewer, 'build'],
+  [Role.Release, 'build'],
+  [Role.EdgeOperator, 'operations'],
+  [Role.Incident, 'operations'],
+  [Role.SecurityReviewer, 'operations'],
+  [Role.Librarian, 'knowledge'],
+  [Role.Researcher, 'knowledge'],
+  [Role.Planner, 'knowledge'],
+  [Role.Finance, 'money'],
+  [Role.Auditor, 'money'],
+]);
+
+export function familyLabel(family: Family): string {
+  return FAMILY_LABELS[family];
+}
+
+/** The family of an agent: the orchestrator tier is always command; an unknown or custom role is other. */
+export function roleFamily(role: string, tier?: string): Family {
+  if (tier === 'orchestrator') return 'command';
+  return FAMILY_OF.get(role) ?? 'other';
+}
