@@ -2,7 +2,103 @@
   "schema": 1,
   "kind": "apple-desktop",
   "view": "exterior",
-  "size": [6, 3, 4],
-  "parts": [ { "id": "body", "geo": { "type": "rbox", "w": 6, "h": 0.6, "d": 4, "r": 0.2 }, "at": [0, 0.3, 0], "mat": "aluminium" } ],
-  "anchors": { "label": [0, 4, 0], "port": [3, 0.3, 0], "camera": { "at": [6, 5, 6], "look": [0, 1, 0] }, "open": "body", "atom": [0, 1, 0] }
+  "size": [6, 3.8, 6],
+  "params": { "studio": 0 },
+  "parts": [
+    { "id": "base", "geo": { "type": "rbox", "w": 6.1, "h": 0.3, "d": 6.1, "r": 0.12 }, "at": [0, 0.15, 0], "mat": "case" },
+    { "id": "base-vent-front", "geo": { "type": "box", "w": 0.3, "h": 0.1, "d": 0.05 }, "at": [-2.0, 0.15, 3.07], "mat": "port-hole", "repeat": { "count": 9, "step": [0.5, 0, 0] } },
+    { "id": "base-vent-left", "geo": { "type": "box", "w": 0.05, "h": 0.1, "d": 0.3 }, "at": [-3.07, 0.15, -2.1], "mat": "port-hole", "repeat": { "count": 8, "step": [0, 0, 0.6] } },
+    { "id": "base-vent-right", "geo": { "type": "box", "w": 0.05, "h": 0.1, "d": 0.3 }, "at": [3.07, 0.15, -2.1], "mat": "port-hole", "repeat": { "count": 8, "step": [0, 0, 0.6] } },
+    { "id": "floor", "geo": { "type": "rbox", "w": 5.4, "h": 0.1, "d": 5.4, "r": 0.04 }, "at": [0, 0.35, 0], "mat": "aluminium" },
+
+    { "id": "wall-front", "when": "!studio", "geo": { "type": "rbox", "w": 6, "h": 1.4, "d": 0.3, "r": 0.12 }, "at": [0, 1.0, 2.85], "mat": "aluminium" },
+    { "id": "wall-back", "when": "!studio", "geo": { "type": "rbox", "w": 6, "h": 1.4, "d": 0.3, "r": 0.12 }, "at": [0, 1.0, -2.85], "mat": "aluminium" },
+    { "id": "wall-left", "when": "!studio", "geo": { "type": "rbox", "w": 0.3, "h": 1.4, "d": 5.4, "r": 0.12 }, "at": [-2.85, 1.0, 0], "mat": "aluminium" },
+    { "id": "wall-right", "when": "!studio", "geo": { "type": "rbox", "w": 0.3, "h": 1.4, "d": 5.4, "r": 0.12 }, "at": [2.85, 1.0, 0], "mat": "aluminium" },
+    {
+      "id": "top", "when": "!studio",
+      "geo": { "type": "rbox", "w": 6, "h": 0.3, "d": 6, "r": 0.12 }, "at": [0, 1.85, 0], "mat": "aluminium",
+      "anim": { "slide": { "to": [0, 4.6, 0], "on": "enter" } },
+      "children": [
+        { "id": "logo", "geo": { "type": "ring", "ri": 0.12, "ro": 0.26 }, "at": [0, 0.16, 0], "mat": { "color": "#f4f6f2", "emissive": "#ffffff", "glow": 1.2, "flat": true }, "outline": false, "anim": { "pulse": { "period": 3.0 } } }
+      ]
+    },
+
+    { "id": "wall-front-studio", "when": "studio", "geo": { "type": "rbox", "w": 6, "h": 3.2, "d": 0.3, "r": 0.12 }, "at": [0, 1.9, 2.85], "mat": "aluminium" },
+    { "id": "wall-back-studio", "when": "studio", "geo": { "type": "rbox", "w": 6, "h": 3.2, "d": 0.3, "r": 0.12 }, "at": [0, 1.9, -2.85], "mat": "aluminium" },
+    { "id": "wall-left-studio", "when": "studio", "geo": { "type": "rbox", "w": 0.3, "h": 3.2, "d": 5.4, "r": 0.12 }, "at": [-2.85, 1.9, 0], "mat": "aluminium" },
+    { "id": "wall-right-studio", "when": "studio", "geo": { "type": "rbox", "w": 0.3, "h": 3.2, "d": 5.4, "r": 0.12 }, "at": [2.85, 1.9, 0], "mat": "aluminium" },
+    {
+      "id": "top-studio", "when": "studio",
+      "geo": { "type": "rbox", "w": 6, "h": 0.3, "d": 6, "r": 0.12 }, "at": [0, 3.65, 0], "mat": "aluminium",
+      "anim": { "slide": { "to": [0, 6.4, 0], "on": "enter" } },
+      "children": [
+        { "id": "logo-studio", "geo": { "type": "ring", "ri": 0.12, "ro": 0.26 }, "at": [0, 0.16, 0], "mat": { "color": "#f4f6f2", "emissive": "#ffffff", "glow": 1.2, "flat": true }, "outline": false, "anim": { "pulse": { "period": 3.0 } } }
+      ]
+    },
+
+    { "id": "board", "geo": { "type": "box", "w": 5, "h": 0.08, "d": 5 }, "at": [0, 0.44, 0], "mat": "pcb", "label": { "text": "LOGIC BOARD", "size": 0.35, "color": "#e8eadf" } },
+    {
+      "id": "soc", "geo": { "type": "rbox", "w": 1.5, "h": 0.16, "d": 1.5, "r": 0.04 }, "at": [0, 0.56, -1.0], "mat": "ic",
+      "children": [
+        { "id": "soc-die", "geo": { "type": "box", "w": 0.9, "h": 0.02, "d": 0.9 }, "at": [0, 0.09, 0], "mat": "die", "outline": false, "label": { "text": "SOC", "size": 0.28, "color": "#e8eadf" } }
+      ]
+    },
+    { "id": "memory-left", "geo": { "type": "box", "w": 0.7, "h": 0.08, "d": 0.4 }, "at": [-1.35, 0.52, -1.8], "mat": "ic", "repeat": { "count": 4, "step": [0, 0, 0.45] } },
+    { "id": "memory-right", "geo": { "type": "box", "w": 0.7, "h": 0.08, "d": 0.4 }, "at": [1.35, 0.52, -1.8], "mat": "ic", "repeat": { "count": 4, "step": [0, 0, 0.45] } },
+    { "id": "vrm", "geo": { "type": "box", "w": 0.35, "h": 0.12, "d": 0.25 }, "at": [-0.5, 0.54, -0.1], "mat": "inductor", "repeat": { "count": 4, "step": [0.4, 0, 0] } },
+    { "id": "heatsink-base", "geo": { "type": "box", "w": 1.8, "h": 0.08, "d": 1.3 }, "at": [0, 0.52, 0.75], "mat": "heatsink" },
+    { "id": "heatsink-fins", "geo": { "type": "box", "w": 1.8, "h": 0.55, "d": 0.05 }, "at": [0, 0.835, 0.25], "mat": "heatsink", "repeat": { "count": 8, "step": [0, 0, 0.15] } },
+    {
+      "id": "fan", "tag": "fan",
+      "geo": { "type": "cyl", "rt": 0.75, "rb": 0.75, "h": 0.45 }, "at": [1.9, 0.71, 1.8], "mat": "fan",
+      "children": [
+        { "id": "fan-hub", "geo": { "type": "sphere", "r": 0.22 }, "at": [0, 0.23, 0], "mat": "metal-dark" },
+        { "id": "fan-blades", "geo": { "type": "ring", "ri": 0.22, "ro": 0.7 }, "at": [0, 0.235, 0], "mat": "fan-blade", "outline": false }
+      ]
+    },
+    { "id": "psu", "geo": { "type": "rbox", "w": 1.2, "h": 0.5, "d": 1.0, "r": 0.05 }, "at": [-1.6, 0.73, 1.8], "mat": "metal-dark", "label": { "text": "PSU", "size": 0.3, "color": "#e8eadf" } },
+    {
+      "id": "ssd", "geo": { "type": "rbox", "w": 0.5, "h": 0.1, "d": 1.2, "r": 0.03 }, "at": [-2.2, 0.53, -0.2], "mat": "ic",
+      "children": [
+        { "id": "nand", "geo": { "type": "box", "w": 0.42, "h": 0.05, "d": 0.3 }, "at": [0, 0.075, -0.35], "mat": "ic-top", "repeat": { "count": 3, "step": [0, 0, 0.35] } }
+      ]
+    },
+    { "id": "tb-chips", "geo": { "type": "rbox", "w": 0.5, "h": 0.1, "d": 0.4, "r": 0.03 }, "at": [0.9, 0.53, -2.25], "mat": "ic", "repeat": { "count": 2, "step": [0.6, 0, 0] } },
+    { "id": "capacitors", "geo": { "type": "cyl", "rt": 0.09, "rb": 0.09, "h": 0.2 }, "at": [-1.3, 0.58, -2.3], "mat": "capacitor", "repeat": { "count": 6, "step": [0.25, 0, 0] } },
+
+    { "id": "status-led", "tag": "status", "geo": { "type": "cyl", "rt": 0.07, "rb": 0.07, "h": 0.05 }, "at": [-2.2, 1.3, 3.03], "rot": [90, 0, 0], "mat": { "color": "#ffffff", "emissive": "#ffffff", "glow": 2.0, "flat": true }, "outline": false },
+    { "id": "usbc-front", "geo": { "type": "rbox", "w": 0.32, "h": 0.14, "d": 0.1, "r": 0.03 }, "at": [1.2, 1.3, 3.03], "mat": "port-hole", "repeat": { "count": 2, "step": [0.5, 0, 0] } },
+    { "id": "sdxc-front", "when": "studio", "geo": { "type": "rbox", "w": 0.9, "h": 0.12, "d": 0.1, "r": 0.02 }, "at": [-0.4, 1.3, 3.03], "mat": "port-hole" },
+
+    { "id": "rear-insert", "geo": { "type": "rbox", "w": 5, "h": 0.6, "d": 0.06, "r": 0.02 }, "at": [0, 1.0, -3.02], "mat": "case" },
+    { "id": "power-in", "geo": { "type": "cyl", "rt": 0.18, "rb": 0.18, "h": 0.1 }, "at": [2.4, 1.0, -3.07], "rot": [90, 0, 0], "mat": "port-hole" },
+    { "id": "ethernet-10g", "geo": { "type": "rbox", "w": 0.4, "h": 0.3, "d": 0.12, "r": 0.03 }, "at": [1.7, 1.0, -3.07], "mat": "port" },
+    { "id": "hdmi", "geo": { "type": "rbox", "w": 0.5, "h": 0.18, "d": 0.12, "r": 0.03 }, "at": [1.2, 1.0, -3.07], "mat": "port-hole" },
+    { "id": "thunderbolt", "geo": { "type": "rbox", "w": 0.3, "h": 0.14, "d": 0.12, "r": 0.03 }, "at": [0.55, 1.0, -3.07], "mat": "port-hole", "repeat": { "count": 4, "step": [-0.45, 0, 0] } },
+    { "id": "headphone", "geo": { "type": "cyl", "rt": 0.09, "rb": 0.09, "h": 0.12 }, "at": [-1.25, 1.0, -3.07], "rot": [90, 0, 0], "mat": "port-hole" },
+    { "id": "usb-a", "geo": { "type": "rbox", "w": 0.4, "h": 0.18, "d": 0.12, "r": 0.02 }, "at": [-1.75, 1.0, -3.07], "mat": "port-hole", "repeat": { "count": 2, "step": [-0.45, 0, 0] } },
+
+    {
+      "id": "exhaust-mini", "when": "!studio",
+      "geo": { "type": "box", "w": 2.6, "h": 0.16, "d": 0.04 }, "at": [0, 1.45, -3.02], "mat": "case", "repeat": { "count": 2, "step": [0, 0.16, 0] },
+      "children": [
+        { "id": "exhaust-mini-slot", "geo": { "type": "box", "w": 0.3, "h": 0.06, "d": 0.06 }, "at": [-1.32, 0, -0.02], "mat": "port-hole", "repeat": { "count": 7, "step": [0.44, 0, 0] } }
+      ]
+    },
+    {
+      "id": "exhaust-studio", "when": "studio",
+      "geo": { "type": "box", "w": 4, "h": 0.3, "d": 0.04 }, "at": [0, 2.45, -3.02], "mat": "case", "repeat": { "count": 3, "step": [0, 0.33, 0] },
+      "children": [
+        { "id": "exhaust-studio-slot", "geo": { "type": "box", "w": 0.3, "h": 0.12, "d": 0.06 }, "at": [-1.76, 0, -0.02], "mat": "port-hole", "repeat": { "count": 9, "step": [0.44, 0, 0] } }
+      ]
+    }
+  ],
+  "anchors": {
+    "label": [0, 4.3, 0],
+    "port": [1.7, 1.0, -3.25],
+    "camera": { "at": [3.8, 4.8, 4.4], "look": [0, 1.0, -0.2] },
+    "open": "top",
+    "atom": [0, 1.2, -1.0]
+  }
 }
