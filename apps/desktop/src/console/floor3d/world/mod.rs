@@ -12,10 +12,11 @@ pub mod view;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use glam::Quat;
+use glam::{Quat, Vec3};
 
-use super::controls::Orbit;
-use super::props::{Anim, Box2};
+use super::controls::{Orbit, FOV_DEG};
+use super::props::{Anim, Box2, PropPalette};
+use layout::{AZIMUTH, POLAR};
 use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
 use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
 
@@ -280,6 +281,42 @@ impl Floor {
     pub fn bot(&self, cid: u64) -> Option<&Bot> {
         self.bots.iter().find(|b| b.agent.cid == cid)
     }
+
+    /// The Machines view's scene: the Floor's sky, stars, ground and outskirts, with no plaza, no
+    /// districts and no robots. The fleet's group goes into its root.
+    pub fn machines() -> Floor {
+        let floor = Floor::new();
+        floor.root.remove(&floor.plaza);
+        floor.root.remove(&floor.district_group);
+        floor.root.remove(&floor.path_group);
+        floor
+    }
+
+    /// The palette the fleet scene is built with: the floor's colours.
+    pub fn fleet_palette(&self) -> PropPalette {
+        let c = &self.colors;
+        PropPalette { sheet: c.sheet, rule: c.rule, ink3: c.ink3, signal: c.signal, ok: c.ok, info: c.info }
+    }
+
+    /// Frames a sphere (`centre`, `radius`) in an `aspect` stage with the floor's view angles, at
+    /// the distance from [`fit_distance`].
+    pub fn fit_sphere(&mut self, centre: [f32; 3], radius: f32, aspect: f32) {
+        let dir = Vec3::new(POLAR.sin() * AZIMUTH.sin(), POLAR.cos(), POLAR.sin() * AZIMUTH.cos());
+        let target = Vec3::from(centre);
+        let dist = fit_distance(radius, aspect).max(self.orbit.min_distance);
+        self.orbit.look(target + dir * dist, target);
+    }
+}
+
+/// The share of the tighter half-extent that a framed sphere fills.
+const MACHINES_FILL: f32 = 0.8;
+
+/// The camera distance at which a sphere of `radius` fills `MACHINES_FILL` of the tighter
+/// half-extent of an `aspect` (width / height) stage.
+pub fn fit_distance(radius: f32, aspect: f32) -> f32 {
+    let tan_v = (FOV_DEG / 2.0).to_radians().tan();
+    let tan_h = tan_v * aspect.max(1e-3);
+    radius / (MACHINES_FILL * tan_v.min(tan_h))
 }
 
 impl Default for Floor {
@@ -290,7 +327,20 @@ impl Default for Floor {
 
 #[cfg(test)]
 mod tests {
-    use super::display_name;
+    use super::{display_name, fit_distance, FOV_DEG};
+
+    #[test]
+    fn fit_distance_holds_the_sphere_in_the_tighter_axis() {
+        let tan_v = (FOV_DEG / 2.0).to_radians().tan();
+        // A square stage: the sphere fills 80% of both half-extents.
+        assert!((fit_distance(10.0, 1.0) - 10.0 / (0.8 * tan_v)).abs() < 1e-3);
+        // A wide stage: the height is the tighter axis, so the distance does not change.
+        assert!((fit_distance(10.0, 2.0) - fit_distance(10.0, 1.0)).abs() < 1e-3);
+        // A tall stage: the width is the tighter axis, so the sphere stands farther off.
+        let tall = fit_distance(10.0, 0.5);
+        assert!((tall - 10.0 / (0.8 * tan_v * 0.5)).abs() < 1e-3);
+        assert!(tall > fit_distance(10.0, 1.0));
+    }
 
     #[test]
     fn floor_name_falls_back_to_the_cid_when_empty_or_blank() {

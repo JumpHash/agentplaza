@@ -108,8 +108,9 @@ pub struct Gpu {
     pub name: String,
     #[serde(default)]
     pub vendor: String,
+    /// Null when the hub cannot read the GPU's memory.
     #[serde(default)]
-    pub memory_mib: u64,
+    pub memory_mib: Option<u64>,
 }
 
 /// Live load; remote nodes send it with every heartbeat.
@@ -303,7 +304,8 @@ fn named(name: &str) -> Color {
     .unwrap_or(Color::WHITE)
 }
 
-fn status_led(s: Status) -> Color {
+/// A status's LED colour: ok green, draining amber, offline grey, revoked crit.
+pub fn status_led(s: Status) -> Color {
     named(match s {
         Status::Online => "led-ok",
         Status::Draining => "led-warn",

@@ -1,16 +1,109 @@
 //! The floor in iced: the shader widget's program (pointer input → orbit, hover, pick), and the
 //! overlay — name labels over the robots, the agent card, the legend — in the console's look.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use glam::Vec3;
 use iced::widget::shader;
 use iced::{mouse, Point, Rectangle};
 
 use super::{display_name, Bot, Floor, Phase};
+use crate::console::floor3d::canvas::Canvas;
+use crate::console::floor3d::fleet::{self, FleetScene};
+use crate::console::floor3d::hardware::Status;
 use crate::console::floor3d::render;
-use crate::console::floor3d::scene::Frame;
+use crate::console::floor3d::scene::{Camera, Frame, Overlay, Tex};
 use crate::console::screens::floor::Msg;
+
+/// The machine tag's look: the compact label of the agents' Floor (`labels.rs`), in the same colours.
+const TAG_SHEET: &str = "#111726";
+const TAG_INK: &str = "#e3e8f4";
+const TAG_SHADOW: &str = "#000000";
+const TAG_SIGNAL: &str = "#ff7a2e";
+const TAG_FONT: &str = "500 9.5px monospace";
+const TAG_H: f32 = 18.0;
+const TAG_GAP: f32 = 6.0;
+const TAG_CACHE_LIMIT: usize = 64;
+
+/// The overlay tags over the machines: each machine's name and status square, above its label.
+/// `hovered` is the machine under the pointer (its tag gets the signal border).
+pub fn machine_overlays(fleet: &FleetScene, camera: &Camera, width: f32, height: f32, scale: f32, hovered: Option<&str>) -> Vec<Overlay> {
+    if width <= 0.0 || height <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for tag in fleet.tags() {
+        let Some((x, y)) = camera.to_screen(Vec3::from(tag.pos), width, height) else { continue };
+        let painted = painted_tag(&tag.name, tag.status, hovered == Some(tag.id.as_str()), scale);
+        let x = x - painted.box_w / 2.0;
+        let y = y - TAG_GAP - painted.box_h;
+        let (w, h) = (painted.box_w + 2.0, painted.box_h + 2.0);
+        if x + w < 0.0 || x > width || y + h < 0.0 || y > height {
+            continue;
+        }
+        out.push(Overlay { tex: painted.tex, x, y, w, h });
+    }
+    out
+}
+
+/// A painted tag: its texture and the box's size in logical px.
+#[derive(Clone)]
+struct PaintedTag {
+    tex: Tex,
+    box_w: f32,
+    box_h: f32,
+}
+
+static TAG_CACHE: OnceLock<Mutex<HashMap<String, PaintedTag>>> = OnceLock::new();
+
+/// The tag's texture, from the cache or painted now.
+fn painted_tag(name: &str, status: Status, lit: bool, scale: f32) -> PaintedTag {
+    let led = fleet::status_led(status).to_srgb_u8();
+    let key = format!("{name}\u{1f}{led:?}\u{1f}{lit}\u{1f}{scale:.2}");
+    let cache = TAG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+        return hit.clone();
+    }
+    let (canvas, box_w, box_h) = draw_tag(name, led, lit, scale);
+    let painted = PaintedTag { tex: canvas.to_texture(), box_w, box_h };
+    let mut map = cache.lock().unwrap_or_else(|p| p.into_inner());
+    if map.len() > TAG_CACHE_LIMIT {
+        map.clear();
+    }
+    map.insert(key, painted.clone());
+    painted
+}
+
+/// The advance width of `text` in `font`, in logical px.
+fn text_width(font: &str, text: &str) -> f32 {
+    let mut measure = Canvas::new(1, 1);
+    measure.set_font(font);
+    measure.measure_text(text)
+}
+
+/// Paints the tag at `scale`: the sheet box, the status square (`led`, RGB bytes) and the name.
+fn draw_tag(name: &str, led: [u8; 3], lit: bool, scale: f32) -> (Canvas, f32, f32) {
+    // Border 1, padding 5, the 6px square, a gap of 5, the name, padding 5, border 1.
+    let box_w = text_width(TAG_FONT, name) + 23.0;
+    let device = |v: f32| (v * scale).ceil().max(1.0) as u32;
+    let mut c = Canvas::new(device(box_w + 2.0), device(TAG_H + 2.0));
+    c.scale(scale, scale);
+    c.set_fill(TAG_SHADOW);
+    c.fill_rect(2.0, 2.0, box_w, TAG_H);
+    c.set_fill(TAG_SHEET);
+    c.fill_rect(0.0, 0.0, box_w, TAG_H);
+    c.set_stroke(if lit { TAG_SIGNAL } else { TAG_INK });
+    c.set_line_width(1.0);
+    c.stroke_rect(0.5, 0.5, box_w - 1.0, TAG_H - 1.0);
+    c.set_fill(&format!("rgb({}, {}, {})", led[0], led[1], led[2]));
+    c.fill_rect(6.0, 6.0, 6.0, 6.0);
+    c.set_fill(TAG_INK);
+    c.set_text_baseline("middle");
+    c.set_font(TAG_FONT);
+    c.fill_text(name, 17.0, 9.0);
+    (c, box_w, TAG_H)
+}
 
 /// A name label to draw over the scene, in widget pixels.
 #[derive(Debug, Clone, PartialEq)]
