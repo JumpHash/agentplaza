@@ -5,14 +5,17 @@
 
 use std::path::Path;
 
-use iced::widget::{column, container, image, row, scrollable, text_input, Space};
-use iced::{Element, Fill, Length, Task};
+use iced::widget::{column, container, image, row, scrollable, text, text_input, Space};
+use iced::{font, Element, Fill, Font, Length, Task};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
 use crate::theme;
+
+/// Serif semibold: a card's title (the web's `.prov-title h3`).
+const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
 
 /// Text files up to this size are read into the detail view; larger ones are save-only.
 const TEXT_LIMIT: usize = 200 * 1024;
@@ -497,7 +500,7 @@ fn list<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
     items.push(column![search, row(filters).spacing(6)].spacing(8).into());
 
     if state.files.is_empty() {
-        items.push(ui::empty("library", "Nothing handed in yet", "Agents deliver finished work with deliver_file."));
+        items.push(ui::empty("board", "Nothing handed in yet", "Agents deliver finished work with deliver_file."));
     } else {
         let shown_files: Vec<&'a Deliverable> = state.files.iter().filter(|d| matches(state, d)).collect();
         if shown_files.is_empty() {
@@ -552,7 +555,7 @@ fn card<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = vec![
         container(ui::faint(d.store.as_str())).into(),
         container(ui::mono(monogram(&d.name), 20.0, ui::INK_2)).padding(12).width(Fill).into(),
-        ui::mono(title, 13.0, ui::INK).into(),
+        text(title).font(SEMIBOLD).size(15.0).color(ui::INK).into(),
         ui::mono(d.name.as_str(), 11.0, ui::INK_3).into(),
         ui::faint(format!("by {} · {} · {}", d.author, ago(d.created_ms), human_size(d.size))).into(),
     ];
@@ -587,7 +590,7 @@ fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
     };
     let mut body: Vec<Element<'a, Msg>> = vec![preview, facts(d)];
     if let Some(desc) = &d.description {
-        body.push(ui::prose(desc.as_str()).into());
+        body.push(ui::faint(desc.as_str()).into());
     }
     body.push(file_actions(state, d));
     column![
@@ -615,7 +618,7 @@ fn file_actions<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
         row![
             Space::new().width(Fill),
             ui::btn("Delete", None, ui::Kind::Ghost, Some(Msg::AskDelete)),
-            ui::btn("Save", None, ui::Kind::Primary, Some(Msg::Save(d.id.clone()))),
+            ui::btn("Download", None, ui::Kind::Primary, Some(Msg::Save(d.id.clone()))),
         ]
         .spacing(8)
         .into()
@@ -624,24 +627,24 @@ fn file_actions<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
 
 fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
     let mut rows: Vec<Element<'a, Msg>> = vec![
-        fact("Name", d.name.clone()),
-        fact("Content type", d.content_type.clone()),
-        fact("Size", format!("{} ({} bytes)", human_size(d.size), d.size)),
-        fact("sha256", d.sha256.clone()),
-        fact("Handed in by", d.author.clone()),
-        fact("When", when(d.created_ms)),
-        fact("Store", d.store.clone()),
+        fact("Name", d.name.clone(), true),
+        fact("Content type", d.content_type.clone(), true),
+        fact("Size", format!("{} ({} bytes)", human_size(d.size), d.size), false),
+        fact("sha256", d.sha256.clone(), true),
+        fact("Handed in by", d.author.clone(), false),
+        fact("When", when(d.created_ms), false),
+        fact("Store", d.store.clone(), false),
     ];
     if let Some(task) = &d.task {
-        rows.push(fact("Task", task.clone()));
+        rows.push(fact("Task", task.clone(), true));
     }
     column(rows).spacing(6).into()
 }
 
-fn fact<'a>(label: &'static str, value: String) -> Element<'a, Msg> {
-    row![container(ui::faint(label)).width(Length::Fixed(120.0)), ui::mono(value, 12.0, ui::INK)]
-        .spacing(8)
-        .into()
+/// One fact: a faint label, then the value (mono for names, hashes and ids; serif otherwise).
+fn fact<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Msg> {
+    let value: Element<'a, Msg> = if mono { ui::mono(value, 12.0, ui::INK).into() } else { ui::prose(value).size(13.0).into() };
+    row![container(ui::faint(label)).width(Length::Fixed(120.0)), value].spacing(8).into()
 }
 
 // ---- Library tools --------------------------------------------------------------------------

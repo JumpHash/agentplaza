@@ -6,8 +6,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, row, text_input, Space};
-use iced::{Alignment, Element, Length, Task, Theme};
+use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::{font, Alignment, Border, Color, Element, Font, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -19,6 +19,10 @@ use crate::theme;
 const STAGES: [&str; 8] = ["brief", "research", "proposal", "critique", "approval", "implementation", "review", "delivered"];
 /// The stages in which the owner can approve the plan.
 const APPROVABLE: [&str; 2] = ["critique", "approval"];
+/// Serif semibold: titles, document names, the current stage (the web's `font-weight: 600`).
+const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+/// Serif bold: the actor of a history entry (the web's `<strong>`).
+const BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SERIF };
 
 /// One project, as the hub serves it (`GET /v1/projects/{id}`).
 #[derive(Debug, Clone, Deserialize)]
@@ -255,11 +259,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         (None, _) => list_view(state),
         (Some(_), Some(p)) => detail(state, p),
         (Some(_), None) => {
+            // A failed read is "not found" on the web (the toast carries the reason).
             let body: Element<'a, Msg> = match &state.error {
-                Some(e) => ui::error_line(e),
+                Some(_) => ui::empty("projects", "Project not found", "It may have been removed."),
                 None => ui::loading(),
             };
-            ui::sheet(ui::view_head("Project", vec![]), column![ui::btn("← All projects", None, ui::Kind::Ghost, Some(Msg::Back)), body].spacing(18).into())
+            ui::sheet(ui::view_head("Project", vec![]), column![link("← All projects", Msg::Back), body].spacing(18).into())
         }
     }
 }
@@ -307,65 +312,132 @@ fn ago(ms: i64) -> String {
     }
 }
 
-/// The eight segments, filled up to the current stage, with the stage name beside them.
-fn track<'a>(stage: &str) -> Element<'a, Msg> {
-    let idx = stage_index(stage);
-    let segs = STAGES.iter().enumerate().fold(row![].spacing(3), |r, (i, _)| {
-        let color = if i == idx {
-            theme::SIGNAL
-        } else if i < idx {
-            theme::INK
-        } else {
-            theme::RULE_FAINT
-        };
-        r.push(
-            container(Space::new().width(Length::Fill).height(6.0))
-                .width(Length::Fill)
-                .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() }),
-        )
-    });
-    row![segs.width(Length::Fill), ui::mono(label(stage), 11.0, theme::INK_2)].spacing(10).align_y(Alignment::Center).into()
+/// A serif semibold line in ink.
+fn semibold<'a>(content: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
+    text(content).font(SEMIBOLD).size(size).color(theme::INK)
 }
 
-/// The pipeline on the detail page: done steps are ticked, the current one is highlighted, later ones faint.
+/// A text link in the signal colour, mono 12 (the web's `.pj-link`).
+fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
+    button(ui::mono(label_text.to_string(), 12.0, theme::SIGNAL))
+        .padding(0)
+        .style(|_: &Theme, _| button::Style { background: None, text_color: theme::SIGNAL, ..Default::default() })
+        .on_press(msg)
+        .into()
+}
+
+/// The eight stage boxes (10px squares, 1px rule edges): earlier stages filled in ink-3, the current
+/// one in signal, later ones hollow; the stage name beside them.
+fn track<'a>(stage: &str) -> Element<'a, Msg> {
+    let idx = stage_index(stage);
+    let segs = row(STAGES.iter().enumerate().map(|(i, _)| {
+        let (fill, edge) = if i == idx {
+            (theme::SIGNAL, theme::SIGNAL)
+        } else if i < idx {
+            (theme::INK_3, theme::INK_3)
+        } else {
+            (Color::TRANSPARENT, theme::RULE)
+        };
+        container(Space::new().width(8.0).height(8.0))
+            .style(move |_: &Theme| container::Style {
+                background: Some(fill.into()),
+                border: Border { color: edge, width: 1.0, radius: 0.0.into() },
+                ..Default::default()
+            })
+            .into()
+    }))
+    .spacing(3);
+    row![segs, text(label(stage)).font(theme::MONO).size(12.0).color(theme::INK_2)].spacing(10).align_y(Alignment::Center).into()
+}
+
+/// The pipeline on the detail page: a ruled strip of eight cells. Done steps are ticked, the current
+/// one is highlighted (sheet ground, signal underline, semibold), later ones faint.
 fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
     let idx = stage_index(stage);
-    let steps = STAGES.iter().enumerate().fold(row![].spacing(6), |r, (i, s)| {
-        let (mark, color) = if i < idx {
-            ("✓".to_string(), theme::OK)
-        } else if i == idx {
-            ((i + 1).to_string(), theme::SIGNAL)
+    let mut items: Vec<Element<'a, Msg>> = Vec::new();
+    for (i, s) in STAGES.iter().enumerate() {
+        if i > 0 {
+            items.push(container(Space::new().width(1.0).height(Length::Fill)).style(|_: &Theme| container::Style {
+                background: Some(theme::RULE.into()),
+                ..Default::default()
+            }).into());
+        }
+        let current = i == idx;
+        let (mark, filled, fg) = if i < idx {
+            ("✓".to_string(), Some(theme::INK), theme::INK)
+        } else if current {
+            ((i + 1).to_string(), Some(theme::SIGNAL), theme::INK)
         } else {
-            ((i + 1).to_string(), theme::INK_3)
+            ((i + 1).to_string(), None, theme::INK_3)
         };
-        r.push(column![ui::mono(mark, 11.0, color), ui::mono(label(s), 11.0, color)].spacing(4).width(Length::Fill))
-    });
-    steps.into()
+        let edge = if i < idx { theme::INK } else if current { theme::SIGNAL } else { fg };
+        let mark_box = container(ui::mono(mark, 11.0, if filled.is_some() { theme::PAPER } else { fg }))
+            .width(20.0)
+            .height(20.0)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(move |_: &Theme| container::Style {
+                background: filled.map(Into::into),
+                border: Border { color: edge, width: 1.0, radius: 0.0.into() },
+                ..Default::default()
+            });
+        let name = text(label(s)).font(if current { SEMIBOLD } else { theme::SERIF }).size(12.0).color(fg);
+        let underline = if current { theme::SIGNAL } else { Color::TRANSPARENT };
+        let cell = column![
+            column![mark_box, name].spacing(6).padding([10, 8]),
+            container(Space::new().height(3.0)).width(Length::Fill).style(move |_: &Theme| container::Style {
+                background: Some(underline.into()),
+                ..Default::default()
+            }),
+        ]
+        .width(Length::Fill);
+        items.push(
+            container(cell)
+                .width(Length::Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: if current { Some(theme::SHEET.into()) } else { None },
+                    ..Default::default()
+                })
+                .into(),
+        );
+    }
+    container(row(items))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
 }
 
 // ---- the list ------------------------------------------------------------------------
 
 fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
     let main = column![
-        row![ui::mono(p.title.as_str(), 14.0, theme::INK), ui::badge(&p.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
+        row![semibold(p.title.as_str(), 15.0), ui::badge(&p.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
         track(&p.stage),
-        ui::faint(format!("rev {} · {} docs · {} critiques · {} tasks", p.revision, p.docs.len(), p.critiques.len(), p.tasks.len())),
+        ui::mono(format!("rev {} · {} docs · {} critiques · {} tasks", p.revision, p.docs.len(), p.critiques.len(), p.tasks.len()), 12.0, theme::INK_3),
     ]
-    .spacing(8)
+    .spacing(6)
     .width(Length::Fill);
-    let side = ui::faint(format!("updated {}", ago(p.updated_ms)));
-    button(row![main, side].spacing(16).align_y(Alignment::Center))
+    let side = column![ui::mono(format!("updated {}", ago(p.updated_ms)), 12.0, theme::INK_3)].align_x(Alignment::End);
+    let entry = button(row![main, side].spacing(16).align_y(Alignment::Center))
         .on_press(Msg::Open(p.id.clone()))
-        .padding(14)
+        .padding([14, 4])
         .width(Length::Fill)
-        .style(theme::register_row(false))
-        .into()
+        .style(theme::register_row(false));
+    // Each row is closed by a rule (the web's `.pj-row` border-bottom).
+    column![entry, container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+        background: Some(theme::RULE.into()),
+        ..Default::default()
+    })]
+    .into()
 }
 
 fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut body: Vec<Element<'a, Msg>> = vec![container(ui::prose(
-        "Every goal goes through brief, research, proposal, critique and approval before anything is built.",
-    ))
+    let mut body: Vec<Element<'a, Msg>> = vec![container(
+        ui::prose("Every goal goes through brief, research, proposal, critique and approval before anything is built.").color(theme::INK_2),
+    )
     .max_width(620)
     .into()];
     if let Some(e) = &state.error {
@@ -376,7 +448,14 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
         Some(list) if list.is_empty() => {
             body.push(ui::empty("projects", "No projects yet.", "The orchestrator opens one for each goal you give it."))
         }
-        Some(list) => body.push(column(list.iter().map(row_item)).spacing(10).into()),
+        Some(list) => {
+            // The web's `.pj-list` ruled register: a rule above the rows, one under each.
+            body.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+                background: Some(theme::RULE.into()),
+                ..Default::default()
+            }).into());
+            body.push(column(list.iter().map(row_item)).spacing(0).into());
+        }
     }
     ui::sheet(ui::view_head("Projects", vec![]), column(body).spacing(18).into())
 }
@@ -392,7 +471,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     }
 
     let mut body: Vec<Element<'a, Msg>> = vec![
-        ui::btn("← All projects", None, ui::Kind::Ghost, Some(Msg::Back)),
+        link("← All projects", Msg::Back),
         ui::prose(p.goal.as_str()).into(),
         pipeline(&p.stage),
     ];
@@ -414,6 +493,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             .on_submit(Msg::SubmitApprove)
             .style(theme::input);
         let form = column![
+            ui::label("Note"),
             field,
             row![
                 ui::btn("Approve plan", None, ui::Kind::Primary, Some(Msg::SubmitApprove)),
@@ -436,8 +516,10 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             .on_submit(Msg::SubmitSendBack)
             .style(theme::input);
         let form = column![
-            ui::faint("Back to"),
+            ui::label("Back to"),
+            ui::faint("The stage the project returns to"),
             picks,
+            ui::label("Reason"),
             reason,
             ui::btn("Send back", None, ui::Kind::Danger, Some(Msg::SubmitSendBack)),
         ]
@@ -458,7 +540,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         ui::card("Tasks", tasks_body(p)),
     ];
     if let Some(repo) = &p.repo {
-        sections.push(ui::card("Repository", ui::btn(repo, None, ui::Kind::Ghost, Some(Msg::Go(Id::Git)))));
+        sections.push(ui::card("Repository", link(repo, Msg::Go(Id::Git))));
     }
     sections.push(ui::card("History", history_body(p)));
     body.push(column(sections).spacing(16).into());
@@ -489,8 +571,8 @@ fn docs_body<'a>(p: &'a Project) -> Element<'a, Msg> {
 
 fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
     let mut col = column![
-        row![ui::prose(d.title.as_str()), ui::badge(&d.kind, ui::Tone::Muted)].spacing(8).align_y(Alignment::Center),
-        ui::faint(format!("by {} · {}", d.by, ago(d.at_ms))),
+        row![semibold(d.title.as_str(), 15.0), ui::badge(&d.kind, ui::Tone::Muted)].spacing(10).align_y(Alignment::Center),
+        ui::mono(format!("by {} · {}", d.by, ago(d.at_ms)), 12.0, theme::INK_3),
     ]
     .spacing(6);
     if !d.summary.is_empty() {
@@ -498,7 +580,7 @@ fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
     }
     if let Some(path) = &d.repo_path {
         let commit = d.commit.as_deref().map(|c| format!(" @ {}", c.get(..7).unwrap_or(c))).unwrap_or_default();
-        col = col.push(ui::mono(format!("{path}{commit}"), 11.0, theme::INK_2));
+        col = col.push(ui::mono(format!("{path}{commit}"), 12.0, theme::INK_2));
     }
     col.into()
 }
@@ -518,9 +600,9 @@ fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
     };
     let head = row![
         ui::badge(&c.verdict, tone),
-        ui::faint(format!("by {}", c.by)),
-        ui::faint(format!("revision {}", c.revision)),
-        ui::faint(ago(c.at_ms)),
+        ui::prose(format!("by {}", c.by)),
+        ui::mono(format!("revision {}", c.revision), 12.0, theme::INK_3),
+        ui::mono(ago(c.at_ms), 12.0, theme::INK_3),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -535,7 +617,7 @@ fn tasks_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.tasks.is_empty() {
         return ui::faint("No tasks yet.").into();
     }
-    column(p.tasks.iter().map(|t| ui::btn(t, None, ui::Kind::Ghost, Some(Msg::Go(Id::Tasks))))).spacing(6).into()
+    column(p.tasks.iter().map(|t| link(t, Msg::Go(Id::Tasks)))).spacing(8).into()
 }
 
 fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
@@ -549,14 +631,14 @@ fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
 
 fn event_row<'a>(e: &'a Event) -> Element<'a, Msg> {
     let mut line = row![
-        ui::faint(ago(e.at_ms)),
-        ui::mono(e.by.as_str(), 12.0, theme::INK),
-        ui::prose(e.what.as_str()),
+        ui::mono(ago(e.at_ms), 12.0, theme::INK_3),
+        text(e.by.as_str()).font(BOLD).size(13.0).color(theme::INK),
+        ui::prose(e.what.as_str()).size(13.0),
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Alignment::Center);
     if !e.note.is_empty() {
-        line = line.push(ui::faint(format!("— {}", e.note)));
+        line = line.push(ui::mono(format!("— {}", e.note), 12.0, theme::INK_3));
     }
     line.into()
 }

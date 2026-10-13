@@ -6,8 +6,8 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, pick_list, row, scrollable, stack, text_editor, text_input, Space};
-use iced::{Alignment, Color, Element, Length, Task};
+use iced::widget::{button, column, container, pick_list, row, scrollable, stack, text, text_editor, text_input, Space};
+use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -16,6 +16,13 @@ use crate::console::client::{self, Client};
 use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3};
 use crate::console::Ctx;
 use crate::theme::{self, CRIT, OK};
+
+/// Mono semibold: a repository's name (the web's `.git-row-main strong`).
+const MONO_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::MONO };
+/// Serif semibold: a pull request's title.
+const SERIF_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+/// Serif bold: a review's author.
+const SERIF_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SERIF };
 
 // ---- Data (the shapes of `apps/web/src/api.ts`) ----------------------------------------------
 
@@ -590,7 +597,7 @@ fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
         let mut rows: Vec<Element<'a, Msg>> = Vec::new();
         for r in &state.data.repos {
             rows.push(repo_row(r));
-            rows.push(ui::hairline());
+            rows.push(rule_line());
         }
         column(rows).into()
     };
@@ -599,7 +606,8 @@ fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn repo_row<'a>(r: &Repo) -> Element<'a, Msg> {
     let description = if r.description.is_empty() { "No description".to_string() } else { r.description.clone() };
-    let info = column![ui::mono(r.name.clone(), 14.0, INK), ui::faint(description)].spacing(2);
+    let name = text(r.name.clone()).font(MONO_SEMIBOLD).size(14.0).color(INK);
+    let info = column![name, ui::prose(description).size(13.0).color(INK_2)].spacing(2);
     let pulls = if r.open_prs == 1 { "pull request" } else { "pull requests" };
     let meta = column![
         ui::mono(r.default_branch.clone(), 11.0, INK_3),
@@ -617,7 +625,7 @@ fn repo_row<'a>(r: &Repo) -> Element<'a, Msg> {
     .spacing(16)
     .align_y(Alignment::Center);
     if r.project.is_some() {
-        line = line.push(ui::btn("project", None, Kind::Ghost, Some(Msg::Go(Id::Projects))));
+        line = line.push(chip("project", Msg::Go(Id::Projects)));
     }
     line.padding([10, 12]).into()
 }
@@ -627,9 +635,14 @@ fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
     if !state.data.repos.iter().any(|r| r.name == state.repo) {
         return sheet(state, ui::view_head(&state.repo, vec![back]), ui::empty("git", "No such repository", "It may have been removed."));
     }
+    let url = container(ui::mono(clone_url(state), 13.0, INK)).padding([4, 8]).style(|_: &Theme| container::Style {
+        background: Some(theme::SHEET.into()),
+        border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    });
     let clone = row![
         ui::label("Clone"),
-        ui::mono(clone_url(state), 12.0, INK),
+        url,
         ui::btn("Copy", None, Kind::Ghost, Some(Msg::Copy)),
     ]
     .spacing(12)
@@ -662,22 +675,24 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
     if let Some(file) = &state.data.file {
         items.push(file_block(&state.file_path, file));
     } else if let Some(readme) = &state.data.readme {
-        if let Some(text) = &readme.text {
-            items.push(ui::card("README.md", ui::markdown(text)));
+        if let Some(source) = &readme.text {
+            // The web shows the README as plain text in a file box, not rendered.
+            let body = container(ui::prose(source.clone()).size(14.0)).padding([12, 14]);
+            items.push(filebox(ui::mono("README.md", 13.0, INK).into(), body.into()));
         }
     }
     column(items).spacing(14).into()
 }
 
 fn crumbs<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::btn(&state.repo, None, Kind::Ghost, Some(Msg::Dir(String::new())))];
+    let mut items: Vec<Element<'a, Msg>> = vec![link(&state.repo, Msg::Dir(String::new()))];
     let parts: Vec<&str> = if state.path.is_empty() { Vec::new() } else { state.path.split('/').collect() };
     for (i, part) in parts.iter().enumerate() {
         let to = parts[..=i].join("/");
-        items.push(ui::faint("/").into());
-        items.push(ui::btn(part, None, Kind::Ghost, Some(Msg::Dir(to))));
+        items.push(ui::mono("/", 13.0, INK_3).into());
+        items.push(link(part, Msg::Dir(to)));
     }
-    row(items).spacing(4).align_y(Alignment::Center).into()
+    row(items).spacing(6).align_y(Alignment::Center).into()
 }
 
 fn dir_table<'a>(tree: &[Entry]) -> Element<'a, Msg> {
@@ -696,8 +711,8 @@ fn dir_table<'a>(tree: &[Entry]) -> Element<'a, Msg> {
         let size = if dir { "—".to_string() } else { fmt_size(e.size) };
         rows.push(
             row![
-                cell(Length::Fill, button(ui::mono(label, 12.0, INK)).on_press(on_press).style(theme::register_row(false)).width(Length::Fill)),
-                cell(Length::Fixed(120.0), ui::mono(size, 12.0, INK_3)),
+                cell(Length::Fill, link(&label, on_press)),
+                cell(Length::Fixed(120.0), container(ui::mono(size, 13.0, INK_2)).width(Length::Fill).align_x(Alignment::End)),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -718,25 +733,85 @@ fn file_block<'a>(path: &str, file: &'a FileView) -> Element<'a, Msg> {
                 if lines.last() == Some(&"") {
                     lines.pop();
                 }
+                // Line number (right-aligned, ruled off from the text), then the line.
                 let rows: Vec<Element<'a, Msg>> = lines
                     .iter()
                     .enumerate()
                     .map(|(i, line)| {
                         row![
-                            cell(Length::Fixed(44.0), ui::mono((i + 1).to_string(), 11.0, INK_3)),
-                            ui::mono(line.to_string(), 12.0, INK),
+                            container(ui::mono((i + 1).to_string(), 13.0, INK_3)).width(Length::Fixed(44.0)).padding([0, 8]).align_x(Alignment::End),
+                            rule_col(),
+                            ui::mono(line.to_string(), 13.0, INK),
                         ]
                         .spacing(12)
                         .into()
                     })
                     .collect();
-                scrollable(column(rows)).width(Length::Fill).into()
+                scrollable(column(rows).padding([8, 0])).width(Length::Fill).into()
             }
         }
     };
-    let head = row![ui::mono(path.to_string(), 12.0, INK), Space::new().width(Length::Fill), ui::faint(fmt_size(file.size))]
+    let head = row![ui::mono(path.to_string(), 13.0, INK), Space::new().width(Length::Fill), ui::faint(fmt_size(file.size))]
         .align_y(Alignment::Center);
-    column![head, ui::hairline(), body].spacing(8).into()
+    filebox(head.into(), body)
+}
+
+/// A file box: a head row over a rule, then the body, in the sheet ground with rule edges (the
+/// web's `.git-filebox`).
+fn filebox<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let head = container(head).padding([8, 12]).width(Length::Fill);
+    container(column![head, rule_line(), body])
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::SHEET.into()),
+            border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A hairline rule in the web's `--rule` colour.
+fn rule_line<'a>() -> Element<'a, Msg> {
+    container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+        background: Some(theme::RULE.into()),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// A vertical rule, as tall as its row.
+fn rule_col<'a>() -> Element<'a, Msg> {
+    container(Space::new().width(1.0).height(Length::Fill)).style(|_: &Theme| container::Style {
+        background: Some(theme::RULE.into()),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// A bare link in mono (the web's `.git-link`): crumbs, folder and file names, the trail.
+fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
+    button(ui::mono(label_text.to_string(), 13.0, INK))
+        .padding(0)
+        .style(|_: &Theme, _| button::Style { background: None, text_color: INK, ..Default::default() })
+        .on_press(msg)
+        .into()
+}
+
+/// A repository's project chip: a ruled box in serif 12 (the web's `.git-chip`).
+fn chip<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
+    button(text(label_text.to_string()).font(theme::SERIF).size(12.0).color(INK_2))
+        .padding([1, 8])
+        .style(|_: &Theme, status: button::Status| {
+            let edge = if matches!(status, button::Status::Hovered) { INK_2 } else { theme::RULE };
+            button::Style {
+                background: None,
+                text_color: INK_2,
+                border: Border { color: edge, width: 1.0, radius: 0.0.into() },
+                ..Default::default()
+            }
+        })
+        .on_press(msg)
+        .into()
 }
 
 fn commits_view<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -748,12 +823,12 @@ fn commits_view<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn commit_row<'a>(k: &Commit) -> Element<'a, Msg> {
     row![
-        cell(Length::Fixed(80.0), ui::mono(k.short.clone(), 12.0, INK)),
-        cell(Length::Fill, ui::prose(first_line(&k.message).to_string())),
+        cell(Length::Fixed(80.0), ui::mono(k.short.clone(), 13.0, INK_2)),
+        cell(Length::Fill, ui::prose(first_line(&k.message).to_string()).size(14.0)),
         cell(Length::Fixed(140.0), ui::faint(k.author.clone())),
         cell(Length::Fixed(90.0), ui::faint(ago(&k.at))),
-        cell(Length::Fixed(60.0), ui::mono(format!("+{}", k.additions), 12.0, OK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("−{}", k.deletions), 12.0, CRIT)),
+        cell(Length::Fixed(60.0), ui::mono(format!("+{}", k.additions), 13.0, OK)),
+        cell(Length::Fixed(60.0), ui::mono(format!("−{}", k.deletions), 13.0, CRIT)),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -779,8 +854,8 @@ fn branches_view<'a>(state: &'a State) -> Element<'a, Msg> {
     for b in &state.data.branches {
         rows.push(
             row![
-                cell(Length::Fixed(200.0), ui::mono(b.name.clone(), 12.0, INK)),
-                cell(Length::Fill, ui::prose(first_line(&b.commit.message).to_string())),
+                cell(Length::Fixed(200.0), ui::mono(b.name.clone(), 13.0, INK)),
+                cell(Length::Fill, ui::prose(first_line(&b.commit.message).to_string()).size(14.0)),
                 cell(Length::Fixed(140.0), ui::faint(b.commit.author.clone())),
                 cell(Length::Fixed(90.0), ui::faint(ago(&b.commit.at))),
             ]
@@ -812,9 +887,9 @@ fn pulls_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn pull_row<'a>(p: &Pull) -> Element<'a, Msg> {
     button(
         row![
-            cell(Length::Fixed(60.0), ui::mono(format!("#{}", p.number), 12.0, INK_3)),
-            cell(Length::Fill, ui::mono(p.title.clone(), 13.0, INK)),
-            cell(Length::Fixed(220.0), ui::mono(format!("{} → {}", p.head, p.base), 11.0, INK_2)),
+            cell(Length::Fixed(60.0), ui::mono(format!("#{}", p.number), 13.0, INK_2)),
+            cell(Length::Fill, text(p.title.clone()).font(SERIF_SEMIBOLD).size(15.0).color(INK)),
+            cell(Length::Fixed(220.0), ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2)),
             cell(Length::Fixed(120.0), ui::faint(p.author.clone())),
             review_badge(&p.review),
             ui::faint(format!("{} comments", p.comments)),
@@ -837,17 +912,18 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let p = &d.pull;
     let open = p.state == "open";
     let mergeable = open && p.review == "approved" && p.mergeable;
+    // The trail sits above the title, as on the web (repo / Pull requests / #n).
     let trail = row![
-        ui::btn(&state.repo, None, Kind::Ghost, Some(Msg::Tab(Tab::Code))),
-        ui::faint("/"),
-        ui::btn("Pull requests", None, Kind::Ghost, Some(Msg::Tab(Tab::Pulls))),
-        ui::faint("/"),
-        ui::mono(format!("#{}", p.number), 12.0, INK_2),
+        link(&state.repo, Msg::Tab(Tab::Code)),
+        ui::mono("/", 13.0, INK_3),
+        link("Pull requests", Msg::Tab(Tab::Pulls)),
+        ui::mono("/", 13.0, INK_3),
+        ui::mono(format!("#{}", p.number), 13.0, INK_2),
     ]
-    .spacing(4)
+    .spacing(6)
     .align_y(Alignment::Center);
     let meta = row![
-        ui::mono(format!("#{}", p.number), 12.0, INK_3),
+        ui::mono(format!("#{}", p.number), 13.0, INK_2),
         ui::badge(&p.state, if open { Tone::Ok } else { Tone::Muted }),
         review_badge(&p.review),
         ui::faint(p.author.clone()),
@@ -866,7 +942,7 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let description: Element<'a, Msg> = if d.body.is_empty() {
         ui::faint("No description provided.").into()
     } else {
-        container(ui::prose(d.body.clone())).max_width(620).into()
+        container(ui::prose(d.body.clone()).size(14.0)).max_width(620).into()
     };
     let files: Element<'a, Msg> = if d.files.is_empty() {
         ui::faint("No files.").into()
@@ -879,7 +955,6 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
         column(d.reviews.iter().map(review_row).collect::<Vec<Element<'a, Msg>>>()).spacing(12).into()
     };
     let body = column![
-        trail,
         meta,
         actions,
         ui::card("Description", description),
@@ -888,14 +963,15 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
         ui::card(&format!("Reviews ({})", d.reviews.len()), reviews),
     ]
     .spacing(16);
-    sheet(state, ui::view_head(&p.title, vec![]), body.into())
+    let head = column![container(trail).padding(Padding { top: 24.0, right: 0.0, bottom: 0.0, left: 0.0 }), ui::view_head(&p.title, vec![])];
+    sheet(state, head.into(), body.into())
 }
 
 fn file_row<'a>(f: &PullFile) -> Element<'a, Msg> {
     row![
-        cell(Length::Fill, ui::mono(f.path.clone(), 12.0, INK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("+{}", f.additions), 12.0, OK)),
-        cell(Length::Fixed(60.0), ui::mono(format!("−{}", f.deletions), 12.0, CRIT)),
+        cell(Length::Fill, ui::mono(f.path.clone(), 13.0, INK)),
+        cell(Length::Fixed(60.0), ui::mono(format!("+{}", f.additions), 13.0, OK)),
+        cell(Length::Fixed(60.0), ui::mono(format!("−{}", f.deletions), 13.0, CRIT)),
     ]
     .spacing(12)
     .padding([6, 0])
@@ -912,7 +988,7 @@ fn review_row<'a>(rv: &Review) -> Element<'a, Msg> {
         Tone::Muted
     };
     let head = row![
-        ui::mono(rv.author.clone(), 13.0, INK),
+        text(rv.author.clone()).font(SERIF_BOLD).size(14.0).color(INK),
         ui::badge(&s.replace('_', " "), tone),
         ui::faint(ago(&rv.at)),
     ]
@@ -920,28 +996,40 @@ fn review_row<'a>(rv: &Review) -> Element<'a, Msg> {
     .align_y(Alignment::Center);
     let mut col = column![head].spacing(6);
     if !rv.body.is_empty() {
-        col = col.push(ui::prose(rv.body.clone()));
+        col = col.push(ui::prose(rv.body.clone()).size(14.0));
     }
     col.into()
 }
 
-/// The diff as mono lines, coloured by their marker.
+/// The diff as mono lines: additions and deletions on a faint tint, hunk headers on a grey tint,
+/// file headers semibold (the web's `.git-diff`).
 fn diff_view<'a>(diff: &str) -> Element<'a, Msg> {
-    let lines: Vec<Element<'a, Msg>> = diff.split('\n').map(|line| ui::mono(line.to_string(), 12.0, diff_colour(line)).into()).collect();
-    scrollable(column(lines)).width(Length::Fill).into()
+    let lines: Vec<Element<'a, Msg>> = diff
+        .split('\n')
+        .map(|line| {
+            let (color, tint, font) = diff_style(line);
+            container(text(line.to_string()).font(font).size(12.5).color(color))
+                .padding([0, 14])
+                .width(Length::Fill)
+                .style(move |_: &Theme| container::Style { background: tint.map(Into::into), ..Default::default() })
+                .into()
+        })
+        .collect();
+    scrollable(column(lines).padding([8, 0])).width(Length::Fill).into()
 }
 
-fn diff_colour(line: &str) -> Color {
+/// A diff line's text colour, tint and font, by its marker.
+fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     if line.starts_with("@@") {
-        INK_2
+        (INK_3, Some(Color { a: 0.06, ..INK }), theme::MONO)
     } else if line.starts_with("+++") || line.starts_with("---") {
-        INK_3
+        (INK_2, None, MONO_SEMIBOLD)
     } else if line.starts_with('+') {
-        OK
+        (INK, Some(Color { a: 0.12, ..OK }), theme::MONO)
     } else if line.starts_with('-') {
-        CRIT
+        (INK, Some(Color { a: 0.12, ..CRIT }), theme::MONO)
     } else {
-        INK
+        (INK, None, theme::MONO)
     }
 }
 
@@ -1052,7 +1140,7 @@ fn list<'a>(rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::with_capacity(rows.len() * 2);
     for r in rows {
         items.push(r);
-        items.push(ui::hairline());
+        items.push(rule_line());
     }
     column(items).into()
 }
