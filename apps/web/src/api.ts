@@ -1054,3 +1054,89 @@ export const promptsApi = {
   check: (kind: PromptKind, body: string) => post<PromptReport>('/v1/prompts/check', { kind, body }),
   rules: () => get<PromptRules>('/v1/prompts/rules'),
 };
+
+// The skill library (docs/design/skill-library.md): SKILL.md folders, versioned and checked, from files or GitHub.
+export type SkillSeverity = PromptSeverity;
+export interface SkillFinding { rule: string; severity: SkillSeverity; path: string; line: number; message: string }
+export interface SkillStats { files: number; total_bytes: number; body_lines: number; est_tokens: number; scripts: number }
+export interface SkillReport {
+  rules_version: number; findings: SkillFinding[]; score: number; errors: number; warnings: number; infos: number;
+  stats: SkillStats; name: string | null; description: string | null;
+}
+export type SkillSource =
+  | { kind: 'built' }
+  | { kind: 'upload' }
+  | { kind: 'github'; repo: string; git_ref: string | null; path: string; commit: string };
+/** One skill. `score` is the live version's (null when unpublished); `best_version` the highest-scoring version. */
+export interface SkillSummary {
+  id: string; name: string; title: string; description: string; tags: string[]; bindings: string[];
+  active_version: number | null; latest_version: number; best_version: number | null; score: number | null;
+  source: SkillSource; created_ms: number; updated_ms: number; archived_ms: number | null;
+}
+export interface SkillFile { path: string; sha256: string; size: number; executable: boolean }
+export interface SkillVersionMeta {
+  version: number; note: string; author: string; created_ms: number; score: number; errors: number; warnings: number;
+  infos: number; rules_version: number; sha256: string; file_count: number; total_bytes: number; source_commit: string | null;
+}
+/** A whole version. `stale` when scored under an older rule set; `recheck` is then today's report. */
+export interface SkillVersion extends SkillVersionMeta {
+  skill_md: string; files: SkillFile[]; findings: SkillFinding[]; stale: boolean; recheck: SkillReport | null;
+}
+export interface SkillDetail { skill: SkillSummary; versions: SkillVersionMeta[]; live: SkillVersion | null }
+export interface SkillDiff {
+  from: SkillVersion; to: SkillVersion; skill_md: PromptDiffLine[];
+  files: { added: string[]; removed: string[]; changed: string[] };
+}
+export type SkillAction = 'create' | 'version' | 'publish' | 'unpublish' | 'edit' | 'bind' | 'archive' | 'restore';
+export interface SkillEvent { id: number; skill_id: string; action: SkillAction; version: number | null; actor: string; at_ms: number }
+export interface SkillRule { id: string; severity: SkillSeverity; title: string; why: string }
+export interface SkillRules { rules_version: number; rules: SkillRule[]; template: string }
+/** A file to save: new bytes (base64), or an unchanged file by its sha256. */
+export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { sha256: string });
+/** An import preview (15 minutes): the skills found, each checked. `exists` names a live skill with the same name. */
+export interface SkillPreview {
+  preview_id: string; source: SkillSource; expires_ms: number;
+  skills: { path: string; name: string | null; title: string; report: SkillReport; files: number; exists: string | null }[];
+}
+export interface SkillGithubCheck { current: string; latest: string; update_available: boolean }
+
+const skillPath = (id: string) => `/v1/skills/${encodeURIComponent(id)}`;
+
+export const skillsApi = {
+  list: (q: { archived?: boolean } = {}) => get<{ skills: SkillSummary[] }>(`/v1/skills${query({ archived: q.archived ? 'true' : undefined })}`),
+  get: (id: string) => get<SkillDetail>(skillPath(id)),
+  create: (body: { id?: string; title: string; tags?: string[]; bindings?: string[]; skill_md: string; files?: SkillFileIn[]; note?: string }) =>
+    post<{ skill: SkillSummary }>('/v1/skills', body),
+  saveMeta: (id: string, meta: { title: string; tags: string[] }) => put<{ skill: SkillSummary }>(skillPath(id), meta),
+  setBindings: (id: string, bindings: string[]) => put<{ skill: SkillSummary }>(`${skillPath(id)}/bindings`, { bindings }),
+  version: (id: string, v: number) => get<SkillVersion>(`${skillPath(id)}/versions/${v}`),
+  /** One file's bytes, for a download link or a fetch. */
+  fileUrl: (id: string, v: number, path: string) => `${skillPath(id)}/versions/${v}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
+  /** 409 when `base_version` is not the latest; `created` false when nothing changed. */
+  addVersion: (id: string, body: { skill_md: string; files: SkillFileIn[]; note: string; base_version: number }) =>
+    post<{ version: SkillVersionMeta; created: boolean }>(`${skillPath(id)}/versions`, body),
+  publish: (id: string, version: number) => post<{ skill: SkillSummary }>(`${skillPath(id)}/publish`, { version }),
+  unpublish: (id: string) => post<{ skill: SkillSummary }>(`${skillPath(id)}/unpublish`),
+  archive: (id: string) => post<{ skill: SkillSummary }>(`${skillPath(id)}/archive`),
+  restore: (id: string) => post<{ skill: SkillSummary }>(`${skillPath(id)}/restore`),
+  diff: (id: string, from: number, to: number) => get<SkillDiff>(`${skillPath(id)}/diff${query({ from, to })}`),
+  history: (id: string) => get<{ events: SkillEvent[] }>(`${skillPath(id)}/history`),
+  check: (skill_md: string, files: { path: string; size: number; executable: boolean; text?: string }[]) =>
+    post<SkillReport>('/v1/skills/check', { skill_md, files }),
+  rules: () => get<SkillRules>('/v1/skills/rules'),
+  /** A .zip or .skill file's bytes. */
+  importPreview: async (bytes: ArrayBuffer): Promise<SkillPreview> => {
+    const res = await fetch('/v1/skills/import/preview', { method: 'POST', headers: { 'content-type': 'application/zip' }, body: bytes });
+    const data = (await res.json().catch(() => null)) as (SkillPreview & { error?: string }) | null;
+    if (!res.ok) throw new ApiError(res.status, data?.error ?? `import: ${res.status}`);
+    return data as SkillPreview;
+  },
+  githubPreview: (url: string) => post<SkillPreview>('/v1/skills/github/preview', { url }),
+  importCommit: (preview_id: string, picks: string[], bindings: string[] = []) =>
+    post<{ skills: SkillSummary[] }>('/v1/skills/import/commit', { preview_id, picks, bindings }),
+  githubCheck: (id: string) => post<SkillGithubCheck>(`${skillPath(id)}/github/check`),
+  githubUpdate: (id: string) => post<{ version: SkillVersionMeta; created: boolean }>(`${skillPath(id)}/github/update`),
+  /** Zip downloads. */
+  exportUrl: (id: string, v: number) => `${skillPath(id)}/versions/${v}/export`,
+  exportManyUrl: (ids: string[]) => `/v1/skills/export${query({ ids: ids.join(',') })}`,
+};

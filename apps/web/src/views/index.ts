@@ -21,6 +21,7 @@ import { mount as nodes } from './nodes';
 import { mount as overview } from './overview';
 import { mount as projects } from './projects';
 import { mount as prompts } from './prompts';
+import { mount as skills } from './skills';
 import { mount as rules } from './rules';
 import { mount as setup } from './setup';
 import { mount as society } from './society';
@@ -47,6 +48,7 @@ export const SCREENS: Screen[] = [
   { key: 'overview', label: 'Overview', icon: 'overview', section: 'Plaza', mount: overview },
   { key: 'agents', label: 'Agents', icon: 'agents', section: 'Plaza', mount: agents },
   { key: 'prompts', label: 'Prompts', icon: 'edit', section: 'Plaza', mount: prompts },
+  { key: 'skills', label: 'Skills', icon: 'wrench', section: 'Plaza', mount: skills },
   { key: 'projects', label: 'Projects', icon: 'projects', section: 'Plaza', mount: projects },
   { key: 'tasks', label: 'Tasks', icon: 'tasks', section: 'Plaza', mount: tasks },
   { key: 'git', label: 'Git', icon: 'git', section: 'Plaza', mount: git },

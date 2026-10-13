@@ -33,6 +33,54 @@ pub fn recommendation_for(approval_id: &str) -> Option<Value> {
 
 pub struct PromptPublish;
 pub struct RequestDecision;
+pub struct SkillPublish;
+
+impl Tool for SkillPublish {
+    fn name(&self) -> &'static str {
+        "skill_publish"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Govern
+    }
+
+    fn description(&self) -> &'static str {
+        "Publishes one version of a skill as its live version. Refused while the version has error-level findings."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "version": { "type": "integer", "minimum": 1 },
+            },
+            "required": ["id", "version"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "active_version": { "type": "integer" },
+                "latest_version": { "type": "integer" },
+            },
+            "required": ["id", "active_version", "latest_version"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        ctx.plaza.skill_publish(id, version_arg(args, "version")?)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("Published version {} of skill {}.", out["active_version"], out["id"].as_str().unwrap_or("?"))
+    }
+}
 
 impl Tool for PromptPublish {
     fn name(&self) -> &'static str {

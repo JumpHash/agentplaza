@@ -74,6 +74,8 @@ const ALWAYS: &[&str] = &[
     "memory_read",
     "memory_search",
     "memory_list",
+    "plaza_skills",
+    "plaza_skill_read",
 ];
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
@@ -118,6 +120,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_board_read" | "plaza_board_post" | "plaza_board_comment" | "plaza_send_message" | "plaza_vote"
         | "plaza_propose" | "plaza_agents" | "plaza_money" | "plaza_post_task" | "plaza_assign"
         | "plaza_cancel_task" | "plaza_task_result" | "plaza_get_file" | "plaza_set_name" | "plaza_pay" | "plaza_verdict" => Some(Runs::Host),
+        name if crate::skills::agent_tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::projects::TOOLS.contains(&name) => Some(Runs::Host),
@@ -474,7 +477,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
         ),
         other => {
-            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other)).or_else(|| crate::agent_proposals::spec(other))?;
+            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other)).or_else(|| crate::agent_proposals::spec(other)).or_else(|| crate::skills::agent_tools::spec(other))?;
             return Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema });
         }
     };
@@ -768,6 +771,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
             let notes = str_arg(input, "notes")?;
             app.work.verdict(app, task, work, pass, notes)
         }
+        other if crate::skills::agent_tools::TOOLS.contains(&other) => crate::skills::agent_tools::run(app, agent, other, input),
         other if crate::society::TOOLS.contains(&other) => crate::society::run(app, agent, work, other, input),
         other if crate::toolbox::TOOLS.contains(&other) => crate::toolbox::run(app, agent, other, input),
         other if crate::projects::TOOLS.contains(&other) => crate::projects::run(app, agent, other, input),

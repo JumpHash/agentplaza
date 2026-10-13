@@ -71,6 +71,30 @@ pub const PROMPT_SET_META: &str = include_str!("../../sql/queries/prompt_set_met
 pub const PROMPT_SET_ACTIVE: &str = include_str!("../../sql/queries/prompt_set_active.sql");
 pub const PROMPT_SET_ARCHIVED: &str = include_str!("../../sql/queries/prompt_set_archived.sql");
 
+// The skill library (`skills`, migration 0007, docs/design/skill-library.md).
+pub const SKILL_LIST: &str = include_str!("../../sql/queries/skill_list.sql");
+pub const SKILL_GET: &str = include_str!("../../sql/queries/skill_get.sql");
+pub const SKILL_LOCK: &str = include_str!("../../sql/queries/skill_lock.sql");
+pub const SKILL_NAME_HOLDER: &str = include_str!("../../sql/queries/skill_name_holder.sql");
+pub const SKILL_VERSIONS: &str = include_str!("../../sql/queries/skill_versions.sql");
+pub const SKILL_VERSION_GET: &str = include_str!("../../sql/queries/skill_version_get.sql");
+pub const SKILL_FILES: &str = include_str!("../../sql/queries/skill_files.sql");
+pub const SKILL_FINDINGS: &str = include_str!("../../sql/queries/skill_findings.sql");
+pub const SKILL_EVENTS: &str = include_str!("../../sql/queries/skill_events.sql");
+pub const SKILL_BOUND: &str = include_str!("../../sql/queries/skill_bound.sql");
+pub const SKILL_INSERT: &str = include_str!("../../sql/queries/skill_insert.sql");
+pub const SKILL_VERSION_INSERT: &str = include_str!("../../sql/queries/skill_version_insert.sql");
+pub const SKILL_FILE_INSERT: &str = include_str!("../../sql/queries/skill_file_insert.sql");
+pub const SKILL_FINDING_INSERT: &str = include_str!("../../sql/queries/skill_finding_insert.sql");
+pub const SKILL_EVENT_INSERT: &str = include_str!("../../sql/queries/skill_event_insert.sql");
+pub const SKILL_SET_LATEST: &str = include_str!("../../sql/queries/skill_set_latest.sql");
+pub const SKILL_SET_META: &str = include_str!("../../sql/queries/skill_set_meta.sql");
+pub const SKILL_TOUCH: &str = include_str!("../../sql/queries/skill_touch.sql");
+pub const SKILL_SET_ACTIVE: &str = include_str!("../../sql/queries/skill_set_active.sql");
+pub const SKILL_SET_ARCHIVED: &str = include_str!("../../sql/queries/skill_set_archived.sql");
+pub const SKILL_BINDINGS_DELETE: &str = include_str!("../../sql/queries/skill_bindings_delete.sql");
+pub const SKILL_BINDINGS_INSERT: &str = include_str!("../../sql/queries/skill_bindings_insert.sql");
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

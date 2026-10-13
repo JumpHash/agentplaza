@@ -1,0 +1,67 @@
+/* Skills: the library's list and the new-skill, import and GitHub dialogs. Square corners, the register's own variables. */
+
+.skills-view { display: flex; flex-direction: column; gap: 24px; min-width: 0; padding-bottom: 40px; }
+
+/* Heading: the title and intro on the left, the actions on the right */
+.skills-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ink); padding-bottom: 12px; }
+.skills-head h1 { margin: 0; font-size: 28px; }
+.skills-intro { margin: 6px 0 0; max-width: 72ch; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
+.skills-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+
+/* Toolbar: the filters and the archived toggle, then the search and the count */
+.skills-toolbar { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; border: 1px solid var(--rule); background: var(--sheet); min-width: 0; }
+.skills-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; min-width: 0; }
+.skills-row > input[type="search"] { flex: 1 1 260px; min-width: 0; }
+.skills-filter { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); min-width: 0; }
+.skills-filter .select { max-width: 220px; }
+.skills-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.skills-count { margin: 0; font-size: 13px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* The table: scrolls sideways inside its box, never the page */
+.skills-table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }
+.skills-name { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.skills-name a { color: var(--ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+.skills-name a:hover { text-decoration: underline; }
+.skills-desc { margin: 0; max-width: 60ch; font-size: 13px; line-height: 1.45; color: var(--ink-2); }
+.skills-chips, .skills-tags, .skills-score { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.skills-tag { border: 1px solid var(--rule); padding: 1px 6px; font-size: 12px; color: var(--ink-2); }
+.skills-muted { color: var(--ink-3); font-size: 13px; }
+.skills-best { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.skills-source { text-decoration: none; }
+.skills-source:hover .badge { text-decoration: underline; }
+
+/* Empty and failed states */
+.skills-empty { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 24px 18px; border: 1px dashed var(--rule); background: var(--sheet); }
+.skills-empty h3 { margin: 0; font-size: 17px; }
+.skills-empty p { margin: 0; max-width: 62ch; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
+.skills-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 0; padding: 16px 18px; border: 1px solid var(--crit); background: var(--danger-bg); color: var(--ink); font-size: 14px; }
+.skills-error p { margin: 0; color: var(--ink); font-size: 14px; }
+
+/* The dialogs */
+.skills-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; width: min(600px, 100%); }
+.skills-form .field { min-width: 0; }
+.skills-form textarea { font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; min-height: 200px; }
+.skills-form input[type="file"] { max-width: 100%; font: inherit; font-size: 14px; }
+.skills-binding { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.skills-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
+.skills-hint { margin: 0; font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+.skills-preview, .skills-preview-box { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.skills-preview-box:empty { display: none; }
+
+/* An import preview: one row per skill found */
+.skills-found-list { display: flex; flex-direction: column; min-width: 0; max-height: 340px; overflow-y: auto; border: 1px solid var(--rule); }
+.skills-found-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--rule); min-width: 0; }
+.skills-found-row:last-child { border-bottom: 0; }
+.skills-pick { padding-top: 2px; cursor: pointer; }
+.skills-found { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.skills-found-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
+.skills-path { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
+.skills-meta { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.skills-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-2); }
+
+@media (max-width: 640px) {
+  .skills-head h1 { font-size: 24px; }
+  .skills-toolbar { padding: 12px; }
+  .skills-actions { justify-content: flex-start; }
+  .skills-filter .select { max-width: 100%; }
+}

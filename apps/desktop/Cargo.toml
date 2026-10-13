@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 apz-prompt = { path = "../../crates/apz-prompt" }
+apz-skill = { path = "../../crates/apz-skill" }
 # The board core: one Rust crate for the board, shared with the web (WASM). See docs/design/apz-board.md.
 apz-board = { path = "../../crates/apz-board" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
@@ -45,6 +46,7 @@ apz-os = { path = "../../crates/apz-os" }
 apz-trust = { path = "../../crates/apz-trust" }
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 # The Lab's times are the owner's local time, as the web's (`clock` reads the zone on every platform).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The Lab's upload picks its JSONL file with the native file dialog, as the web's file input does.

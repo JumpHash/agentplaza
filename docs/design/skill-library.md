@@ -109,8 +109,8 @@ Without Postgres, `MemorySkills` keeps the rows in `<state_dir>/skills.json`, as
   `/tree/<ref>/<path>`.
 - The hub resolves the ref to a commit (the GitHub API), downloads that commit's zipball within the same limits, and
   returns the same preview.
-- A token improves the rate limit and opens private repos. If the vault holds a `github_token` secret, the hub sends it;
-  the token never reaches a client.
+- A token improves the rate limit and opens private repos. If the vault holds a `github_token` secret bound to the
+  `github` consumer, the hub sends it; the token never reaches a client.
 - `POST /v1/skills/{id}/github/check` says whether the ref now points at a newer commit.
   `POST /v1/skills/{id}/github/update` imports that commit as a new version. Publishing it stays the owner's decision.
 

@@ -56,6 +56,7 @@ mod node_link;
 mod hub_auth;
 mod hub_mcp;
 mod prompts;
+mod skills;
 mod transcript;
 mod upstream;
 mod usage;

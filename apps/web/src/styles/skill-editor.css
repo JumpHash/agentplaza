@@ -1,0 +1,537 @@
+/* The skill editor (views/skill-editor.ts): a file tree beside the selected file, its findings and its versions. */
+
+.skill-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--ink);
+}
+
+.se-head,
+.se-top,
+.se-title,
+.se-chips,
+.se-actions,
+.se-source,
+.se-view-head,
+.se-pickbar,
+.se-row-actions,
+.se-tree-tools,
+.se-file-head,
+.se-score,
+.se-summary,
+.se-rule-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.se-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.se-title {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.se-title h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.se-title p {
+  margin: 0;
+}
+
+.se-actions {
+  justify-content: flex-start;
+}
+
+.se-muted,
+.se-stats {
+  color: var(--ink-3);
+  font-size: 0.875rem;
+}
+
+.se-muted p,
+p.se-muted {
+  margin: 0;
+}
+
+.se-error {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.875rem;
+}
+
+p.se-error {
+  margin: 0;
+}
+
+.se-dirty[hidden] {
+  display: none;
+}
+
+.se-banner {
+  width: 100%;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.875rem;
+}
+
+.se-source code,
+.se-rule-id,
+.se-view code,
+.se-compare code,
+.se-rule-head code {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.se-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.se-edit {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.se-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--sheet);
+  padding: 12px;
+  min-width: 0;
+}
+
+.se-tree h2,
+.se-editor-col h2,
+.se-findings h2,
+.se-versions h2,
+.se-view h2,
+.se-compare h2,
+.se-rules h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.se-tree-tools .btn {
+  flex: 0 0 auto;
+}
+
+.se-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.se-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.se-file:hover {
+  background: var(--hover);
+}
+
+.se-file.active {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+.se-file-name {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.se-file-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+}
+
+.se-editor-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.se-file-head h2 {
+  font-family: var(--mono);
+  font-size: 1rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.se-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.se-panes:has(> :only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.se-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.se-label {
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.se-code {
+  display: flex;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  overflow: hidden;
+  min-height: 320px;
+}
+
+.se-gutter {
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 10px 8px;
+  text-align: right;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  user-select: none;
+}
+
+.se-gutter span {
+  display: block;
+  padding-right: 4px;
+}
+
+.se-gutter .sev-error {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.se-gutter .sev-warning {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.se-gutter .sev-info {
+  color: var(--info);
+}
+
+.se-src {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 320px;
+  border: 0;
+  outline: none;
+  resize: vertical;
+  background: transparent;
+  color: var(--ink);
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+
+.se-preview {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  padding: 12px 14px;
+  min-height: 320px;
+  overflow: auto;
+}
+
+.se-binary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.se-binary p {
+  margin: 0;
+}
+
+.se-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.se-group h3 {
+  margin: 8px 0 4px;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+.se-findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.se-finding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid var(--rule-faint);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.se-finding:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.se-finding:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.se-sev {
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+
+.se-sev.danger {
+  color: var(--danger);
+}
+
+.se-sev.warn {
+  color: var(--warn);
+}
+
+.se-sev.info {
+  color: var(--info);
+}
+
+.se-where {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.se-msg {
+  flex: 1 1 240px;
+  font-size: 0.875rem;
+}
+
+.se-versions,
+.se-view,
+.se-compare,
+.se-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.se-vers {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.se-view,
+.se-compare {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--sheet);
+  padding: 14px;
+}
+
+.se-view-head {
+  justify-content: space-between;
+}
+
+.se-file-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.875rem;
+}
+
+.se-sides,
+.se-files {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.se-side h3,
+.se-changed h3 {
+  margin: 0 0 6px;
+  font-size: 0.9375rem;
+}
+
+.se-changed ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.875rem;
+}
+
+.se-diff {
+  display: flex;
+  flex-direction: column;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.se-line {
+  display: grid;
+  grid-template-columns: 44px 44px 16px minmax(0, 1fr);
+  gap: 4px;
+  padding: 0 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.se-line.add {
+  background: var(--ok-bg);
+}
+
+.se-line.del {
+  background: var(--danger-bg);
+}
+
+.se-ln {
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.se-sign {
+  color: var(--ink-3);
+}
+
+.se-line code {
+  font-family: inherit;
+}
+
+.se-rule-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.se-rule-card {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--sheet);
+  padding: 10px 14px;
+}
+
+.se-rule-card h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.se-rule-card p {
+  margin: 4px 0 0;
+  font-size: 0.875rem;
+}
+
+.se-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: min(420px, 80vw);
+}
+
+.se-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.se-form .hint {
+  color: var(--ink-3);
+  font-size: 0.8125rem;
+}
+
+.se-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9375rem;
+}
+
+.se-actions:has(> .btn:only-child) {
+  justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .skill-editor {
+    padding: 0 16px;
+  }
+
+  .se-edit,
+  .se-panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .se-code,
+  .se-src {
+    min-height: 240px;
+  }
+}

@@ -355,9 +355,12 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         name: agent.name.clone(),
         role: agent.role.clone(),
         model: model_of(app, agent),
-        system: with_house_rules(
-            render_vars(&system_prompt(agent, role_prompt), agent),
-            app.prompts.bound_body("plaza").map(|rules| render_vars(&rules, agent)),
+        system: with_skills(
+            with_house_rules(
+                render_vars(&system_prompt(agent, role_prompt), agent),
+                app.prompts.bound_body("plaza").map(|rules| render_vars(&rules, agent)),
+            ),
+            crate::skills::agent_tools::prompt_section(app, &agent.role),
         ),
         tools: crate::tools::specs_for_agent(app, agent),
         max_turns: limits.max_turns.unwrap_or(app.settings.get().max_turns),
@@ -387,6 +390,14 @@ fn with_house_rules(system: String, rules: Option<String>) -> String {
     match rules {
         Some(rules) if !rules.trim().is_empty() => format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim()),
         _ => system,
+    }
+}
+
+/// Appends the agent's `## Skills` section (`agent_tools::prompt_section`), when it has skills.
+fn with_skills(system: String, section: Option<String>) -> String {
+    match section {
+        Some(section) => format!("{system}\n\n{section}"),
+        None => system,
     }
 }
 

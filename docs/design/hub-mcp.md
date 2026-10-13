@@ -103,6 +103,8 @@ namespace them.
 | `list_laws` | none | the laws in force: id, tier, text, overrides |
 | `prompts_list` | `kind?` (`system`, `agents_md` or `fragment`) | live prompts: id, kind, title, binding, active and latest version, the live version's score |
 | `prompt_get` | `id`, `version?` | one version (default: the live one, else the latest): body, score, findings |
+| `skills_list` | none | live skills: id, name, title, description, bindings, active and latest version, the live version's score |
+| `skill_get` | `id`, `version?` | one version (default: the live one, else the latest): SKILL.md, files, score, findings |
 
 ### `operate`: acts within the plaza's own rules
 
@@ -116,6 +118,7 @@ namespace them.
 | `restart_agent` | `cid` | Restarts one agent's VM. |
 | `propose_agent` | `role`, `model?`, `node?`, `why` | Files an agent proposal. Spawning costs money, so the owner approves it in the console. |
 | `prompt_propose` | `id`, `body`, `note?`, `base_version` | Adds a version to a prompt, authored over MCP. It never publishes; returns the version, whether it was created, its score and error count. |
+| `skill_propose` | `id`, `skill_md`, `files`, `base_version`, `note?` | Adds a version to a skill, authored over MCP (`files`: `{path, content_b64 \| sha256, executable}`). It never publishes; returns the version, its score and error count. |
 
 ### `govern`: files an approval, never acts directly
 
@@ -124,6 +127,7 @@ namespace them.
 | `request_decision` | `approval_id`, `decision` (`approve` or `deny`), `note` | Records the client's recommendation on a pending approval and notifies the owner. The approval is decided only when the owner confirms it in the console or the CLI. |
 | `propose_law_change` | `law`, `change`, `why` | Files a council motion, which the plaza votes on under its own process. |
 | `prompt_publish` | `id`, `version` | Publishes one version as the live one. Refused while the version has error-level findings. |
+| `skill_publish` | `id`, `version` | Publishes one skill version as the live one. Refused while the version has error-level findings. |
 
 ### Never, at any scope
 

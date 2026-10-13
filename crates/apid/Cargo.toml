@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 apz-prompt = { path = "../apz-prompt" }
+apz-skill = { path = "../apz-skill" }
 jhrl = { path = "../jhrl" }
 apz-proto.workspace = true
 apz-http = { path = "../apz-http" }

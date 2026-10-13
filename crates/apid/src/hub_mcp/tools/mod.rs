@@ -37,6 +37,58 @@ pub trait Plaza: Sync {
     fn create_task(&self, input: &Value) -> Result<Value, String>;
     /// The prompt library the prompt tools read and write.
     fn prompts(&self) -> &Prompts;
+    /// The skill library the skill tools read and write.
+    fn skills(&self) -> &crate::skills::Skills;
+
+    /// The live skills, by id. Their live version's score; the skill tools never publish.
+    fn skills_list(&self) -> Result<Vec<Value>, String> {
+        let store = self.skills().store();
+        let mut rows = Vec::new();
+        for skill in store.list(false)? {
+            let score = match skill.active_version {
+                Some(live) => store.versions(&skill.id)?.into_iter().find(|meta| meta.version == live).map(|meta| meta.score),
+                None => None,
+            };
+            rows.push(json!({
+                "id": skill.id,
+                "name": skill.name,
+                "title": skill.title,
+                "description": skill.description,
+                "bindings": skill.bindings,
+                "active_version": skill.active_version,
+                "latest_version": skill.latest_version,
+                "score": score,
+            }));
+        }
+        Ok(rows)
+    }
+
+    /// One version of a skill (default: the live one, else the latest): SKILL.md, its files, score and findings.
+    fn skill_get(&self, id: &str, version: Option<u32>) -> Result<Value, String> {
+        let store = self.skills().store();
+        let skill = store.get(id)?.ok_or_else(|| format!("no skill {id}"))?;
+        let wanted = version.or(skill.active_version).unwrap_or(skill.latest_version);
+        let found = store.version(id, wanted)?.ok_or_else(|| format!("{id} has no version {wanted}"))?;
+        let mut out = serde_json::to_value(&found).map_err(|err| err.to_string())?;
+        out["id"] = json!(id);
+        Ok(out)
+    }
+
+    /// Adds a skill version authored over MCP. Each file is `{path, content_b64}` (new bytes) or `{path, sha256}`
+    /// (bytes already in the library). It never publishes.
+    fn skill_propose(&self, id: &str, skill_md: &str, files: &[Value], note: &str, base_version: u32) -> Result<Value, String> {
+        let inputs = files.iter().map(skill_file_in).collect::<Result<Vec<_>, _>>()?;
+        let skills = self.skills();
+        let next = skills.prepare(skill_md.to_string(), inputs, note.to_string(), None).map_err(skill_store_text)?;
+        let meta = skills.store().add_version(id, base_version, &next, MCP_ACTOR, now_ms()).map_err(skill_store_text)?;
+        Ok(json!({ "id": id, "version": meta.version, "score": meta.score, "errors": meta.errors, "warnings": meta.warnings }))
+    }
+
+    /// Publishes one skill version as the live one; refused while it has error-level findings.
+    fn skill_publish(&self, id: &str, version: u32) -> Result<Value, String> {
+        let skill = self.skills().publish(id, version, MCP_ACTOR, now_ms()).map_err(skill_store_text)?;
+        Ok(json!({ "id": id, "active_version": skill.active_version, "latest_version": skill.latest_version }))
+    }
 
     /// The live prompts, by id. `kind` (`system`, `agents_md` or `fragment`) narrows them.
     fn prompts_list(&self, kind: Option<&str>) -> Result<Vec<Value>, String> {
@@ -128,14 +180,18 @@ pub static REGISTRY: &[&dyn Tool] = &[
     &observe::SearchLibrary,
     &observe::PromptsList,
     &observe::PromptGet,
+    &observe::SkillsList,
+    &observe::SkillGet,
     &operate::MessageOrchestrator,
     &operate::TellAgent,
     &operate::StopAgent,
     &operate::RestartAgent,
     &operate::CreateTask,
     &operate::PromptPropose,
+    &operate::SkillPropose,
     &govern::RequestDecision,
     &govern::PromptPublish,
+    &govern::SkillPublish,
 ];
 
 pub fn find(name: &str) -> Option<&'static dyn Tool> {
@@ -153,6 +209,33 @@ pub const MCP_ACTOR: &str = "mcp";
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// A skill-library refusal, as the message a tool returns.
+fn skill_store_text(err: crate::skills::StoreError) -> String {
+    use crate::skills::StoreError as Skill;
+    match err {
+        Skill::NotFound => "no such skill".to_string(),
+        Skill::Conflict(text) | Skill::Invalid(text) | Skill::Failed(text) => text,
+    }
+}
+
+/// One file of a `skill_propose` call, as the library takes it.
+fn skill_file_in(file: &Value) -> Result<crate::skills::FileIn, String> {
+    use base64::Engine as _;
+    let path = file.get("path").and_then(Value::as_str).ok_or("each file needs a path")?.to_string();
+    let executable = file.get("executable").and_then(Value::as_bool).unwrap_or(false);
+    let body = match (file.get("content_b64").and_then(Value::as_str), file.get("sha256").and_then(Value::as_str)) {
+        (Some(encoded), None) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|err| format!("{path}: content_b64 is not base64: {err}"))?;
+            crate::skills::FileBody::Bytes(bytes)
+        }
+        (None, Some(sha256)) => crate::skills::FileBody::Known(sha256.to_string()),
+        _ => return Err(format!("{path}: give content_b64 or sha256, not both or neither")),
+    };
+    Ok(crate::skills::FileIn { path, body, executable })
 }
 
 /// A store refusal, as the message a tool returns.

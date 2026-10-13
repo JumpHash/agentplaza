@@ -237,6 +237,40 @@ impl Store {
         write_atomic(&self.dir.join(INDEX), &bytes, 0o600)
     }
 
+    /// Whether Garage is configured; then the objects below are kept there.
+    pub fn has_garage(&self) -> bool {
+        self.garage.is_some()
+    }
+
+    /// Writes an object that is not a deliverable (skill files): Garage when it is configured, else
+    /// `<dir>/objects/<key>`. Not indexed.
+    pub fn put_object(&self, key: &str, bytes: &[u8]) -> Result<(), String> {
+        if self.garage.is_some() {
+            return self.garage()?.put(key, bytes, "application/octet-stream");
+        }
+        let path = self.object_path(key)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        write_atomic(&path, bytes, 0o600).map_err(|e| e.to_string())
+    }
+
+    /// Reads an object `put_object` wrote.
+    pub fn get_object(&self, key: &str) -> Result<Vec<u8>, String> {
+        if self.garage.is_some() {
+            return self.garage()?.get(key);
+        }
+        std::fs::read(self.object_path(key)?).map_err(|e| e.to_string())
+    }
+
+    /// `<dir>/objects/<key>`, for a key of plain segments only.
+    fn object_path(&self, key: &str) -> Result<PathBuf, String> {
+        if key.is_empty() || key.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+            return Err(format!("{key:?} is not an object key"));
+        }
+        Ok(self.dir.join("objects").join(key))
+    }
+
     fn blob_path(&self, id: &str) -> PathBuf {
         self.dir.join("blobs").join(id)
     }

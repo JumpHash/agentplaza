@@ -117,7 +117,7 @@ pub struct App {
     /// Agent-made tools (the plaza's library).
     pub library: crate::library::Store,
     /// The Library of deliverables: files agents handed in, in Garage or a local folder.
-    pub deliverables: crate::deliverables::Store,
+    pub deliverables: Arc<crate::deliverables::Store>,
     /// Hire bonuses, posting counts and outreach times.
     pub society: crate::society::Society,
     /// What agents found on the internet and judged, for every agent to use.
@@ -153,6 +153,8 @@ pub struct App {
     pub hub_mcp: crate::hub_mcp::HubMcp,
     /// The prompt library: system prompts and AGENTS.md, versioned and checked (docs/design/prompt-library.md).
     pub prompts: crate::prompts::Prompts,
+    /// The skill library: SKILL.md folders, versioned and checked, imported from files or GitHub (docs/design/skill-library.md).
+    pub skills: crate::skills::Skills,
     /// The secret vault (docs/design/vault.md): sealed or unsealed, encrypted at rest.
     pub vault: Arc<crate::vault::Store>,
     pub settings: settings::Store,
@@ -202,6 +204,8 @@ impl App {
             Arc::new(crate::prompts::store_mem::MemoryPrompts::open(&config.state_dir))
         };
         let vault = Arc::new(crate::vault::Store::open(&config.state_dir, &config.vault_key, vault_db));
+        // The Library of deliverables, shared with the skill library's file store.
+        let library = Arc::new(crate::deliverables::Store::load(&config.state_dir, &env, Arc::clone(&vault))?);
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
@@ -211,7 +215,7 @@ impl App {
             connectors: crate::connectors::Store::load(&config.state_dir, Arc::clone(&vault))?,
             approvals: crate::approvals::Store::load(&config.state_dir),
             library: crate::library::Store::load(&config.state_dir),
-            deliverables: crate::deliverables::Store::load(&config.state_dir, &env, Arc::clone(&vault))?,
+            deliverables: Arc::clone(&library),
             society: crate::society::Society::default(),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
@@ -231,6 +235,22 @@ impl App {
             hub_auth,
             hub_mcp: crate::hub_mcp::HubMcp::open(crate::hub_mcp::default_origins(config.port, &config.public_url, config.tls || !config.bind.is_loopback()), config.tls || !config.bind.is_loopback(), hub_mcp_db),
             prompts: crate::prompts::Prompts::new(prompt_store),
+            skills: {
+                // Skill files go to the Library's object store (the same Store the App holds) when Garage is configured.
+                let blobs: Arc<dyn crate::skills::Blobs> = if library.has_garage() {
+                    Arc::new(crate::skills::blobs::LibraryBlobs::new(Arc::clone(&library)))
+                } else {
+                    Arc::new(crate::skills::blobs::FsBlobs::open(&config.state_dir))
+                };
+                crate::skills::Skills::new(
+                    if db.enabled() {
+                        Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(&db))) as Arc<dyn crate::skills::SkillStore>
+                    } else {
+                        Arc::new(crate::skills::store_mem::MemorySkills::open(&config.state_dir))
+                    },
+                    blobs,
+                )
+            },
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, Arc::clone(&vault))?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,

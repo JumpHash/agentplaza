@@ -59,6 +59,9 @@ pub fn router() -> Router<App> {
     let router = crate::hub_mcp::routes(router);
     let router = memory::routes(router);
     let router = crate::prompts::routes::routes(router);
+    // The import, GitHub and export paths first: `/v1/skills/export` must not match `/v1/skills/{id}`.
+    let router = crate::skills::import::routes(router);
+    let router = crate::skills::routes::routes(router);
     let router = crate::foundry::routes::routes(router);
     let router = crate::foundry::registry::routes(router);
     // The species dealt to agents (`looks`): the list with counts, and the owner's choice of one.

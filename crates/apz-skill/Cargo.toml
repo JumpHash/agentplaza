@@ -1,0 +1,15 @@
+[package]
+name = "apz-skill"
+description = "AgentPlaza's skill library core: SKILL.md parsing, best-practice checks and scores, zip import and export, GitHub URLs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-prompt = { path = "../apz-prompt" }
+serde.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+serde_json.workspace = true

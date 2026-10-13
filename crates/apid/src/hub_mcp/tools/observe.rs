@@ -36,10 +36,16 @@ pub struct ListLaws;
 pub struct SearchLibrary;
 pub struct PromptsList;
 pub struct PromptGet;
+pub struct SkillsList;
+pub struct SkillGet;
 
 impl Plaza for App {
     fn prompts(&self) -> &crate::prompts::Prompts {
         &self.prompts
+    }
+
+    fn skills(&self) -> &crate::skills::Skills {
+        &self.skills
     }
 
     fn search_library(&self, query: &str, limit: usize) -> Vec<Value> {
@@ -214,6 +220,90 @@ impl Tool for PromptsList {
 
     fn summary(&self, out: &Value) -> String {
         format!("{} prompt(s).", out["prompts"].as_array().map_or(0, Vec::len))
+    }
+}
+
+impl Tool for SkillsList {
+    fn name(&self) -> &'static str {
+        "skills_list"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Observe
+    }
+
+    fn description(&self) -> &'static str {
+        "Lists the live skills: id, name, title, description, bindings, active and latest version, the live version's score."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "additionalProperties": false })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({ "type": "object", "properties": { "skills": { "type": "array" } }, "required": ["skills"] })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, _args: &Value) -> Result<Value, String> {
+        Ok(json!({ "skills": ctx.plaza.skills_list()? }))
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("{} live skills.", out["skills"].as_array().map_or(0, Vec::len))
+    }
+}
+
+impl Tool for SkillGet {
+    fn name(&self) -> &'static str {
+        "skill_get"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Observe
+    }
+
+    fn description(&self) -> &'static str {
+        "One version of a skill (default: the live one, else the latest): its SKILL.md, files, score and findings."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "version": { "type": "integer", "minimum": 1 },
+            },
+            "required": ["id"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "version": { "type": "integer" },
+                "skill_md": { "type": "string" },
+                "score": { "type": "integer" },
+                "files": { "type": "array" },
+                "findings": { "type": "array" },
+            },
+            "required": ["id", "version", "skill_md", "score"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let id = args.get("id").and_then(Value::as_str).ok_or("id must be a string")?;
+        let version = match args.get("version") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(version_arg(args, "version")?),
+        };
+        ctx.plaza.skill_get(id, version)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("Skill {} version {}, score {}.", out["id"].as_str().unwrap_or("?"), out["version"], out["score"])
     }
 }
 

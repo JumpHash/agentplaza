@@ -12,6 +12,7 @@ use super::tools::{observe, visible, Ctx, Plaza, Tool, REGISTRY};
 use super::{routes, HubMcp, Host};
 use crate::prompts::store_mem::MemoryPrompts;
 use crate::prompts::{NewPrompt, Prompts};
+use crate::skills::Skills;
 use apz_prompt::Kind;
 
 const ORIGIN: &str = "https://hub.test";
@@ -20,10 +21,12 @@ const MINUTE: u64 = 60_000;
 
 struct FakePlaza {
     prompts: Prompts,
+    /// Only the skill tests build a library; the others never reach the skill tools.
+    skills: Option<Skills>,
 }
 
 fn fake_plaza() -> FakePlaza {
-    FakePlaza { prompts: Prompts::new(Arc::new(MemoryPrompts::in_memory())) }
+    FakePlaza { prompts: Prompts::new(Arc::new(MemoryPrompts::in_memory())), skills: None }
 }
 
 /// Adds a prompt with a starter body (publishable) to the fake plaza's library, unpublished.
@@ -42,6 +45,10 @@ fn seed_prompt(plaza: &FakePlaza, id: &str) {
 impl Plaza for FakePlaza {
     fn prompts(&self) -> &Prompts {
         &self.prompts
+    }
+
+    fn skills(&self) -> &Skills {
+        self.skills.as_ref().expect("a skill library")
     }
 
     fn create_task(&self, input: &Value) -> Result<Value, String> {
@@ -335,9 +342,9 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
     let observe_tools = [
         "plaza_status", "list_agents", "get_agent", "get_transcript", "list_tasks", "get_task", "list_board",
         "list_projects", "get_project", "list_approvals", "list_machines", "treasury_summary", "usage_summary",
-        "list_laws", "search_library", "prompts_list", "prompt_get",
+        "list_laws", "search_library", "prompts_list", "prompt_get", "skills_list", "skill_get",
     ];
-    let operate_tools = ["message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task", "prompt_propose"];
+    let operate_tools = ["message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task", "prompt_propose", "skill_propose"];
     let all: Vec<&str> = observe_tools.iter().chain(operate_tools.iter()).copied().collect();
     assert_eq!(listed_names(&h, &reader, &s_reader), observe_tools);
     assert_eq!(listed_names(&h, &operator, &s_operator), all);
@@ -431,6 +438,22 @@ fn prompts_list_and_get_read_the_library() {
     assert_eq!(got["result"]["structuredContent"]["body"], apz_prompt::template(Kind::System));
     let missing = body_of(&h.call(&token, Some(&session), tool_call("prompt_get", json!({ "id": "nope" }))));
     assert_eq!(missing["result"]["isError"], true);
+}
+
+#[test]
+fn skill_tools_are_scoped_like_the_prompt_tools() {
+    let h = harness(true);
+    let (reader, _) = h.mint(Scope::Observe, &[], None);
+    let (operator, _) = h.mint(Scope::Operate, &[], None);
+    let reader_session = h.session(&reader);
+    let operator_session = h.session(&operator);
+    // Scope is checked before the tool runs, so these refusals never reach the skill library.
+    let args = json!({ "id": "pdf-forms", "skill_md": "# PDF forms\n", "files": [], "base_version": 1 });
+    let refused = body_of(&h.call(&reader, Some(&reader_session), tool_call("skill_propose", args)));
+    assert!(refused["error"].is_object(), "an observe token must not reach skill_propose");
+    let publish = json!({ "id": "pdf-forms", "version": 1 });
+    let by_operator = body_of(&h.call(&operator, Some(&operator_session), tool_call("skill_publish", publish)));
+    assert!(by_operator["error"].is_object(), "an operate token must not reach skill_publish");
 }
 
 #[test]

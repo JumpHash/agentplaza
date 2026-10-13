@@ -76,6 +76,77 @@ impl Tool for PromptPropose {
     }
 }
 
+pub struct SkillPropose;
+
+impl Tool for SkillPropose {
+    fn name(&self) -> &'static str {
+        "skill_propose"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Adds a version to a skill, authored over MCP. It never publishes; a version goes live only through a govern client or the owner."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "skill_md": { "type": "string", "minLength": 1 },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "minLength": 1 },
+                            "content_b64": { "type": "string" },
+                            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                            "executable": { "type": "boolean" },
+                        },
+                        "required": ["path"],
+                        "additionalProperties": false,
+                    },
+                },
+                "base_version": { "type": "integer", "minimum": 1 },
+                "note": { "type": "string" },
+            },
+            "required": ["id", "skill_md", "files", "base_version"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "version": { "type": "integer" },
+                "score": { "type": "integer" },
+                "errors": { "type": "integer" },
+                "warnings": { "type": "integer" },
+            },
+            "required": ["version", "score", "errors"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let note = match args.get("note") {
+            None | Some(Value::Null) => "",
+            Some(value) => value.as_str().ok_or("note must be a string")?,
+        };
+        let files = args.get("files").and_then(Value::as_array).ok_or("files must be an array")?;
+        ctx.plaza.skill_propose(text_arg(args, "id")?, text_arg(args, "skill_md")?, files, note, version_arg(args, "base_version")?)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("Added skill version {} with score {}.", out["version"], out["score"])
+    }
+}
+
 impl Tool for MessageOrchestrator {
     fn name(&self) -> &'static str {
         "message_orchestrator"
