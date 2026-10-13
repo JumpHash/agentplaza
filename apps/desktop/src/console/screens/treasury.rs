@@ -1,22 +1,55 @@
 //! The Treasury screen (parity with the web console's `treasury` view): the plaza budget, where it
 //! sits, where it went, every wallet and the journal. The owner mints and fines here; everything
-//! else is read.
+//! else is read. Figures count up, the charts ease between ranges, the flow's dashes run while the
+//! screen is shown, and the series, wallets and journal page through their own tables.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{button, column, container, pick_list, row, text_input, Space};
-use iced::{mouse, Alignment, Border, Element, Length, Padding, Pixels, Point, Rectangle, Size, Task, Theme};
+use iced::{alignment, mouse, Alignment, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Renderer, Size, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
+use super::usage::usd;
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{chart, client::{self, Client}, ui, Ctx};
 use crate::theme::{self, INK, INK_2, INK_3, MONO, SHEET};
 
 const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
 const AMOUNT: Font = Font { weight: font::Weight::Semibold, ..theme::MONO };
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
+
+const ANIM: Duration = Duration::from_millis(600);
+const DAY_MS: u64 = 86_400_000;
+const HOUR_MS: u64 = 3_600_000;
+const JOURNAL_PAGE: usize = 50;
+const SERIES_PAGE: usize = 25;
+/// One credit is a tenth of a cent.
+const CREDIT_USD: f64 = 0.001;
+const KNOWN_KINDS: [&str; 7] = ["mint", "escrow", "spend", "payment", "refund", "transfer", "fine"];
+const BLUE: Color = Color::from_rgb8(0x6f, 0xa8, 0xdc);
+const PURPLE: Color = Color::from_rgb8(0xb4, 0x8e, 0xd6);
+const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DASH: f32 = 7.0;
+const DASH_PERIOD: f32 = 14.0;
+const BAR_PAD_LEFT: f32 = 58.0;
+const BAR_PAD_BOTTOM: f32 = 22.0;
+const SERIES_COLUMNS: [(SeriesSort, &str, u16); 11] = [
+    (SeriesSort::Time, "When", 3),
+    (SeriesSort::Minted, "Minted", 2),
+    (SeriesSort::Escrowed, "Escrowed", 2),
+    (SeriesSort::Paid, "Paid", 2),
+    (SeriesSort::Refunded, "Refunded", 2),
+    (SeriesSort::Fined, "Fined", 2),
+    (SeriesSort::Spent, "Spent", 2),
+    (SeriesSort::Entries, "Entries", 2),
+    (SeriesSort::Budget, "Budget", 2),
+    (SeriesSort::Circulating, "Circulating", 2),
+    (SeriesSort::Treasury, "Treasury", 2),
+];
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -25,7 +58,6 @@ pub struct State {
     /// The last answered action's note.
     notice: Option<String>,
     data: Option<Data>,
-    kind_filter: Option<String>,
     busy: bool,
     mint_open: bool,
     mint_amount: String,
@@ -33,14 +65,46 @@ pub struct State {
     fine_target: Option<AgentChoice>,
     fine_amount: String,
     fine_memo: String,
+    range: Range,
+    mode: Mode,
+    balances: Animated,
+    flows: Animated,
+    counters: Counters,
+    series_sort: SeriesSort,
+    series_asc: bool,
+    series_page: usize,
+    wallet_sort: WalletSort,
+    wallet_asc: bool,
+    /// The journal's filter as applied, and the draft typed into the task box.
+    filter: JournalFilter,
+    task_draft: String,
+    journal: Vec<Entry>,
+    journal_total: u64,
+    journal_next: Option<i64>,
+    older_busy: bool,
+    /// Rows that arrived on a poll, with the moment they arrived (they fade in).
+    fresh: Vec<(i64, Instant)>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
-    Loaded(Result<Data, String>),
+    Loaded(Result<Snapshot, String>),
+    Range(Range),
+    Mode(Mode),
+    SeriesSort(SeriesSort),
+    /// Moves the series table by this many pages.
+    SeriesPage(i64),
+    WalletSort(WalletSort),
     KindPicked(KindChoice),
+    WalletPicked(WalletChoice),
+    TaskDraft(String),
+    TaskApply,
+    OlderPressed,
+    Older(JournalFilter, Result<JournalPage, String>),
+    /// An animation frame while the screen shows data.
+    Frame,
     ToggleMint,
     MintAmount(String),
     SubmitMint,
@@ -79,6 +143,101 @@ impl fmt::Display for KindChoice {
     }
 }
 
+/// An agent in the journal's filter; `None` is every agent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WalletChoice {
+    cid: Option<u64>,
+    label: String,
+}
+
+impl fmt::Display for WalletChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// The window the balances and flows cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Range {
+    Week,
+    #[default]
+    Month,
+    Quarter,
+    /// The last year: the series is bucketed by day, so "all" is bounded here.
+    All,
+}
+
+impl Range {
+    const ALL: [(Range, &'static str); 4] = [(Range::Week, "7 d"), (Range::Month, "30 d"), (Range::Quarter, "90 d"), (Range::All, "All")];
+
+    fn days(self) -> u64 {
+        match self {
+            Range::Week => 7,
+            Range::Month => 30,
+            Range::Quarter => 90,
+            Range::All => 365,
+        }
+    }
+
+    fn hourly(self) -> bool {
+        self == Range::Week
+    }
+
+    fn bucket(self) -> &'static str {
+        if self.hourly() {
+            "hour"
+        } else {
+            "day"
+        }
+    }
+}
+
+/// The chart view or the table view of the same series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Chart,
+    Table,
+}
+
+impl Mode {
+    const ALL: [(Mode, &'static str); 2] = [(Mode::Chart, "Chart"), (Mode::Table, "Table")];
+}
+
+/// The series table's columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeriesSort {
+    #[default]
+    Time,
+    Minted,
+    Escrowed,
+    Paid,
+    Refunded,
+    Fined,
+    Spent,
+    Entries,
+    Budget,
+    Circulating,
+    Treasury,
+}
+
+/// The wallets table's columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WalletSort {
+    Name,
+    #[default]
+    Balance,
+    Share,
+}
+
+/// The journal's filters as applied; a change starts the journal over from its newest page.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct JournalFilter {
+    kind: Option<String>,
+    wallet: Option<u64>,
+    task: String,
+}
+
 /// The navigation this message asks for, if any.
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
@@ -87,35 +246,150 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
-/// Loads the treasury, its journal, its wallets and the roster (called when it opens and on every poll tick).
-pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
+/// The animation frames while the screen shows data: the figures, the charts, the new journal rows
+/// and the flow's dashes. Subscribed by `screens::subscription` while the Treasury is open.
+pub fn subscription(state: &State) -> Subscription<Msg> {
+    if state.data.is_some() {
+        iced::time::every(Duration::from_millis(33)).map(|_| Msg::Frame)
+    } else {
+        Subscription::none()
+    }
+}
+
+/// Loads the treasury, its series, wallets, roster, real cost and the journal's newest page (called
+/// when it opens and on every poll tick).
+pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let to = now_ms() as u64;
+    let query = Query { from: to.saturating_sub(state.range.days() * DAY_MS), to, bucket: state.range.bucket(), filter: state.filter.clone() };
     let client = ctx.client.clone();
-    client::task(
-        move || {
-            let treasury: Value = client.get("/v1/treasury")?;
-            let journal: Value = client.get("/v1/treasury/journal")?;
-            let wallets: Value = client.get("/v1/treasury/wallets")?;
-            let roster: Value = client.get("/v1/agents")?;
-            Ok(Data::parse(&treasury, &journal, &wallets, &roster))
-        },
-        Msg::Loaded,
-    )
+    client::task(move || fetch(&client, &query), Msg::Loaded)
+}
+
+struct Query {
+    from: u64,
+    to: u64,
+    bucket: &'static str,
+    filter: JournalFilter,
+}
+
+fn fetch(c: &Client, q: &Query) -> Result<Snapshot, String> {
+    let treasury: Value = c.get("/v1/treasury")?;
+    let wallets: Value = c.get("/v1/treasury/wallets")?;
+    let roster: Value = c.get("/v1/agents")?;
+    let series: Value = c.get(&format!("/v1/treasury/series?from={}&to={}&bucket={}", q.from, q.to, q.bucket))?;
+    let usage: Value = c.get(&format!("/v1/usage/summary?from={}&to={}", q.from, q.to))?;
+    let page = journal_page(c, &q.filter, None)?;
+    Ok(Snapshot { data: Data::parse(&treasury, &wallets, &roster, &series, &usage), filter: q.filter.clone(), page })
+}
+
+fn journal_page(c: &Client, filter: &JournalFilter, before: Option<i64>) -> Result<JournalPage, String> {
+    let v: Value = c.get(&journal_path(filter, before))?;
+    Ok(JournalPage::parse(&v))
+}
+
+/// `GET /v1/treasury/journal` with its filters; `before` pages back from an entry id.
+pub fn journal_path(filter: &JournalFilter, before: Option<i64>) -> String {
+    let mut path = format!("/v1/treasury/journal?limit={JOURNAL_PAGE}");
+    if let Some(b) = before {
+        path.push_str(&format!("&before={b}"));
+    }
+    if let Some(kind) = &filter.kind {
+        path.push_str(&format!("&kind={}", enc(kind)));
+    }
+    if let Some(wallet) = filter.wallet {
+        path.push_str(&format!("&wallet={wallet}"));
+    }
+    if !filter.task.is_empty() {
+        path.push_str(&format!("&task={}", enc(&filter.task)));
+    }
+    path
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) => Task::none(),
-        Msg::Loaded(Ok(data)) => {
-            state.data = Some(data);
+        Msg::Frame => {
+            let now = Instant::now();
+            state.fresh.retain(|(_, at)| now.saturating_duration_since(*at) < ANIM);
+            Task::none()
+        }
+        Msg::Loaded(Ok(snap)) => {
             state.error = None;
+            // A poll that answers an old filter is stale: the new filter's own load is on its way.
+            if snap.filter == state.filter {
+                apply(state, snap);
+            }
             Task::none()
         }
         Msg::Loaded(Err(err)) => {
             state.error = Some(err);
             Task::none()
         }
+        Msg::Range(range) => {
+            state.range = range;
+            state.series_page = 0;
+            load(state, ctx)
+        }
+        Msg::Mode(mode) => {
+            state.mode = mode;
+            Task::none()
+        }
+        Msg::SeriesSort(sort) => {
+            resort(&mut state.series_sort, &mut state.series_asc, sort, false);
+            state.series_page = 0;
+            Task::none()
+        }
+        Msg::SeriesPage(delta) => {
+            state.series_page = (state.series_page as i64 + delta).max(0) as usize;
+            Task::none()
+        }
+        Msg::WalletSort(sort) => {
+            resort(&mut state.wallet_sort, &mut state.wallet_asc, sort, sort == WalletSort::Name);
+            Task::none()
+        }
         Msg::KindPicked(choice) => {
-            state.kind_filter = choice.kind;
+            state.filter.kind = choice.kind;
+            refilter(state, ctx)
+        }
+        Msg::WalletPicked(choice) => {
+            state.filter.wallet = choice.cid;
+            refilter(state, ctx)
+        }
+        Msg::TaskDraft(value) => {
+            state.task_draft = value;
+            Task::none()
+        }
+        Msg::TaskApply => {
+            state.filter.task = state.task_draft.trim().to_string();
+            refilter(state, ctx)
+        }
+        Msg::OlderPressed => {
+            let Some(before) = state.journal_next else { return Task::none() };
+            if state.older_busy {
+                return Task::none();
+            }
+            state.older_busy = true;
+            let filter = state.filter.clone();
+            let client = ctx.client.clone();
+            let for_reply = filter.clone();
+            client::task(move || journal_page(&client, &filter, Some(before)), move |res| Msg::Older(for_reply.clone(), res))
+        }
+        Msg::Older(filter, res) => {
+            state.older_busy = false;
+            match res {
+                Ok(page) if filter == state.filter => {
+                    for e in page.entries {
+                        if !state.journal.iter().any(|x| x.id == e.id) {
+                            state.journal.push(e);
+                        }
+                    }
+                    state.journal.sort_by(|a, b| b.id.cmp(&a.id));
+                    state.journal_next = page.next_before;
+                    state.journal_total = page.total;
+                }
+                Ok(_) => {}
+                Err(err) => state.error = Some(err),
+            }
             Task::none()
         }
         Msg::ToggleMint => {
@@ -210,7 +484,52 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// Starts the journal over under the current filter and loads its newest page.
+fn refilter(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.journal.clear();
+    state.journal_next = None;
+    state.journal_total = 0;
+    state.fresh.clear();
+    load(state, ctx)
+}
+
+/// Takes a fresh snapshot: the newest journal rows merge over the older pages already loaded, rows
+/// new since the last poll fade in, and the charts and figures ease to their new targets.
+fn apply(state: &mut State, snap: Snapshot) {
+    let now = Instant::now();
+    let head = snap.page.entries;
+    let oldest = head.iter().map(|e| e.id).min();
+    let older_loaded = oldest.is_some_and(|o| state.journal.iter().any(|e| e.id < o));
+    if !state.journal.is_empty() {
+        for e in &head {
+            if !state.journal.iter().any(|x| x.id == e.id) {
+                state.fresh.push((e.id, now));
+            }
+        }
+    }
+    state.journal = merge_head(&state.journal, head);
+    state.journal_total = snap.page.total;
+    if !older_loaded {
+        state.journal_next = snap.page.next_before;
+    }
+    state.data = Some(snap.data);
+    sync(state, now);
+}
+
+/// Points the animated series and figures at the loaded data.
+fn sync(state: &mut State, now: Instant) {
+    let Some(d) = state.data.as_ref() else { return };
+    state.balances.retarget(balance_series(&d.points), now);
+    state.flows.retarget(flow_series(&d.points), now);
+    state.counters.budget.aim(d.budget, now);
+    state.counters.circulating.aim(d.circulating(), now);
+    state.counters.paid.aim(d.paid(), now);
+    state.counters.usd.aim(d.cost, now);
+    state.counters.treasury.aim(d.treasury_now(), now);
+}
+
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    let now = Instant::now();
     let head = ui::view_head(
         "Treasury",
         vec![
@@ -237,42 +556,73 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             if let Some(err) = &state.error {
                 parts.push(ui::error_line(err));
             }
-            parts.extend(sections(data, state));
+            parts.extend(sections(data, state, now));
         }
     }
     ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
 }
 
-/// The read-only body: tallies, the flow, the wallets and the ledger.
-fn sections<'a>(d: &Data, state: &State) -> Vec<Element<'a, Msg>> {
-    let escrow: f64 = d.accounts.iter().filter(|a| a.kind == "escrow").map(|a| a.balance).sum();
-    let paid: f64 = d.journal.iter().filter(|e| e.kind == "payment").map(Entry::amount).sum();
-    let wallets_total: f64 = d.wallets.iter().map(|w| w.balance).sum();
-
-    let tallies: Element<'a, Msg> = row![
-        tile("Plaza budget", money(d.plaza_budget), ""),
-        tile("In escrow", money(escrow), "held for open tasks"),
-        tile("Spent", money(d.spent), "to providers and compute"),
-        tile("Paid to agents", money(paid), "margins for verified work"),
-        tile("Agents’ wallets", money(wallets_total), ""),
-    ]
-    .spacing(12)
-    .into();
-
-    let mut out: Vec<Element<'a, Msg>> = Vec::new();
-    out.push(tallies);
-    out.push(ui::card("Flow", flow(d.plaza_budget, escrow, d.spent, paid, wallets_total)));
-    out.push(wallets_card(d));
-    out.push(ledger_card(d, state));
+/// The read-only body: tallies, the range and view controls, the charts or the series table, the
+/// flow, the wallets and the journal.
+fn sections<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
+    let mut out: Vec<Element<'a, Msg>> = vec![tallies(d, state, now), controls(state)];
+    match state.mode {
+        Mode::Chart => out.extend(charts(d, state, now)),
+        Mode::Table => out.push(ui::card("Series", series_table(d, state))),
+    }
+    out.push(ui::card("Flow", flow(d)));
+    out.push(wallets_card(d, state));
+    out.push(journal_card(Some(d), state, now));
     out
 }
 
+fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
+    let c = &state.counters;
+    let cost = c.usd.at(now);
+    row![
+        tile("Plaza budget", money(c.budget.at(now)), String::new()),
+        tile("In circulation", money(c.circulating.at(now)), "held in agents’ wallets".to_string()),
+        tile("Paid out in range", money(c.paid.at(now)), "margins for verified work".to_string()),
+        tile("Real model cost", usd(cost), format!("≈ {} credits metered", money(cost / CREDIT_USD))),
+        tile("Treasury", money(c.treasury.at(now)), format!("{} fined in range", money(d.fined()))),
+    ]
+    .spacing(12)
+    .into()
+}
+
+fn controls<'a>(state: &State) -> Element<'a, Msg> {
+    row![segmented(&Range::ALL, state.range, Msg::Range), Space::new().width(Length::Fill), segmented(&Mode::ALL, state.mode, Msg::Mode)]
+        .spacing(16)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The chart view: balances over time, and the flows per bucket stacked by kind.
+fn charts<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> {
+    let labels: Vec<String> = d.points.iter().map(|p| point_label(p.at as i64, state.range.hourly())).collect();
+    let balances = state.balances.current(now);
+    let flows = state.flows.current(now);
+    let balance_card = ui::card(
+        "Balances over time",
+        column![legend(&balances, money, true), chart::stacked_area(balances, labels.clone(), money, "No balances in this range")].spacing(12).into(),
+    );
+    let flow_card = ui::card(
+        "Flows per bucket",
+        column![
+            legend(&flows, money, false),
+            iced::widget::canvas(StackedBars { series: flows, labels }).width(Length::Fill).height(Length::Fixed(220.0)),
+        ]
+        .spacing(12)
+        .into(),
+    );
+    vec![balance_card, flow_card]
+}
+
 /// A tally tile (the web's `.stat`): the figure, its label, then an italic note when there is one.
-fn tile<'a>(title: &str, value: String, note: &str) -> Element<'a, Msg> {
-    let italic = Font { style: font::Style::Italic, ..theme::SERIF };
-    let mut stack = column![iced::widget::text(value).font(VALUE).size(30.0).color(theme::INK), ui::label(title)].spacing(4);
+fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
+    let mut stack = column![iced::widget::text(value).font(VALUE).size(28.0).color(theme::INK), ui::label(title)].spacing(4);
     if !note.is_empty() {
-        stack = stack.push(iced::widget::text(note.to_string()).font(italic).size(13.0).color(theme::INK_2));
+        stack = stack.push(iced::widget::text(note).font(ITALIC).size(13.0).color(theme::INK_2));
     }
     container(stack)
         .padding(Padding { top: 14.0, right: 16.0, bottom: 16.0, left: 16.0 })
@@ -283,9 +633,10 @@ fn tile<'a>(title: &str, value: String, note: &str) -> Element<'a, Msg> {
 }
 
 /// The budget's path (the web's `flow`): budget, escrow, then spend (providers, compute) or payment
-/// (agents), then wallets. Drawn on an 830 x 180 grid, scaled to the width and centred.
-fn flow<'a>(budget: f64, escrow: f64, spent: f64, paid: f64, wallets: f64) -> Element<'a, Msg> {
-    iced::widget::canvas(FlowChart { budget, escrow, spent, paid, wallets }).width(Length::Fill).height(Length::Fixed(200.0)).into()
+/// (agents), then wallets. The arrows carry dashes that run along them, faster for larger flows.
+fn flow<'a>(d: &Data) -> Element<'a, Msg> {
+    let diagram = FlowChart { budget: d.budget, escrow: d.escrow, spent: d.spent, paid: d.paid(), wallets: d.wallets_total(), t: now_ms() / 1000.0 };
+    iced::widget::canvas(diagram).width(Length::Fill).height(Length::Fixed(200.0)).into()
 }
 
 struct FlowChart {
@@ -294,6 +645,8 @@ struct FlowChart {
     spent: f64,
     paid: f64,
     wallets: f64,
+    /// Seconds, for the dashes.
+    t: f64,
 }
 
 impl canvas::Program<Msg> for FlowChart {
@@ -327,7 +680,7 @@ impl canvas::Program<Msg> for FlowChart {
                 ..canvas::Text::default()
             });
         };
-        let arrow = |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32)| {
+        let arrow = |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32), flow: f64| {
             let (dx, dy) = (to.0 - from.0, to.1 - from.1);
             let len = (dx * dx + dy * dy).sqrt().max(1.0);
             let (ux, uy) = (dx / len, dy / len);
@@ -343,6 +696,20 @@ impl canvas::Program<Msg> for FlowChart {
                 b.close();
             });
             frame.fill(&head_path, INK_2);
+            // The dashes: they travel from the source toward the head, at a speed that grows with the flow.
+            let speed = (20.0 + 30.0 * (1.0 + flow.max(0.0)).log10()).min(140.0) as f32;
+            let travel = (self.t as f32 * speed) % DASH_PERIOD;
+            let run = len - head;
+            let mut s = travel - DASH_PERIOD;
+            while s < run {
+                let (a, b) = (s.max(0.0), (s + DASH).min(run));
+                if b > a {
+                    let p = at(from.0 + ux * a, from.1 + uy * a);
+                    let q = at(from.0 + ux * b, from.1 + uy * b);
+                    frame.stroke(&Path::line(p, q), Stroke::default().with_color(theme::SIGNAL).with_width(2.0 * scale));
+                }
+                s += DASH_PERIOD;
+            }
         };
 
         boxed(&mut frame, 0.0, 55.0, "Budget", self.budget);
@@ -350,71 +717,345 @@ impl canvas::Program<Msg> for FlowChart {
         boxed(&mut frame, 440.0, 10.0, "Spend", self.spent);
         boxed(&mut frame, 440.0, 100.0, "Payment", self.paid);
         boxed(&mut frame, 660.0, 55.0, "Wallets", self.wallets);
-        arrow(&mut frame, (170.0, 90.0), (220.0, 90.0));
-        arrow(&mut frame, (390.0, 90.0), (440.0, 45.0));
-        arrow(&mut frame, (390.0, 90.0), (440.0, 135.0));
-        arrow(&mut frame, (610.0, 135.0), (660.0, 90.0));
+        arrow(&mut frame, (170.0, 90.0), (220.0, 90.0), self.escrow);
+        arrow(&mut frame, (390.0, 90.0), (440.0, 45.0), self.spent);
+        arrow(&mut frame, (390.0, 90.0), (440.0, 135.0), self.paid);
+        arrow(&mut frame, (610.0, 135.0), (660.0, 90.0), self.paid);
         vec![frame.into_geometry()]
     }
 }
 
-fn wallets_card<'a>(d: &Data) -> Element<'a, Msg> {
+/// Stacked bars per bucket, one colour per series, with a hover column and a tooltip.
+struct StackedBars {
+    series: Vec<chart::Series>,
+    labels: Vec<String>,
+}
+
+/// The plot inside a bars chart's bounds: (left, top, width, height).
+fn bars_plot(bounds: Rectangle) -> (f32, f32, f32, f32) {
+    let width = (bounds.width - BAR_PAD_LEFT - 10.0).max(1.0);
+    let height = (bounds.height - 10.0 - BAR_PAD_BOTTOM).max(1.0);
+    (BAR_PAD_LEFT, 10.0, width, height)
+}
+
+/// The bar under `x`, or None when `x` is off the plot.
+fn bar_at(x: f32, n: usize, left: f32, width: f32) -> Option<usize> {
+    if n == 0 || x < left || x > left + width {
+        return None;
+    }
+    let slot = width / n as f32;
+    Some((((x - left) / slot) as usize).min(n - 1))
+}
+
+fn caption(frame: &mut canvas::Frame, content: String, at: Point, color: Color, size: f32, right: bool) {
+    frame.fill_text(canvas::Text {
+        content,
+        position: at,
+        color,
+        size: Pixels(size),
+        font: MONO,
+        align_x: if right { alignment::Horizontal::Right.into() } else { alignment::Horizontal::Left.into() },
+        ..canvas::Text::default()
+    });
+}
+
+impl canvas::Program<Msg> for StackedBars {
+    type State = Option<usize>;
+
+    fn update(&self, hover: &mut Option<usize>, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<Msg>> {
+        if !matches!(event, Event::Mouse(_)) {
+            return None;
+        }
+        let (left, _, width, _) = bars_plot(bounds);
+        let next = cursor.position_in(bounds).and_then(|p| bar_at(p.x, self.labels.len(), left, width));
+        if next != *hover {
+            *hover = next;
+            return Some(canvas::Action::request_redraw());
+        }
+        None
+    }
+
+    fn draw(&self, hover: &Option<usize>, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let (left, top, width, height) = bars_plot(bounds);
+        let tops = chart::stacked_tops(&self.series);
+        let n = tops.first().map_or(0, Vec::len);
+        let peak = tops.last().map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
+        let ceiling = chart::nice_ceiling(peak);
+        let y = |v: f64| top + height - (v / ceiling) as f32 * height;
+        let at = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(0.0);
+
+        for k in 0..=4 {
+            let v = ceiling * k as f64 / 4.0;
+            let yy = y(v);
+            let rule = if k == 0 { theme::RULE } else { theme::RULE_FAINT };
+            frame.stroke(&Path::line(Point::new(left, yy), Point::new(left + width, yy)), Stroke::default().with_color(rule).with_width(1.0));
+            caption(&mut frame, money(v), Point::new(left - 8.0, yy - 6.0), INK_3, 10.5, true);
+        }
+        if n == 0 || peak <= 0.0 {
+            caption(&mut frame, "No flows in this range".to_string(), Point::new(left + width / 2.0, top + height / 2.0 - 7.0), INK_3, 13.0, false);
+            return vec![frame.into_geometry()];
+        }
+
+        let slot = width / n as f32;
+        let bar = (slot * 0.7).max(1.0);
+        for (s, series) in self.series.iter().enumerate() {
+            for i in 0..n {
+                let lo = if s == 0 { 0.0 } else { at(&tops[s - 1], i) };
+                let hi = at(&tops[s], i);
+                if hi > lo {
+                    let bx = left + slot * i as f32 + (slot - bar) / 2.0;
+                    let top_y = y(hi);
+                    frame.fill_rectangle(Point::new(bx, top_y), Size::new(bar, y(lo) - top_y), series.color);
+                }
+            }
+        }
+
+        let ticks = n.min(6);
+        for k in 0..ticks {
+            let i = if ticks <= 1 { 0 } else { k * (n - 1) / (ticks - 1) };
+            let x = left + slot * i as f32 + slot / 2.0;
+            let last_tick = k + 1 == ticks && ticks > 1;
+            let anchor = if last_tick { Point::new(left + width, top + height + 6.0) } else { Point::new(x, top + height + 6.0) };
+            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), anchor, INK_3, 10.5, last_tick);
+        }
+
+        if let Some(i) = hover.filter(|i| *i < n) {
+            let hx = left + slot * i as f32;
+            frame.fill_rectangle(Point::new(hx, top), Size::new(slot, height), theme::HOVER);
+            let rows: Vec<(Color, String)> = self
+                .series
+                .iter()
+                .enumerate()
+                .filter_map(|(s, series)| {
+                    let v = at(&tops[s], i) - if s == 0 { 0.0 } else { at(&tops[s - 1], i) };
+                    (v > 0.0).then(|| (series.color, format!("{}  {}", series.key, money(v))))
+                })
+                .collect();
+            let box_w = 200.0;
+            let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
+            let bx = if hx > left + width / 2.0 { hx - 12.0 - box_w } else { hx + slot + 12.0 };
+            let by = top + 4.0;
+            frame.fill_rectangle(Point::new(bx, by), Size::new(box_w, box_h), SHEET);
+            frame.stroke(&Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)), Stroke::default().with_color(theme::RULE).with_width(1.0));
+            caption(&mut frame, self.labels.get(i).cloned().unwrap_or_default(), Point::new(bx + 10.0, by + 8.0), INK, 11.0, false);
+            for (k, (color, text)) in rows.into_iter().enumerate() {
+                let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
+                frame.fill(&Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5), color);
+                caption(&mut frame, text, Point::new(bx + 24.0, row_y), INK_2, 11.0, false);
+            }
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A row of swatches, each series' name and its value: the total over the range, or the last value
+/// when `last` (for balances, which are levels rather than flows).
+fn legend<'a>(series: &[chart::Series], format: fn(f64) -> String, last: bool) -> Element<'a, Msg> {
+    series
+        .iter()
+        .fold(row![].spacing(18).align_y(Alignment::Center), |line, s| {
+            let total: f64 = if last { s.values.last().copied().unwrap_or(0.0) } else { s.values.iter().sum() };
+            let color = s.color;
+            let swatch = container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                ..Default::default()
+            });
+            line.push(
+                row![swatch, iced::widget::text(s.key.clone()).font(MONO).size(11.0).color(INK_2), iced::widget::text(format(total)).font(MONO).size(11.0).color(INK)]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            )
+        })
+        .into()
+}
+
+/// The series as a table: sortable, paged, with a totals row (flows summed, balances at their end).
+fn series_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
+    if d.points.is_empty() {
+        return ui::empty("clock", "No buckets in this range.", "");
+    }
+    let hourly = state.range.hourly();
+    let mut points: Vec<&Bucket> = d.points.iter().collect();
+    points.sort_by(|a, b| {
+        let o = series_value(a, state.series_sort).total_cmp(&series_value(b, state.series_sort));
+        if state.series_asc {
+            o
+        } else {
+            o.reverse()
+        }
+    });
+    let pages = page_count(points.len(), SERIES_PAGE);
+    let page = state.series_page.min(pages - 1);
+    let heads: Vec<Element<'a, Msg>> = SERIES_COLUMNS
+        .iter()
+        .map(|(sort, label, portion)| sort_head(label, *portion, *sort, state.series_sort, state.series_asc, Msg::SeriesSort))
+        .collect();
+    let mut lines = column![row(heads).spacing(8)].spacing(8);
+    for p in points.iter().copied().skip(page * SERIES_PAGE).take(SERIES_PAGE) {
+        lines = lines.push(ui::hairline());
+        lines = lines.push(row(series_cells(p, point_label(p.at as i64, hourly))).spacing(8).align_y(Alignment::Center));
+    }
+    let all = totals(&d.points);
+    lines = lines.push(ui::hairline());
+    lines = lines.push(row(series_cells(&all, "Total · end".to_string())).spacing(8).align_y(Alignment::Center));
+    let footer = row![
+        ui::faint(format!("{} buckets · page {} of {}", points.len(), page + 1, pages)),
+        Space::new().width(Length::Fill),
+        ui::btn("Prev", None, ui::Kind::Secondary, (page > 0).then_some(Msg::SeriesPage(-1))),
+        ui::btn("Next", None, ui::Kind::Secondary, (page + 1 < pages).then_some(Msg::SeriesPage(1))),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    column![lines, footer].spacing(14).into()
+}
+
+/// One series row, in the order of `SERIES_COLUMNS`.
+fn series_cells<'a>(p: &Bucket, label: String) -> Vec<Element<'a, Msg>> {
+    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, INK));
+    vec![
+        cell(3, false, ui::mono(label, 11.5, INK_2)),
+        figure(p.minted),
+        figure(p.escrowed),
+        figure(p.paid),
+        figure(p.refunded),
+        figure(p.fined),
+        figure(p.spent),
+        figure(p.entries),
+        figure(p.budget),
+        figure(p.circulating),
+        figure(p.treasury),
+    ]
+}
+
+fn series_value(p: &Bucket, sort: SeriesSort) -> f64 {
+    match sort {
+        SeriesSort::Time => p.at,
+        SeriesSort::Minted => p.minted,
+        SeriesSort::Escrowed => p.escrowed,
+        SeriesSort::Paid => p.paid,
+        SeriesSort::Refunded => p.refunded,
+        SeriesSort::Fined => p.fined,
+        SeriesSort::Spent => p.spent,
+        SeriesSort::Entries => p.entries,
+        SeriesSort::Budget => p.budget,
+        SeriesSort::Circulating => p.circulating,
+        SeriesSort::Treasury => p.treasury,
+    }
+}
+
+/// The sum of the flows over `points`, with the balances at the last point's end.
+fn totals(points: &[Bucket]) -> Bucket {
+    let mut t = Bucket::default();
+    for p in points {
+        t.entries += p.entries;
+        t.minted += p.minted;
+        t.escrowed += p.escrowed;
+        t.paid += p.paid;
+        t.refunded += p.refunded;
+        t.fined += p.fined;
+        t.spent += p.spent;
+    }
+    if let Some(last) = points.last() {
+        t.budget = last.budget;
+        t.circulating = last.circulating;
+        t.treasury = last.treasury;
+    }
+    t
+}
+
+fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     if d.wallets.is_empty() {
         return ui::card("Wallets", ui::empty("user", "No wallets yet.", ""));
     }
+    let total = d.wallets_total();
     let mut wallets: Vec<&Wallet> = d.wallets.iter().collect();
-    wallets.sort_by(|a, b| b.balance.total_cmp(&a.balance));
-    let mut lines: Vec<Element<'a, Msg>> = Vec::new();
-    lines.push(
-        row![cell(3, false, ui::label("Agent")), cell(2, false, ui::label("Role")), cell(2, true, ui::label("Balance"))].into(),
-    );
+    wallets.sort_by(|a, b| {
+        let o = match state.wallet_sort {
+            WalletSort::Name => a.name.cmp(&b.name),
+            _ => a.balance.total_cmp(&b.balance),
+        };
+        if state.wallet_asc {
+            o
+        } else {
+            o.reverse()
+        }
+    });
+    let heads: Vec<Element<'a, Msg>> = vec![
+        sort_head("Agent", 3, WalletSort::Name, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
+        cell(2, false, ui::label("Role")),
+        sort_head("Balance", 2, WalletSort::Balance, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
+        sort_head("Share", 3, WalletSort::Share, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
+    ];
+    let mut lines = column![row(heads).spacing(8)].spacing(8);
     for w in wallets {
-        let role = d
-            .roster
-            .iter()
-            .find(|m| m.cid == w.cid)
-            .map_or_else(|| "—".to_string(), |m| m.role_label.clone());
-        lines.push(ui::hairline());
+        let role = d.roster.iter().find(|m| m.cid == w.cid).map_or_else(|| "—".to_string(), |m| m.role_label.clone());
         let name = button(iced::widget::text(w.name.clone()).font(theme::SERIF).size(14.0).color(theme::INK))
             .padding(0.0)
             .style(link)
             .on_press(Msg::Go(Id::Agent(w.cid)));
-        lines.push(
+        let share = if total > 0.0 { w.balance / total } else { 0.0 };
+        lines = lines.push(ui::hairline());
+        lines = lines.push(
             row![
                 cell(3, false, name),
                 cell(2, false, iced::widget::text(role).font(theme::SERIF).size(14.0).color(theme::INK_2)),
                 cell(2, true, ui::mono(money(w.balance), 12.5, theme::INK)),
+                cell(3, false, row![share_bar(share), ui::mono(format!("{:.1}%", share * 100.0), 11.0, INK_2)].spacing(10).align_y(Alignment::Center)),
             ]
-            .align_y(Alignment::Center)
-            .into(),
+            .spacing(8)
+            .align_y(Alignment::Center),
         );
     }
-    ui::card("Wallets", column(lines).spacing(8).into())
+    ui::card("Wallets", lines.into())
 }
 
-fn ledger_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
-    let mut kinds: Vec<String> = d.journal.iter().map(|e| e.kind.clone()).collect();
-    kinds.sort();
-    kinds.dedup();
-    let mut options = vec![KindChoice { kind: None, label: "All kinds".to_string() }];
-    options.extend(kinds.into_iter().map(|k| KindChoice { kind: Some(k.clone()), label: k }));
-    let selected = options.iter().find(|o| o.kind == state.kind_filter).cloned();
-    let filter = pick_list(options, selected, Msg::KindPicked);
+/// A bar of `share` (0 to 1) of the row's width.
+fn share_bar<'a>(share: f64) -> Element<'a, Msg> {
+    let filled = (share.clamp(0.0, 1.0) * 100.0).round() as u16;
+    let segment = |portion: u16, color: Color| -> Element<'a, Msg> {
+        container(Space::new().width(Length::Fill).height(6.0))
+            .width(Length::FillPortion(portion))
+            .height(Length::Fixed(6.0))
+            .style(move |_: &Theme| container::Style { background: Some(color.into()), ..Default::default() })
+            .into()
+    };
+    let bar: Element<'a, Msg> = match filled {
+        0 => segment(100, theme::RULE_FAINT),
+        100 => segment(100, theme::OK),
+        f => row![segment(f, theme::OK), segment(100 - f, theme::RULE_FAINT)].into(),
+    };
+    container(bar).width(Length::Fill).into()
+}
 
-    let shown: Vec<&Entry> = d
-        .journal
-        .iter()
-        .filter(|e| state.kind_filter.as_deref().map_or(true, |k| e.kind == k))
-        .take(50)
-        .collect();
-    let body: Element<'a, Msg> = if shown.is_empty() {
+/// The journal: filters, newest first, paged by "Load older", new rows fading in.
+fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a, Msg> {
+    let kinds = kind_options(d, &state.journal);
+    let selected_kind = kinds.iter().find(|o| o.kind == state.filter.kind).cloned();
+    let kind_pick = pick_list(kinds, selected_kind, Msg::KindPicked);
+    let wallets = wallet_options(d);
+    let selected_wallet = wallets.iter().find(|o| o.cid == state.filter.wallet).cloned();
+    let wallet_pick = pick_list(wallets, selected_wallet, Msg::WalletPicked);
+    let task = text_input("Task", &state.task_draft).on_input(Msg::TaskDraft).on_submit(Msg::TaskApply).style(theme::input).width(Length::Fill);
+    let head = container(
+        column![
+            row![ui::label("Journal"), Space::new().width(Length::Fill), ui::faint(format!("{} of {}", state.journal.len(), state.journal_total))]
+                .align_y(Alignment::Center),
+            row![kind_pick, wallet_pick, task].spacing(12).align_y(Alignment::Center),
+        ]
+        .spacing(10),
+    )
+    .padding(Padding { top: 8.0, right: 12.0, bottom: 10.0, left: 12.0 })
+    .width(Length::Fill)
+    .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() });
+
+    let body: Element<'a, Msg> = if state.journal.is_empty() {
         ui::empty::<Msg>("clock", "No entries.", "")
     } else {
-        let rows: Vec<Element<'a, Msg>> = shown.into_iter().map(entry_row).collect();
-        let last = rows.len().saturating_sub(1);
         let mut ledger = column![].width(Length::Fill);
-        for (i, r) in rows.into_iter().enumerate() {
-            ledger = ledger.push(r);
+        let last = state.journal.len() - 1;
+        for (i, e) in state.journal.iter().enumerate() {
+            ledger = ledger.push(entry_row(e, fade(&state.fresh, e.id, now)));
             if i < last {
                 ledger = ledger.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
                     background: Some(theme::RULE_FAINT.into()),
@@ -424,20 +1065,27 @@ fn ledger_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
         }
         ledger.into()
     };
-    let head = container(
-        row![ui::label("Journal"), Space::new().width(Length::Fill), filter].spacing(12).align_y(Alignment::Center),
-    )
-    .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
-    .width(Length::Fill)
-    .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() });
-    let frame = container(body).width(Length::Fill).style(|_: &Theme| container::Style {
+    let footer = row![
+        ui::faint(format!("Newest first · {} shown", state.journal.len())),
+        Space::new().width(Length::Fill),
+        ui::btn("Load older", None, ui::Kind::Secondary, (state.journal_next.is_some() && !state.older_busy).then_some(Msg::OlderPressed)),
+    ]
+    .align_y(Alignment::Center)
+    .padding(Padding { top: 8.0, right: 14.0, bottom: 8.0, left: 14.0 });
+    let frame = container(column![body, footer]).width(Length::Fill).style(|_: &Theme| container::Style {
         border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
     column![head, frame].into()
 }
 
-fn entry_row<'a>(e: &Entry) -> Element<'a, Msg> {
+/// How far a fresh row has faded in (0 at its arrival, 1 once settled).
+fn fade(fresh: &[(i64, Instant)], id: i64, now: Instant) -> f32 {
+    fresh.iter().find(|(i, _)| *i == id).map_or(1.0, |(_, at)| chart::ease(progress(*at, now)) as f32)
+}
+
+fn entry_row<'a>(e: &Entry, alpha: f32) -> Element<'a, Msg> {
+    let fade = |c: Color| Color { a: c.a * alpha, ..c };
     let memo = if e.memo.is_empty() {
         match &e.task {
             Some(task) => format!("{} for {task}", e.kind),
@@ -447,11 +1095,11 @@ fn entry_row<'a>(e: &Entry) -> Element<'a, Msg> {
         e.memo.clone()
     };
     row![
-        container(ui::mono(format!("#{}", e.id), 11.5, theme::INK_3)).width(Length::Fixed(56.0)),
-        container(ui::mono(ago(e.at), 11.5, theme::INK_3)).width(Length::Fixed(92.0)),
+        container(ui::mono(format!("#{}", e.id), 11.5, fade(INK_3))).width(Length::Fixed(56.0)),
+        container(ui::mono(ago(e.at), 11.5, fade(INK_3))).width(Length::Fixed(92.0)),
         container(ui::badge::<Msg>(&e.kind, kind_tone(&e.kind))).width(Length::Fixed(110.0)),
-        container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(theme::INK)).width(Length::Fill),
-        iced::widget::text(money(e.amount())).font(AMOUNT).size(14.0).color(theme::INK),
+        container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(fade(INK))).width(Length::Fill),
+        iced::widget::text(money(e.amount)).font(AMOUNT).size(14.0).color(fade(INK)),
     ]
     .spacing(14)
     .padding(Padding { top: 9.0, right: 14.0, bottom: 9.0, left: 14.0 })
@@ -508,6 +1156,45 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
         .into()
 }
 
+/// A sortable header cell: the active column in ink, with its direction.
+fn sort_head<'a, T: Copy + PartialEq>(label: &str, portion: u16, value: T, current: T, asc: bool, make: fn(T) -> Msg) -> Element<'a, Msg> {
+    let active = value == current;
+    let arrow = if active {
+        if asc {
+            " ^"
+        } else {
+            " v"
+        }
+    } else {
+        ""
+    };
+    let content = button(iced::widget::text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { INK } else { INK_3 }))
+        .style(link)
+        .padding(0)
+        .on_press(make(value));
+    cell(portion, false, content)
+}
+
+/// Picks a column for a sort: the same column flips its direction; a new one starts in `asc_first`.
+fn resort<T: Copy + PartialEq>(current: &mut T, asc: &mut bool, next: T, asc_first: bool) {
+    if *current == next {
+        *asc = !*asc;
+    } else {
+        *current = next;
+        *asc = asc_first;
+    }
+}
+
+/// A segmented control: the current option solid, the others plain.
+fn segmented<'a, T: Copy + PartialEq + 'a>(options: &[(T, &str)], current: T, make: fn(T) -> Msg) -> Element<'a, Msg> {
+    let mut line = row![].spacing(6);
+    for (value, label) in options {
+        let kind = if *value == current { ui::Kind::Primary } else { ui::Kind::Secondary };
+        line = line.push(ui::btn(label, None, kind, Some(make(*value))));
+    }
+    line.into()
+}
+
 /// A plain link-looking button for an agent's name.
 fn link(_: &Theme, _: button::Status) -> button::Style {
     button::Style { text_color: ui::INK, ..Default::default() }
@@ -526,6 +1213,31 @@ fn fine_choice(state: &State) -> Option<AgentChoice> {
     state.fine_target.clone().or_else(|| roster_choices(state).into_iter().next())
 }
 
+/// The journal's kinds: all kinds first, then the known and seen ones, each once.
+fn kind_options(d: Option<&Data>, journal: &[Entry]) -> Vec<KindChoice> {
+    let mut kinds: Vec<String> = KNOWN_KINDS.iter().map(|k| k.to_string()).collect();
+    kinds.extend(journal.iter().map(|e| e.kind.clone()));
+    if let Some(d) = d {
+        kinds.extend(d.points.iter().flat_map(|p| p.by_kind.keys().cloned()));
+    }
+    kinds.sort();
+    kinds.dedup();
+    let mut options = vec![KindChoice { kind: None, label: "All kinds".to_string() }];
+    options.extend(kinds.into_iter().map(|k| KindChoice { kind: Some(k.clone()), label: k }));
+    options
+}
+
+/// The journal's agents: every agent, by name, after "All agents".
+fn wallet_options(d: Option<&Data>) -> Vec<WalletChoice> {
+    let mut options = vec![WalletChoice { cid: None, label: "All agents".to_string() }];
+    if let Some(d) = d {
+        let mut roster: Vec<&Member> = d.roster.iter().collect();
+        roster.sort_by(|a, b| a.name.cmp(&b.name));
+        options.extend(roster.into_iter().map(|m| WalletChoice { cid: Some(m.cid), label: m.name.clone() }));
+    }
+    options
+}
+
 /// A whole amount above zero, if the text is one.
 fn whole(text: &str) -> Option<i64> {
     text.trim().parse::<i64>().ok().filter(|n| *n > 0)
@@ -540,6 +1252,43 @@ fn kind_tone(kind: &str) -> ui::Tone {
         "fine" => ui::Tone::Danger,
         _ => ui::Tone::Muted,
     }
+}
+
+/// The colour a kind's flow takes in the charts (the same families as its badge).
+fn kind_color(kind: &str) -> Color {
+    match kind {
+        "mint" => theme::OK,
+        "spend" => theme::WARN,
+        "payment" => theme::SIGNAL,
+        "refund" | "transfer" => BLUE,
+        "fine" => theme::CRIT,
+        "escrow" => PURPLE,
+        _ => INK_3,
+    }
+}
+
+/// The budget's balances over the buckets: the plaza budget, the circulating money and the treasury.
+fn balance_series(points: &[Bucket]) -> Vec<chart::Series> {
+    let pick = |key: &str, color: Color, f: fn(&Bucket) -> f64| chart::Series { key: key.to_string(), color, values: points.iter().map(f).collect() };
+    vec![
+        pick("Budget", theme::OK, |p| p.budget),
+        pick("Circulating", BLUE, |p| p.circulating),
+        pick("Treasury", theme::WARN, |p| p.treasury),
+    ]
+}
+
+/// The flows per bucket, one series per kind seen in the range, sorted by kind.
+fn flow_series(points: &[Bucket]) -> Vec<chart::Series> {
+    let mut kinds: Vec<String> = points.iter().flat_map(|p| p.by_kind.keys().cloned()).collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+        .into_iter()
+        .map(|kind| {
+            let values = points.iter().map(|p| p.by_kind.get(&kind).copied().unwrap_or(0.0)).collect();
+            chart::Series { color: kind_color(&kind), key: kind, values }
+        })
+        .collect()
 }
 
 /// Whole units with thousands separators, as the web's `money`.
@@ -558,6 +1307,38 @@ fn money(n: f64) -> String {
     } else {
         out
     }
+}
+
+/// A chart or table label for a bucket that starts at `ms` (UTC): "14 Nov 22:00" hourly, else "14 Nov".
+fn point_label(ms: i64, hourly: bool) -> String {
+    let (_, m, d, h) = civil(ms);
+    let month = MONTHS[(m - 1) as usize];
+    if hourly {
+        format!("{d} {month} {h:02}:00")
+    } else {
+        format!("{d} {month}")
+    }
+}
+
+/// UTC calendar fields of epoch milliseconds: (year, month 1-12, day, hour).
+fn civil(ms: i64) -> (i64, u32, u32, u32) {
+    let days = ms.div_euclid(DAY_MS as i64);
+    let hour = (ms.rem_euclid(DAY_MS as i64) / HOUR_MS as i64) as u32;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d, hour)
+}
+
+/// The rows of a page size needed for `len` rows (at least one page).
+fn page_count(len: usize, size: usize) -> usize {
+    len.div_ceil(size).max(1)
 }
 
 fn now_ms() -> f64 {
@@ -579,21 +1360,135 @@ fn ago(ms: f64) -> String {
     }
 }
 
+/// Percent-encodes a query value.
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Eases from 0 to 1 over the animation's length, from `start`.
+fn progress(start: Instant, now: Instant) -> f64 {
+    (now.saturating_duration_since(start).as_secs_f64() / ANIM.as_secs_f64()).min(1.0)
+}
+
+/// The journal rows: `head` (the newest page) over the older rows already loaded, newest first.
+fn merge_head(existing: &[Entry], head: Vec<Entry>) -> Vec<Entry> {
+    let Some(oldest) = head.iter().map(|e| e.id).min() else { return head };
+    let mut out = head;
+    out.extend(existing.iter().filter(|e| e.id < oldest).cloned());
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    out
+}
+
+/// A figure that counts from its old value to a new one.
+#[derive(Debug, Default, Clone, Copy)]
+struct Tween {
+    from: f64,
+    to: f64,
+    start: Option<Instant>,
+}
+
+impl Tween {
+    fn at(&self, now: Instant) -> f64 {
+        match self.start {
+            Some(s) => self.from + (self.to - self.from) * chart::ease(progress(s, now)),
+            None => self.to,
+        }
+    }
+
+    fn aim(&mut self, to: f64, now: Instant) {
+        if to == self.to {
+            return;
+        }
+        self.from = self.at(now);
+        self.to = to;
+        self.start = Some(now);
+    }
+}
+
+#[derive(Debug, Default)]
+struct Counters {
+    budget: Tween,
+    circulating: Tween,
+    paid: Tween,
+    usd: Tween,
+    treasury: Tween,
+}
+
+/// A chart's series, easing from the frame on screen to a new target.
+#[derive(Debug, Default)]
+struct Animated {
+    from: Vec<chart::Series>,
+    to: Vec<chart::Series>,
+    start: Option<Instant>,
+}
+
+impl Animated {
+    fn current(&self, now: Instant) -> Vec<chart::Series> {
+        match self.start {
+            Some(s) => chart::blend(&self.from, &self.to, chart::ease(progress(s, now))),
+            None => self.to.clone(),
+        }
+    }
+
+    fn retarget(&mut self, next: Vec<chart::Series>, now: Instant) {
+        if next == self.to {
+            return;
+        }
+        self.from = self.current(now);
+        self.to = next;
+        self.start = Some(now);
+    }
+}
+
 /// The data the screen shows, read from the hub's JSON.
 #[derive(Debug, Clone)]
 pub struct Data {
-    plaza_budget: f64,
+    budget: f64,
     spent: f64,
-    accounts: Vec<Account>,
-    journal: Vec<Entry>,
+    escrow: f64,
+    treasury: f64,
     wallets: Vec<Wallet>,
     roster: Vec<Member>,
+    points: Vec<Bucket>,
+    /// The real model cost over the range, in dollars.
+    cost: f64,
 }
 
+/// What one poll reads: the data, the filter it was read under, and the journal's newest page.
 #[derive(Debug, Clone)]
-struct Account {
-    kind: String,
-    balance: f64,
+pub struct Snapshot {
+    data: Data,
+    filter: JournalFilter,
+    page: JournalPage,
+}
+
+/// One page of the journal, newest first.
+#[derive(Debug, Clone)]
+pub struct JournalPage {
+    entries: Vec<Entry>,
+    total: u64,
+    next_before: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Bucket {
+    at: f64,
+    minted: f64,
+    escrowed: f64,
+    paid: f64,
+    refunded: f64,
+    fined: f64,
+    spent: f64,
+    entries: f64,
+    budget: f64,
+    circulating: f64,
+    treasury: f64,
+    by_kind: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -601,7 +1496,7 @@ struct Entry {
     id: i64,
     kind: String,
     at: f64,
-    postings: Vec<f64>,
+    amount: f64,
     memo: String,
     task: Option<String>,
 }
@@ -621,17 +1516,15 @@ struct Member {
 }
 
 impl Data {
-    fn parse(treasury: &Value, journal: &Value, wallets: &Value, roster: &Value) -> Data {
-        let mut journal: Vec<Entry> = list(journal, "entries").iter().map(Entry::parse).collect();
-        journal.sort_by(|a, b| b.at.total_cmp(&a.at));
+    fn parse(treasury: &Value, wallets: &Value, roster: &Value, series: &Value, usage: &Value) -> Data {
+        let accounts = list(treasury, "accounts");
+        let balance = |kind: &str| accounts.iter().filter(|a| text(a, "kind") == kind).map(|a| num(a, "balance")).sum::<f64>();
+        let totals = usage.get("totals").cloned().unwrap_or(Value::Null);
         Data {
-            plaza_budget: num(treasury, "plaza_budget"),
+            budget: num(treasury, "plaza_budget"),
             spent: num(treasury, "spent"),
-            accounts: list(treasury, "accounts")
-                .iter()
-                .map(|a| Account { kind: text(a, "kind"), balance: num(a, "balance") })
-                .collect(),
-            journal,
+            escrow: balance("escrow"),
+            treasury: balance("treasury"),
             wallets: list(wallets, "wallets")
                 .iter()
                 .map(|w| Wallet { cid: uint(w, "cid"), name: text(w, "name"), balance: num(w, "balance") })
@@ -640,29 +1533,84 @@ impl Data {
                 .iter()
                 .map(|a| Member { cid: uint(a, "cid"), name: text(a, "name"), role_label: text(a, "role_label") })
                 .collect(),
+            points: list(series, "points").iter().map(Bucket::parse).collect(),
+            cost: num(&totals, "usd"),
+        }
+    }
+
+    fn paid(&self) -> f64 {
+        self.points.iter().map(|p| p.paid).sum()
+    }
+
+    fn fined(&self) -> f64 {
+        self.points.iter().map(|p| p.fined).sum()
+    }
+
+    fn wallets_total(&self) -> f64 {
+        self.wallets.iter().map(|w| w.balance).sum()
+    }
+
+    /// The money in circulation at the end of the range (the wallets, when there is no series).
+    fn circulating(&self) -> f64 {
+        self.points.last().map_or_else(|| self.wallets_total(), |p| p.circulating)
+    }
+
+    fn treasury_now(&self) -> f64 {
+        self.points.last().map_or(self.treasury, |p| p.treasury)
+    }
+}
+
+impl Bucket {
+    fn parse(v: &Value) -> Bucket {
+        Bucket {
+            at: num(v, "at_ms"),
+            minted: num(v, "minted"),
+            escrowed: num(v, "escrowed"),
+            paid: num(v, "paid"),
+            refunded: num(v, "refunded"),
+            fined: num(v, "fined"),
+            spent: num(v, "spent"),
+            entries: num(v, "entries"),
+            budget: num(v, "plaza_budget_end"),
+            circulating: num(v, "circulating_end"),
+            treasury: num(v, "treasury_end"),
+            by_kind: v
+                .get("by_kind")
+                .and_then(Value::as_object)
+                .map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_f64().unwrap_or(0.0))).collect())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl JournalPage {
+    fn parse(v: &Value) -> JournalPage {
+        JournalPage {
+            entries: list(v, "entries").iter().map(Entry::parse).collect(),
+            total: uint(v, "total"),
+            next_before: v.get("next_before").and_then(Value::as_i64),
         }
     }
 }
 
 impl Entry {
+    /// The hub's entry: `created_at` (or `at`), its net `amount` (or, when absent, the debit legs of
+    /// the postings: a balanced entry's size), and its task under `task_id` (or `task`).
     fn parse(v: &Value) -> Entry {
+        let legs: f64 = v
+            .get("postings")
+            .and_then(Value::as_array)
+            .map(|ps| ps.iter().map(|p| num(p, "amount")).filter(|a| *a > 0.0).sum())
+            .unwrap_or(0.0);
+        let created = num(v, "created_at");
         Entry {
             id: v.get("id").and_then(Value::as_i64).unwrap_or(0),
             kind: text(v, "kind"),
-            at: num(v, "at"),
-            postings: v
-                .get("postings")
-                .and_then(Value::as_array)
-                .map(|ps| ps.iter().map(|p| num(p, "amount")).collect())
-                .unwrap_or_default(),
+            at: if created > 0.0 { created } else { num(v, "at") },
+            amount: if v.get("amount").is_some() { num(v, "amount") } else { legs },
             memo: text(v, "memo"),
-            task: v.get("task").and_then(Value::as_str).map(str::to_string),
+            task: v.get("task_id").or_else(|| v.get("task")).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string),
         }
-    }
-
-    /// A balanced entry carries its debit legs as positive amounts; the entry's size is their sum.
-    fn amount(&self) -> f64 {
-        self.postings.iter().copied().filter(|a| *a > 0.0).sum()
     }
 }
 
@@ -681,4 +1629,136 @@ fn uint(v: &Value, key: &str) -> u64 {
 
 fn text(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: i64, kind: &str) -> Entry {
+        Entry { id, kind: kind.to_string(), at: 0.0, amount: 0.0, memo: String::new(), task: None }
+    }
+
+    fn ids(v: &[Entry]) -> Vec<i64> {
+        v.iter().map(|e| e.id).collect()
+    }
+
+    #[test]
+    fn money_groups_thousands() {
+        assert_eq!(money(1_234_567.0), "1,234,567");
+        assert_eq!(money(-1500.0), "-1,500");
+        assert_eq!(money(0.4), "0");
+    }
+
+    #[test]
+    fn whole_needs_a_positive_integer() {
+        assert_eq!(whole(" 12 "), Some(12));
+        assert_eq!(whole("0"), None);
+        assert_eq!(whole("-3"), None);
+        assert_eq!(whole("1.5"), None);
+    }
+
+    #[test]
+    fn enc_escapes_reserved_bytes() {
+        assert_eq!(enc("a b&c"), "a%20b%26c");
+        assert_eq!(enc("ok-_.~"), "ok-_.~");
+    }
+
+    #[test]
+    fn journal_path_carries_the_filters_and_the_cursor() {
+        let f = JournalFilter { kind: Some("spend".into()), wallet: Some(7), task: "fix bug".into() };
+        assert_eq!(journal_path(&f, None), "/v1/treasury/journal?limit=50&kind=spend&wallet=7&task=fix%20bug");
+        assert_eq!(journal_path(&JournalFilter::default(), Some(42)), "/v1/treasury/journal?limit=50&before=42");
+    }
+
+    #[test]
+    fn civil_dates_are_utc() {
+        assert_eq!(civil(0), (1970, 1, 1, 0));
+        assert_eq!(civil(1_700_000_000_000), (2023, 11, 14, 22));
+        assert_eq!(point_label(1_700_000_000_000, true), "14 Nov 22:00");
+        assert_eq!(point_label(1_700_000_000_000, false), "14 Nov");
+    }
+
+    #[test]
+    fn a_head_page_merges_over_the_older_rows_already_loaded() {
+        let merged = merge_head(&[entry(8, "spend"), entry(7, "fine")], vec![entry(9, "mint"), entry(8, "spend")]);
+        assert_eq!(ids(&merged), vec![9, 8, 7]);
+        assert!(ids(&merge_head(&[entry(3, "mint")], vec![])).is_empty());
+    }
+
+    #[test]
+    fn resort_flips_the_same_column_and_starts_a_new_one_in_its_own_order() {
+        let (mut cur, mut asc) = (SeriesSort::Time, false);
+        resort(&mut cur, &mut asc, SeriesSort::Time, false);
+        assert!(asc);
+        resort(&mut cur, &mut asc, SeriesSort::Paid, false);
+        assert_eq!((cur, asc), (SeriesSort::Paid, false));
+    }
+
+    #[test]
+    fn pages_hold_at_least_one() {
+        assert_eq!(page_count(0, 25), 1);
+        assert_eq!(page_count(25, 25), 1);
+        assert_eq!(page_count(26, 25), 2);
+    }
+
+    #[test]
+    fn bar_at_picks_the_column_under_the_cursor() {
+        assert_eq!(bar_at(10.0, 4, 10.0, 40.0), Some(0));
+        assert_eq!(bar_at(35.0, 4, 10.0, 40.0), Some(2));
+        assert_eq!(bar_at(50.0, 4, 10.0, 40.0), Some(3));
+        assert_eq!(bar_at(9.0, 4, 10.0, 40.0), None);
+        assert_eq!(bar_at(51.0, 4, 10.0, 40.0), None);
+    }
+
+    #[test]
+    fn a_tween_counts_up_and_settles() {
+        let t0 = Instant::now();
+        let mut t = Tween::default();
+        t.aim(100.0, t0);
+        assert!(t.at(t0) < 1.0);
+        assert_eq!(t.at(t0 + ANIM), 100.0);
+    }
+
+    #[test]
+    fn credits_are_a_tenth_of_a_cent() {
+        assert_eq!(money(0.5 / CREDIT_USD), "500");
+    }
+
+    #[test]
+    fn kind_choices_list_every_kind_once_after_all_kinds() {
+        let k = kind_options(None, &[entry(1, "zeta"), entry(2, "mint")]);
+        assert_eq!(k[0].label, "All kinds");
+        assert!(k.iter().any(|c| c.kind.as_deref() == Some("zeta")));
+        assert_eq!(k.iter().filter(|c| c.kind.as_deref() == Some("mint")).count(), 1);
+    }
+
+    #[test]
+    fn journal_parses_its_page_and_sums_debit_legs() {
+        let v = json!({
+            "entries": [{"id": 3, "kind": "mint", "at": 1.0, "postings": [{"amount": 5}, {"amount": -5}], "memo": "", "task": null}],
+            "total": 9, "limit": 50, "truncated": true, "next_before": 3
+        });
+        let page = JournalPage::parse(&v);
+        assert_eq!((page.total, page.next_before), (9, Some(3)));
+        assert_eq!(page.entries[0].amount, 5.0);
+    }
+
+    #[test]
+    fn the_series_parses_into_stacked_flows_and_balances() {
+        let series = json!({"points": [
+            {"at_ms": 1000, "entries": 2, "minted": 5, "escrowed": 0, "paid": 1, "refunded": 0, "fined": 0, "spent": 3,
+             "by_kind": {"mint": 5, "spend": 3}, "plaza_budget_end": 10, "circulating_end": 4, "treasury_end": 2},
+            {"at_ms": 2000, "entries": 1, "minted": 0, "escrowed": 0, "paid": 2, "refunded": 0, "fined": 1, "spent": 0,
+             "by_kind": {"payment": 2, "fine": 1}, "plaza_budget_end": 8, "circulating_end": 6, "treasury_end": 3}
+        ]});
+        let points: Vec<Bucket> = list(&series, "points").iter().map(Bucket::parse).collect();
+        let flows = flow_series(&points);
+        let keys: Vec<&str> = flows.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, vec!["fine", "mint", "payment", "spend"]);
+        assert_eq!(flows[1].values, vec![5.0, 0.0]);
+        assert_eq!(balance_series(&points)[0].values, vec![10.0, 8.0]);
+        let all = totals(&points);
+        assert_eq!((all.minted, all.paid, all.budget, all.circulating), (5.0, 3.0, 8.0, 6.0));
+    }
 }

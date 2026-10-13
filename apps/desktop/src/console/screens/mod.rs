@@ -216,6 +216,8 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
     match id {
         Id::Floor => iced::Subscription::batch([floor::subscription(), floor::events(ctx)]).map(Msg::Floor),
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
+        Id::Treasury => treasury::subscription(&screens.treasury).map(Msg::Treasury),
+        Id::Society => society::subscription().map(Msg::Society),
         _ => iced::Subscription::none(),
     }
 }

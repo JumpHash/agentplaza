@@ -188,6 +188,8 @@ pub enum Msg {
     Member(u64),
     /// Go up to the first `n` levels of the path (the breadcrumb, Back).
     Level(usize),
+    /// Esc: up one level, when a level is open.
+    Up,
     /// Switch between the family level and the agent level.
     Group,
     /// One frame of the pop.
@@ -261,6 +263,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Level(n) => {
             state.nav.truncate(n);
+            refresh(state)
+        }
+        Msg::Up => {
+            if state.nav.pop().is_none() {
+                return Task::none();
+            }
             refresh(state)
         }
         Msg::Group => {
@@ -1550,4 +1558,15 @@ mod tests {
         nav.truncate(1);
         assert_eq!(keys(&nav), build);
     }
+}
+
+/// Esc goes up one level of the groups, as the web's does.
+pub fn subscription() -> iced::Subscription<Msg> {
+    iced::event::listen_with(|event, _status, _window| match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) => Some(Msg::Up),
+        _ => None,
+    })
 }
