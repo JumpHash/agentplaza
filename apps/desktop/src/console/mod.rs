@@ -16,6 +16,7 @@ pub mod icons;
 pub mod picker;
 pub mod screens;
 pub mod services;
+pub mod setup;
 pub mod shell;
 pub mod ui;
 
