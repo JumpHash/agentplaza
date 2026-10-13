@@ -8,7 +8,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -208,7 +208,7 @@ fn running_state(log: &mut dyn FnMut(String), name: &str) -> Option<bool> {
 /// Returns stdout, trimmed; a failure is an Err with the command's last stderr line.
 fn run_docker(log: &mut dyn FnMut(String), args: &[&str], secrets: &[&str]) -> Result<String, String> {
     log(format!("$ docker {}", redact(&args.join(" "), secrets)));
-    let out = Command::new("docker")
+    let out = super::command("docker")
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -231,7 +231,7 @@ fn wait_until(
     log(format!("$ docker {} (retried until it succeeds)", args.join(" ")));
     let started = Instant::now();
     loop {
-        let last = match Command::new("docker").args(args).stdin(Stdio::null()).output() {
+        let last = match super::command("docker").args(args).stdin(Stdio::null()).output() {
             Ok(out) if out.status.success() => return Ok(()),
             Ok(out) => failure(&out, &[]),
             Err(e) => format!("cannot run docker: {e}"),

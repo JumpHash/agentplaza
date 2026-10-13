@@ -8,7 +8,7 @@
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::io::{BufRead, BufReader, Read};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::mpsc;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -173,7 +173,7 @@ fn run(log: &mut dyn FnMut(String), program: &str, args: &[&str]) -> Result<Stri
         .collect::<Vec<_>>()
         .join(" ");
     log(format!("$ {line}"));
-    let mut child = Command::new(program)
+    let mut child = super::command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -271,7 +271,7 @@ fn wait_for_daemon(log: &mut dyn FnMut(String)) -> Result<(), String> {
 /// not answer. Nothing is logged for these probes.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn docker_version() -> Result<String, String> {
-    let out = Command::new("docker")
+    let out = super::command("docker")
         .args(["info", "--format", "{{.ServerVersion}}"])
         .stdin(Stdio::null())
         .output()

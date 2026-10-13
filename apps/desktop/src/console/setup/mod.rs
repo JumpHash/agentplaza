@@ -88,6 +88,21 @@ pub fn fix(need: Need, log: &mut dyn FnMut(String)) -> Result<(), String> {
     }
 }
 
+/// A command for a probe or an installer step: on Windows it opens no console window (the app
+/// has none, so each console program would flash its own).
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = cmd;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    };
+    cmd
+}
+
 /// Whether every required check passes (Start may run).
 pub fn ready(checks: &[Check]) -> bool {
     checks.iter().all(|c| !c.required || c.state == State::Ok)

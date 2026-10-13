@@ -3,7 +3,7 @@
 use super::{Check, Mode, Need, State};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 const SERVICES: [&str; 3] = ["apid", "vsockd", "noded"];
 const PORTS: [u16; 3] = [7700, 8899, 19080];
@@ -45,7 +45,7 @@ fn check(
 
 /// Runs `program args` with no stdin; `None` if it cannot run at all.
 fn probe(program: &str, args: &[&str]) -> Option<Output> {
-    Command::new(program).args(args).stdin(Stdio::null()).output().ok()
+    super::command(program).args(args).stdin(Stdio::null()).output().ok()
 }
 
 /// The first line of a command's output, trimmed.
@@ -283,7 +283,28 @@ fn busy_port(ports: &[u16]) -> Option<u16> {
     ports.iter().copied().find(|port| TcpListener::bind(("127.0.0.1", *port)).is_err())
 }
 
+/// Whether AgentPlaza's own hub answers on 127.0.0.1:7700 (its overview names the agents): then
+/// the plaza is already running and its ports are held by it, not by something in the way.
+fn plaza_running() -> bool {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let Ok(mut conn) = std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 7700).into(), Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = conn.set_read_timeout(Some(Duration::from_secs(2)));
+    if conn.write_all(b"GET /v1/overview HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut answer = Vec::new();
+    let _ = conn.take(64 * 1024).read_to_end(&mut answer);
+    let answer = String::from_utf8_lossy(&answer);
+    answer.starts_with("HTTP/1.") && answer.contains(" 200 ") && answer.contains("\"agents\"")
+}
+
 fn ports() -> Check {
+    if busy_port(&PORTS).is_some() && plaza_running() {
+        return check(Need::Ports, "Ports", State::Ok, "AgentPlaza is already running here", None, true);
+    }
     match busy_port(&PORTS) {
         Some(port) => check(
             Need::Ports,
