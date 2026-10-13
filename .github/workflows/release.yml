@@ -9,7 +9,9 @@ name: release
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**/*.md"]
+    # A push that changes only VERSION (CI writing a release back, or a merge that brings just
+    # that in) is no release of its own; a change that sets VERSION along with others still is.
+    paths-ignore: ["docs/**", "**/*.md", "VERSION"]
   workflow_dispatch:
     inputs:
       version:
