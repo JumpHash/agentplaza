@@ -13,8 +13,23 @@ The Floor becomes two levels, in the web console and the desktop app alike (1:1)
 
 Machine kinds: `workstation`, `laptop`, `edge` (single-board computers, a Raspberry Pi), `phone`
 (Android, later), `server`. A machine with GPUs shows them (outside: in the case window / on the
-card; inside: as GPU boards with their own rooms). Apple Silicon machines are `laptop` or
-`workstation` by chassis, with an SoC board (CPU, GPU and unified memory on one package).
+card; inside: as GPU boards with their own rooms).
+
+**Apple is its own family.** A Mac reports `vendor: "apple"` and its form factor as `kind`
+(`laptop` for a MacBook, `workstation` for a Mac mini, Mac Studio, Mac Pro or iMac) plus its
+`model` ("MacBook Pro (16-inch, M3 Max)", "Mac Studio (M2 Ultra)"). Apple machines never use the
+generic models: they have their own — `exterior/apple-laptop.json` (the aluminium unibody
+MacBook), `exterior/apple-desktop.json` (the Mac mini / Mac Studio block; `params.studio` picks
+the taller Studio) — and their inside is `board/apple-soc.json`: an Apple Silicon logic board
+built around the SoC package, which carries the CPU clusters (performance and efficiency cores
+as separate blocks), the GPU core array, the Neural Engine, the media engines and the unified
+memory packages on the same substrate; around it the SSD controller and NAND, the Thunderbolt
+controllers and the power stages. Rooms go on those blocks (slot types `cpu` for the P and E
+clusters, `gpu` for the GPU array, `memory` for the unified memory, `npu` for the Neural Engine,
+`storage`, `io` for Thunderbolt, `power`). The machine's `apple` details (chip name, P/E core
+counts, GPU core count, unified memory) feed the board's params (`p_cores`, `e_cores`,
+`gpu_cores`, `memory_gib`) so it shows the right number of cores. Model selection:
+`vendor == "apple"` → the apple-* models; otherwise `kind` → the generic ones.
 
 ## One source of truth: hardware models as data
 
@@ -26,6 +41,8 @@ from the shared data.
 ```
 assets/hardware/
   exterior/{workstation,laptop,edge,phone,server}.json   the machine as seen in the Machines view
+  exterior/{apple-laptop,apple-desktop}.json             Macs (vendor "apple")
+  board/apple-soc.json                                    a Mac's inside: the Apple Silicon logic board
   board/{workstation,laptop,edge,phone,server}.json      its inside: the plaza
   parts/*.json                                           reusable pieces (gpu-pcie, dimm, fan, m2-ssd, …)
   palette.json                                           named colours shared by all models
@@ -70,8 +87,10 @@ y = 0 and span 40–80 units so rooms (3–6 units wide) fit on the components. 
   "mat": "pcb" | { "color": "#1f6b3a", "emissive": "#000", "glow": 0..4, "opacity": 0..1,
                    "additive": false, "flat": false },   // a palette name or an inline material
   "outline": true,                     // the toon ink outline (default true for solids, false for decals)
-  "repeat": { "count": 4, "step": [dx, dy, dz] },        // DIMM rows, fins, cells, LEDs
-  "when": "gpus >= 1",                 // shown only if the expression on params holds (gpus, gpus >= n, !gpus)
+  "repeat": { "count": 4, "step": [dx, dy, dz] },        // DIMM rows, fins, cells, LEDs; count may be a
+                                       // param name ("p_cores") as well as a number
+  "when": "gpus >= 1",                 // shown only if the expression on params holds: <param>, !<param>,
+                                       // <param> >= n (params: gpus, p_cores, e_cores, gpu_cores, memory_gib, studio)
   "anim": Anim,
   "tag": "status",                     // semantic tag: status LEDs take the machine's status colour
                                        // ("status"), "activity" blinks with agents working,
@@ -179,6 +198,10 @@ its traces carry more pulses; a GPU running work shows its fans spinning faster.
   "machines": [{
     "id": "n0", "name": "zarathos-pc", "role": "hub",            // hub | node
     "kind": "workstation",                                         // workstation | laptop | edge | phone | server
+    "vendor": "apple",                                             // lower-case maker: apple, dell, lenovo, raspberrypi, samsung, … (null when unknown)
+    "model": "Mac Studio (M2 Ultra)",                              // the maker's model name (null when unknown)
+    "apple": { "chip": "Apple M2 Ultra", "p_cores": 16, "e_cores": 8, "gpu_cores": 76,
+               "neural_cores": 32, "unified_memory_gib": 192 },    // only on Macs
     "status": "online",                                            // online | draining | offline | revoked
     "arch": "x86_64", "os": "linux", "backend": "kvm",
     "cpu": { "model": "AMD Ryzen 9 5900X", "cores": 12, "threads": 24 },
@@ -187,7 +210,7 @@ its traces carry more pulses; a GPU running work shows its fans spinning faster.
     "storage_gib": 1863,
     "agents": [200, 201],                                          // cids running there
     "working": 0,                                                  // of those, how many are working
-    "stats": { "cpu_pct": 7.5, "mem_used_mib": 18000 },            // null when unknown
+    "stats": { "cpu_pct": 7.5, "mem_used_mib": 18000 },            // live load; remote nodes send it with every heartbeat; null when unknown
     "last_seen_ms": 1791852847610
   }],
   "links": [{ "a": "n0", "b": "n3", "online": true }]

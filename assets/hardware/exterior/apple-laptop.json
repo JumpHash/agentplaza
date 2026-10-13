@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "kind": "apple-laptop",
+  "view": "exterior",
+  "size": [6, 3, 4],
+  "parts": [ { "id": "body", "geo": { "type": "rbox", "w": 6, "h": 0.6, "d": 4, "r": 0.2 }, "at": [0, 0.3, 0], "mat": "aluminium" } ],
+  "anchors": { "label": [0, 4, 0], "port": [3, 0.3, 0], "camera": { "at": [6, 5, 6], "look": [0, 1, 0] }, "open": "body", "atom": [0, 1, 0] }
+}

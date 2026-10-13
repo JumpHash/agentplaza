@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "apple-soc",
+  "view": "board",
+  "size": [40, 2, 30],
+  "parts": [ { "id": "pcb", "geo": { "type": "box", "w": 40, "h": 0.4, "d": 30 }, "at": [0, 0.2, 0], "mat": "pcb-black" }, { "id": "soc", "geo": { "type": "box", "w": 12, "h": 0.8, "d": 12 }, "at": [0, 0.8, 0], "mat": "ic" } ],
+  "anchors": { "camera": { "at": [0, 40, 30], "look": [0, 0, 0] }, "atom": [0, 4, 0] },
+  "slots": [ { "id": "soc", "on": "soc", "type": "cpu", "top": 1.2, "rect": [-6, -6, 12, 12], "capacity": 6 } ],
+  "traces": []
+}
