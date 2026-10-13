@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{column, row, text_input, Space};
 use iced::{Alignment, Element, Length, Task};
@@ -31,6 +32,36 @@ pub struct SavedHub {
     pub pin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_token: Option<String>,
+    /// The hub identity first seen on a successful connection (trust on first use), until forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<Pinned>,
+}
+
+/// A remembered hub identity: the certificate fingerprint the hub showed, and the UTC day it was pinned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pinned {
+    pub fingerprint: String,
+    pub since: String,
+}
+
+/// Today's UTC date as `YYYY-MM-DD`, from the Unix clock (civil calendar, no time crate).
+fn today() -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The first 16 characters of a fingerprint, for the warning.
+fn short(fingerprint: &str) -> String {
+    format!("{}…", fingerprint.chars().take(16).collect::<String>())
 }
 
 /// `cli.json`: the saved hubs and the default one. Private to this user: it holds owner tokens.
@@ -122,9 +153,23 @@ pub struct State {
     pub token: String,
     /// The identity card of the URL last checked; cleared when the URL or pin changes.
     pub identity: Option<Identity>,
+    /// The checked URL answers with an identity other than the pinned one: nothing is sent until trusted.
+    pub mismatch: Option<Mismatch>,
     pub busy: bool,
     pub error: Option<String>,
     pub confirm_sign_out: bool,
+}
+
+/// A hub identity that differs from the pinned one.
+#[derive(Debug, Clone)]
+pub struct Mismatch {
+    pub expected: String,
+    pub received: Option<String>,
+}
+
+/// The pin remembered for a URL: its saved hub's entry, keyed as `connect` saves it.
+fn pinned_for<'a>(config: &'a Config, url: &str) -> Option<&'a Pinned> {
+    config.hubs.get(&host_of(url.trim()))?.pinned.as_ref()
 }
 
 impl State {
@@ -146,6 +191,12 @@ pub enum Msg {
     Connect,
     /// The hub answered (Ok carries the client), or why not.
     Connected(Result<Client, String>),
+    /// Trust the identity the checked URL shows now: re-pin it.
+    TrustIdentity,
+    /// Drop the mismatch and the checked identity; nothing is connected.
+    CancelIdentity,
+    /// Forget the pinned identity of the URL.
+    ForgetPin,
     /// Switch to a saved hub.
     Use(String),
     AskSignOut,
@@ -161,11 +212,13 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
         Msg::Url(value) => {
             state.url = value;
             state.identity = None;
+            state.mismatch = None;
             (Task::none(), None)
         }
         Msg::Pin(value) => {
             state.pin = value;
             state.identity = None;
+            state.mismatch = None;
             (Task::none(), None)
         }
         Msg::Token(value) => {
@@ -181,12 +234,23 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             state.busy = true;
             state.error = None;
             state.identity = None;
+            state.mismatch = None;
             (client::task(move || fetch_identity(&url, &pin), Msg::Identity), None)
         }
         Msg::Identity(result) => {
             state.busy = false;
             match result {
-                Ok(identity) => state.identity = Some(identity),
+                Ok(identity) => {
+                    // Trust on first use: a hand-typed pin already binds the certificate, so only
+                    // an unpinned URL is compared with the identity remembered for it.
+                    state.mismatch = match pinned_for(&state.config, &state.url) {
+                        Some(pinned) if state.pin.trim().is_empty() && identity.fingerprint.as_deref() != Some(pinned.fingerprint.as_str()) => {
+                            Some(Mismatch { expected: pinned.fingerprint.clone(), received: identity.fingerprint.clone() })
+                        }
+                        _ => None,
+                    };
+                    state.identity = Some(identity);
+                }
                 Err(error) => state.error = Some(error),
             }
             (Task::none(), None)
@@ -195,12 +259,44 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             let url = state.url.trim().to_string();
             let pin = state.pin.trim().to_string();
             let token = state.token.trim().to_string();
-            if state.busy || state.identity.is_none() || token.is_empty() {
+            if state.busy || state.mismatch.is_some() || token.is_empty() {
                 return (Task::none(), None);
             }
+            let Some(checked) = state.identity.as_ref().map(|identity| identity.fingerprint.clone()) else {
+                return (Task::none(), None);
+            };
             state.busy = true;
             state.error = None;
-            (client::task(move || connect(&url, &pin, &token), Msg::Connected), None)
+            (client::task(move || connect(&url, &pin, &token, checked), Msg::Connected), None)
+        }
+        Msg::TrustIdentity => {
+            let Some(mismatch) = state.mismatch.take() else {
+                return (Task::none(), None);
+            };
+            let name = host_of(state.url.trim());
+            if let Some(hub) = state.config.hubs.get_mut(&name) {
+                hub.pinned = mismatch.received.map(|fingerprint| Pinned { fingerprint, since: today() });
+            }
+            if let Err(error) = state.config.save() {
+                state.error = Some(error);
+            }
+            (Task::none(), None)
+        }
+        Msg::CancelIdentity => {
+            state.mismatch = None;
+            state.identity = None;
+            (Task::none(), None)
+        }
+        Msg::ForgetPin => {
+            let name = host_of(state.url.trim());
+            if let Some(hub) = state.config.hubs.get_mut(&name) {
+                hub.pinned = None;
+            }
+            state.mismatch = None;
+            if let Err(error) = state.config.save() {
+                state.error = Some(error);
+            }
+            (Task::none(), None)
         }
         Msg::Connected(result) => {
             state.busy = false;
@@ -287,12 +383,26 @@ fn fetch_identity(url: &str, pin: &str) -> Result<Identity, String> {
 
 /// Verifies the owner token against a remote hub and saves the hub as the default. Returns the
 /// client to open it with.
-fn connect(url: &str, pin: &str, token: &str) -> Result<Client, String> {
+fn connect(url: &str, pin: &str, token: &str, checked: Option<String>) -> Result<Client, String> {
+    // The identity is read again, unauthenticated, before the owner token is sent: it must still be
+    // the one the user checked.
+    let fresh = fetch_identity(url, pin)?;
+    if fresh.fingerprint != checked {
+        return Err("The hub's identity changed since it was checked. Check the hub again.".into());
+    }
     let client = Client::new(url, parse_optional_pin(pin)?, Some(token.to_string()));
     client.get::<Value>("/v1/auth/check")?;
     let name = host_of(url);
     let mut config = Config::load();
-    let mcp_token = config.hubs.get(&name).and_then(|hub| hub.mcp_token.clone());
+    let (mcp_token, existing) = config.hubs.get(&name).map(|hub| (hub.mcp_token.clone(), hub.pinned.clone())).unwrap_or_default();
+    // A hand-typed pin overrides trust on first use; otherwise the identity is remembered on first connect.
+    let pinned = match (pin.is_empty(), fresh.fingerprint) {
+        (true, Some(fingerprint)) => match existing {
+            Some(pinned) if pinned.fingerprint == fingerprint => Some(pinned),
+            _ => Some(Pinned { fingerprint, since: today() }),
+        },
+        _ => existing,
+    };
     config.hubs.insert(
         name.clone(),
         SavedHub {
@@ -300,6 +410,7 @@ fn connect(url: &str, pin: &str, token: &str) -> Result<Client, String> {
             token: Some(token.to_string()),
             pin: (!pin.is_empty()).then(|| pin.to_string()),
             mcp_token,
+            pinned,
         },
     );
     config.default = Some(name);
@@ -307,9 +418,23 @@ fn connect(url: &str, pin: &str, token: &str) -> Result<Client, String> {
     Ok(client)
 }
 
-/// A saved hub's client, after checking its owner token still answers.
+/// A saved hub's client, after checking its owner token still answers. A remembered identity that
+/// no longer matches stops the token from being sent.
 fn verify(hub: &SavedHub) -> Result<Client, String> {
     let token = hub.token.clone().ok_or_else(|| "Sign in to this hub first: paste its owner token.".to_string())?;
+    if hub.pin.is_none() {
+        if let Some(pinned) = &hub.pinned {
+            let fresh = fetch_identity(&hub.url, "")?;
+            if fresh.fingerprint.as_deref() != Some(pinned.fingerprint.as_str()) {
+                return Err(format!(
+                    "{}'s identity changed: expected {}, received {}. Check it on the Connect screen before signing in.",
+                    hub.url,
+                    short(&pinned.fingerprint),
+                    fresh.fingerprint.as_deref().map(short).unwrap_or_else(|| "no certificate".into()),
+                ));
+            }
+        }
+    }
     let client = Client::new(&hub.url, parse_optional_pin(hub.pin.as_deref().unwrap_or(""))?, Some(token));
     client.get::<Value>("/v1/auth/check")?;
     Ok(client)
@@ -383,12 +508,32 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     page.push(text_input("64 hex digits", &state.pin).on_input(Msg::Pin).on_submit(Msg::Check).into());
     page.push(ui::btn("Check hub", None, Kind::Ghost, (!busy && !state.url.trim().is_empty()).then_some(Msg::Check)));
     if let Some(identity) = &state.identity {
-        page.push(identity_card(identity));
+        let pinned = pinned_for(&state.config, &state.url).filter(|_| state.pin.trim().is_empty());
+        page.push(identity_card(identity, pinned, busy));
+    }
+    if let Some(mismatch) = &state.mismatch {
+        let received = mismatch.received.as_deref().map(short).unwrap_or_else(|| "no certificate".into());
+        let warning = format!(
+            "This URL answers with a different identity. Pinned {}, received {received}. A reinstalled hub has a new identity; anything else answering here is not your hub. No token is sent until you trust the new identity.",
+            short(&mismatch.expected)
+        );
+        page.push(
+            column![
+                ui::error_line(&warning),
+                row![
+                    ui::btn("Trust the new identity", None, Kind::Primary, (!busy).then_some(Msg::TrustIdentity)),
+                    ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CancelIdentity)),
+                ]
+                .spacing(8),
+            ]
+            .spacing(10)
+            .into(),
+        );
     }
     page.push(ui::label("Owner token").into());
     page.push(text_input("owner token", &state.token).on_input(Msg::Token).on_submit(Msg::Connect).secure(true).into());
     page.push(ui::faint("Check that the identity above is the hub you mean, then connect.").into());
-    let connectable = !busy && state.identity.is_some() && !state.token.trim().is_empty();
+    let connectable = !busy && state.identity.is_some() && state.mismatch.is_none() && !state.token.trim().is_empty();
     page.push(ui::btn("Connect", Some("external"), Kind::Primary, connectable.then_some(Msg::Connect)));
 
     if let (Some(name), Some(_)) = (state.config.default.as_deref(), state.config.active().and_then(|hub| hub.token.as_ref())) {
@@ -416,19 +561,29 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     column(page).spacing(14).into()
 }
 
-fn identity_card(identity: &Identity) -> Element<'static, Msg> {
+fn identity_card(identity: &Identity, pinned: Option<&Pinned>, busy: bool) -> Element<'static, Msg> {
     let name = if identity.name.is_empty() { "Unnamed hub".to_string() } else { identity.name.clone() };
     let certificate = match &identity.fingerprint {
         Some(fingerprint) => format!("certificate {fingerprint}"),
         None => "no certificate fingerprint".to_string(),
     };
-    column![
-        ui::mono(name, 16.0, ui::INK),
-        ui::faint(format!("{} · version {} · {} nodes", identity.url, identity.version, identity.nodes)),
-        ui::faint(certificate),
-    ]
-    .spacing(4)
-    .into()
+    let mut card: Vec<Element<'static, Msg>> = vec![
+        ui::mono(name, 16.0, ui::INK).into(),
+        ui::faint(format!("{} · version {} · {} nodes", identity.url, identity.version, identity.nodes)).into(),
+        ui::faint(certificate).into(),
+    ];
+    if let Some(pinned) = pinned {
+        card.push(
+            row![
+                ui::faint(format!("Pinned since {}", pinned.since)),
+                Space::new().width(Length::Fill),
+                ui::btn("Forget pin", None, Kind::Ghost, (!busy).then_some(Msg::ForgetPin)),
+            ]
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    column(card).spacing(4).into()
 }
 
 #[cfg(test)]
@@ -443,7 +598,7 @@ mod tests {
     }
 
     fn hub(url: &str, token: Option<&str>) -> SavedHub {
-        SavedHub { url: url.into(), token: token.map(Into::into), pin: None, mcp_token: None }
+        SavedHub { url: url.into(), token: token.map(Into::into), pin: None, mcp_token: None, pinned: None }
     }
 
     #[test]

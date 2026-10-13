@@ -3,6 +3,7 @@
 //! place that knows them all; a screen module touches nothing outside itself.
 
 pub mod agent_side;
+pub mod memory_graph;
 pub mod wizard;
 pub mod overview;
 pub mod agents;

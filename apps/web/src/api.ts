@@ -862,7 +862,9 @@ export interface VaultAuditLine {
   seq: number; ts_ms: number; event: string; entry?: string; name?: string; actor: string;
   binding?: string; node?: string; cid?: number; detail?: string; prev: string; mac: string;
 }
-export interface VaultAudit { entries: VaultAuditLine[]; chain_ok?: boolean }
+/** The first line that breaks the chain: its 0-based position, its seq when it has one, and 12-character hash prefixes. */
+export interface VaultBrokenEntry { index: number; seq?: number; expected: string; found: string }
+export interface VaultAudit { entries: VaultAuditLine[]; chain_ok?: boolean; first_broken?: VaultBrokenEntry | null; verified?: number | null }
 
 const vaultPath = (...parts: string[]) => ['/v1/vault', ...parts.map((p) => encodeURIComponent(p))].join('/');
 

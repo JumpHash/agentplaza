@@ -62,6 +62,9 @@ pub struct Side {
     notes: Vec<Note>,
     search: String,
     reading: Option<Note>,
+    // The graph view of the same notes (a toggle beside the list).
+    graph_on: bool,
+    graph: super::memory_graph::Layout,
 }
 
 /// An agent's harness limits; a missing one is the plaza default.
@@ -108,6 +111,10 @@ pub struct Note {
     pub tags: Vec<String>,
     #[serde(default)]
     pub updated_ms: u64,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub links: Vec<String>,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
@@ -166,6 +173,8 @@ pub enum SideMsg {
     SearchSubmit,
     OpenNote(String),
     NoteRead(Result<Note, String>),
+    ToggleGraph,
+    Graph(super::memory_graph::Msg),
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -459,6 +468,7 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             if side.reading.as_ref().is_some_and(|open| !list.iter().any(|n| n.slug == open.slug)) {
                 side.reading = None;
             }
+            side.graph.refresh(&list);
             side.notes = list;
             match fetch {
                 Some(slug) => fetch_note(ctx, cid, slug),
@@ -491,6 +501,11 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             side.error = Some(e);
             Task::none()
         }
+        SideMsg::ToggleGraph => {
+            side.graph_on = !side.graph_on;
+            Task::none()
+        }
+        SideMsg::Graph(super::memory_graph::Msg::Open(slug)) => fetch_note(ctx, cid, slug),
     }
 }
 
@@ -652,7 +667,11 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         .on_submit(SideMsg::SearchSubmit)
         .style(crate::theme::input)
         .width(Length::Fixed(240.0));
-    let head = row![ui::faint(count), Space::new().width(Length::Fill), find].align_y(Alignment::Center);
+    let toggle = ui::btn(if side.graph_on { "List" } else { "Graph" }, None, ui::Kind::Ghost, Some(SideMsg::ToggleGraph));
+    let head = row![ui::faint(count), Space::new().width(Length::Fill), toggle, find].spacing(12).align_y(Alignment::Center);
+    if side.graph_on {
+        return column![head, super::memory_graph::view(&side.graph).map(SideMsg::Graph)].spacing(12).into();
+    }
 
     let q = side.search.trim().to_lowercase();
     let rows: Vec<Element<'a, SideMsg>> = side

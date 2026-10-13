@@ -154,6 +154,8 @@ fn card_frame(built: &Built, model: &Model, statics: (u64, &Arc<Vec<Draw>>, &[Po
         overlays: Vec::new(),
         lod: None,
         fades: Arc::new(built.fades.clone()),
+        plaza: None,
+        anim_batches: Arc::new(Vec::new()),
         focus: None,
     }
 }
@@ -299,6 +301,8 @@ fn portrait_frame(robot: &Robot, spec: PortraitSpec, version: u64, aspect: f32) 
         overlays: Vec::new(),
         lod: None,
         fades: Arc::new(Vec::new()),
+        plaza: None,
+        anim_batches: Arc::new(Vec::new()),
         focus: None,
     }
 }

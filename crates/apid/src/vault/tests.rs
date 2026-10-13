@@ -295,7 +295,7 @@ fn the_audit_chain_verifies_and_an_edited_line_breaks_it_at_that_line() {
     let (store, dir) = fresh("audit");
     store.create(new("ALPHA_KEY", "alpha-value-0000000000009", Scope::Plaza, &["hf"]), "owner", NOW).expect("made");
     store.create(new("BETA_KEY", "beta-value-00000000000010", Scope::Plaza, &["hf"]), "owner", NOW).expect("made");
-    assert_eq!(store.check_audit().expect("checked"), (true, None));
+    assert!(store.check_audit().expect("checked").ok);
     let path = dir.join("vault-audit.jsonl");
     let text = std::fs::read_to_string(&path).expect("read");
     let lines: Vec<&str> = text.lines().collect();
@@ -308,7 +308,11 @@ fn the_audit_chain_verifies_and_an_edited_line_breaks_it_at_that_line() {
         .join("\n");
     std::fs::write(&path, format!("{edited}\n")).expect("edited");
     let store = reopen(&dir);
-    assert_eq!(store.check_audit().expect("checked"), (false, Some(2)), "line 2 is where it breaks");
+    let verdict = store.check_audit().expect("checked");
+    assert_eq!((verdict.ok, verdict.broken_at), (false, Some(2)), "line 2 is where it breaks");
+    assert_eq!(verdict.verified, 1, "one entry verifies before it");
+    let broken = verdict.first_broken.expect("the first broken entry is named");
+    assert_eq!((broken.index, broken.seq), (1, Some(2)));
 }
 
 #[test]

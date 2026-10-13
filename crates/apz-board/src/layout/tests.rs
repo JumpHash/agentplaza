@@ -259,19 +259,19 @@ fn every_layout_seats_and_stays_under_the_measured_ceiling() {
     assert!(slow.is_empty(), "over the measured ceiling of {LAYOUT_CEILING_S} s (it only ratchets down): {slow:?}");
 }
 
-/// The budget. Laptop (about 5.5 s) and apple-soc n=1 (about 3.1 s) are over it today: the nav grid's fine height
-/// field is rebuilt for every round's walk set (about a third of the build). Un-ignore once they fit.
+/// The budget. Laptop (about 4 s) and apple-soc n=1 (about 2.4 s) are over it today: every round of a scale step
+/// rebuilds the nav grid for its walk set (support, moves, components). Un-ignore once they fit.
 #[test]
-#[ignore = "laptop and apple-soc n=1 are over 2 s; LAYOUT_CEILING_S holds the measured worst case meanwhile"]
+#[ignore = "laptop (about 4 s) and apple-soc n=1 (about 2.4 s) are over 2 s; LAYOUT_CEILING_S holds the measured worst case meanwhile"]
 fn every_layout_returns_within_two_seconds() {
     let (failed, slow) = timed_layouts(2.0);
     assert!(failed.is_empty(), "agents do not seat: {failed:?}");
     assert!(slow.is_empty(), "over the 2 s budget: {slow:?}");
 }
 
-/// The worst layout time measured on 2026-10-13 (laptop, 5.5 s alone; over 8 s while the suite's other layout tests
-/// run in parallel), with headroom for slower machines. Lower it as the layout gets faster; never raise it.
-const LAYOUT_CEILING_S: f64 = 12.0;
+/// The worst layout time measured on 2026-10-13 (laptop: 4.0 s with the suite's other layout tests in parallel, 4.6 s
+/// alone at load 21), and room for a loaded CI runner. Lower it as the layout gets faster; never raise it.
+const LAYOUT_CEILING_S: f64 = 9.0;
 
 /// Lays out every kind at every count; returns the cases that panicked and those at or over `limit` seconds.
 fn timed_layouts(limit: f64) -> (Vec<String>, Vec<String>) {

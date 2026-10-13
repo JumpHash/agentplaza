@@ -251,6 +251,8 @@ pub struct Floor {
     layout_cache: Option<(String, board_layout::BoardLayout)>,
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
+    /// The GPU-animated batches of the statics (`bake_split`), versioned with them.
+    anim_batches: Arc<Vec<scene::AnimBatch>>,
     static_lights: Vec<PointLightDraw>,
     /// The dynamic subtrees inside the root's static children (found when baking).
     deep_dynamic: Vec<scene::Rig>,
@@ -294,6 +296,7 @@ impl Floor {
             statics_dirty: true,
             statics: Arc::new(Vec::new()),
             statics_version: 0,
+            anim_batches: Arc::new(Vec::new()),
             static_lights: Vec::new(),
             rooms_job: None,
             layout_cache: None,
@@ -306,7 +309,9 @@ impl Floor {
     /// This frame for the renderer: the baked statics (re-baked when dirty) and the dynamic draws.
     pub fn frame(&mut self, aspect: f32) -> Frame {
         if self.statics_dirty {
-            self.statics = Arc::new(scene::bake(&self.root));
+            let baked = scene::bake_split(&self.root, scene::GPU_HW_ANIM);
+            self.statics = Arc::new(baked.statics);
+            self.anim_batches = Arc::new(baked.animated);
             self.static_lights = scene::flatten(&self.root, Filter::Static).1;
             let root_world = self.root.local_matrix();
             let children = self.root.get().children.clone();
@@ -344,6 +349,7 @@ impl Floor {
             }),
             fades: Arc::new(self.board.as_ref().map(|b| b.built.fades.clone()).unwrap_or_default()),
             plaza: self.plaza_area(),
+            anim_batches: Arc::clone(&self.anim_batches),
             focus: self.board.as_ref().and_then(|b| b.model.anchors.atom).map(Vec3::from),
         }
     }

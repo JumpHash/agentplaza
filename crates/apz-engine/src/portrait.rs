@@ -95,6 +95,7 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
         lod: None,
         fades: Arc::new(Vec::new()),
         plaza: None,
+        anim_batches: Arc::new(Vec::new()),
         focus: None,
     }
 }

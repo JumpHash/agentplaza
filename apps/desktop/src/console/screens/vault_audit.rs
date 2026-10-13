@@ -42,6 +42,21 @@ pub struct AuditLine {
 pub struct AuditPage {
     pub entries: Vec<AuditLine>,
     pub chain_ok: Option<bool>,
+    /// The first broken entry, when the request verified a broken chain.
+    pub first_broken: Option<BrokenEntry>,
+    /// The entries that verified before the first broken one (all of them when intact).
+    pub verified: Option<u64>,
+}
+
+/// The first broken entry of the chain as the hub reports it: its 0-based position, its seq when it has one,
+/// and the expected and found hashes cut to 12 characters.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct BrokenEntry {
+    pub index: u64,
+    pub seq: Option<u64>,
+    pub expected: String,
+    pub found: String,
 }
 
 /// The audit log as read so far: the pages loaded, where the next one starts, and the last verify.
@@ -54,6 +69,9 @@ pub struct AuditState {
     pub more: bool,
     /// The last verify's answer.
     pub chain: Option<bool>,
+    /// The first broken entry from the last verify, and the entries that verified before it.
+    pub broken: Option<BrokenEntry>,
+    pub verified: Option<u64>,
     pub loaded: bool,
     pub busy: bool,
     pub error: Option<String>,
@@ -61,6 +79,23 @@ pub struct AuditState {
 
 pub fn parse_audit(value: Value) -> Result<AuditPage, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// The verify answer in words. The web console's chainMessage says the same thing.
+pub fn chain_message(ok: bool, verified: Option<u64>, broken: Option<&BrokenEntry>) -> String {
+    if ok {
+        return match verified {
+            Some(n) => format!("Chain intact: {n} entries verified"),
+            None => "Chain intact".to_string(),
+        };
+    }
+    match broken {
+        None => "Chain broken".to_string(),
+        Some(b) => {
+            let at = b.seq.map(|s| format!(" (seq {s})")).unwrap_or_default();
+            format!("Chain broken at entry #{}{at}: {} entries verified before it", b.index, verified.unwrap_or(b.index))
+        }
+    }
 }
 
 /// `/v1/vault/audit?after=&limit=`, with `verify=1` when the chain is to be checked.
@@ -86,7 +121,8 @@ pub fn audit_card<'a>(state: &'a State) -> Element<'a, Msg> {
     let now = now_ms();
     let mut head: Vec<Element<'a, Msg>> = vec![ui::btn_sm("Verify chain", None, ui::Kind::Secondary, gate(audit.busy, Msg::AuditVerify))];
     if let Some(ok) = audit.chain {
-        head.push(if ok { ui::badge("Chain intact", ui::Tone::Ok) } else { ui::badge("Chain broken", ui::Tone::Danger) });
+        let message = chain_message(ok, audit.verified, audit.broken.as_ref());
+        head.push(ui::badge(&message, if ok { ui::Tone::Ok } else { ui::Tone::Danger }));
     }
     let mut items: Vec<Element<'a, Msg>> = vec![row(head).spacing(12).into()];
     if let Some(error) = &audit.error {
@@ -101,7 +137,8 @@ pub fn audit_card<'a>(state: &'a State) -> Element<'a, Msg> {
         if i > 0 {
             items.push(ui::hairline());
         }
-        items.push(audit_row(line, &state.nodes, now));
+        let broken = audit.broken.as_ref().filter(|b| b.seq == Some(line.seq));
+        items.push(audit_row(line, &state.nodes, now, broken));
     }
     if audit.more {
         items.push(row(vec![ui::btn("Load more", None, ui::Kind::Secondary, gate(audit.busy, Msg::AuditMore))]).into());
@@ -109,22 +146,38 @@ pub fn audit_card<'a>(state: &'a State) -> Element<'a, Msg> {
     ui::card("Audit log", stack(items))
 }
 
-fn audit_row<'a>(line: &AuditLine, nodes: &[NodeRef], now: f64) -> Element<'a, Msg> {
+/// One audit row. The broken entry (when this row is it) gets a badge and the hashes that did not match.
+fn audit_row<'a>(line: &AuditLine, nodes: &[NodeRef], now: f64, broken: Option<&BrokenEntry>) -> Element<'a, Msg> {
     let actor = if line.actor.is_empty() { "-".to_string() } else { line.actor.clone() };
     let entry = line.name.clone().or_else(|| line.entry.clone()).unwrap_or_else(|| "-".to_string());
     let node = line.node.as_deref().map(|id| node_name(nodes, id)).unwrap_or_else(|| "-".to_string());
+    let event_text = format!("{}  #{}", line.event, line.seq);
+    let event: Element<'a, Msg> = if broken.is_some() {
+        let parts: Vec<Element<'a, Msg>> = vec![text(event_text).into(), ui::badge("broken", ui::Tone::Danger)];
+        row(parts).spacing(8).width(Length::FillPortion(3)).into()
+    } else {
+        text(event_text).width(Length::FillPortion(3)).into()
+    };
     let top: Element<'a, Msg> = row(vec![
         ui::faint(ago(line.ts_ms, now)).width(Length::FillPortion(2)).into(),
-        text(format!("{}  #{}", line.event, line.seq)).width(Length::FillPortion(3)).into(),
+        event,
         text(actor).width(Length::FillPortion(2)).into(),
         text(entry).width(Length::FillPortion(3)).into(),
         text(node).width(Length::FillPortion(2)).into(),
     ])
     .spacing(12)
     .into();
-    match line.detail.as_deref() {
-        Some(detail) if !detail.is_empty() => column(vec![top, ui::faint(ui::ellipsize(detail, 120)).into()]).spacing(4).into(),
-        _ => top,
+    let mut rows: Vec<Element<'a, Msg>> = vec![top];
+    if let Some(detail) = line.detail.as_deref().filter(|d| !d.is_empty()) {
+        rows.push(ui::faint(ui::ellipsize(detail, 120)).into());
+    }
+    if let Some(b) = broken {
+        rows.push(ui::faint(format!("expected {}  found {}", b.expected, b.found)).into());
+    }
+    if rows.len() == 1 {
+        rows.remove(0)
+    } else {
+        column(rows).spacing(4).into()
     }
 }
 
@@ -427,6 +480,13 @@ mod tests {
         assert_eq!(page.entries[0].node.as_deref(), Some("n1"));
         assert_eq!(page.chain_ok, Some(false));
         assert_eq!(parse_audit(json!({ "entries": [] })).unwrap().chain_ok, None);
+    }
+
+    #[test]
+    fn vault_audit_chain_message_names_the_broken_entry() {
+        assert_eq!(chain_message(true, Some(5), None), "Chain intact: 5 entries verified");
+        let broken = BrokenEntry { index: 2, seq: Some(3), expected: "a".into(), found: "b".into() };
+        assert_eq!(chain_message(false, Some(2), Some(&broken)), "Chain broken at entry #2 (seq 3): 2 entries verified before it");
     }
 
     #[test]

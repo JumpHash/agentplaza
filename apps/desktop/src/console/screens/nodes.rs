@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
-use crate::console::services::{self, Mode, NodeStatus};
+use crate::console::services::{self, Mode};
 use crate::console::{client, ui, Ctx};
 
 /// The hub's own node: it is not drained or revoked from here.
@@ -82,6 +82,23 @@ pub struct HubIdentity {
     pub version: String,
     pub url: String,
     pub fingerprint: Option<String>,
+}
+
+/// This machine's link to a network, from the hub (`GET /v1/node-link`, the web's Join card).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NodeLink {
+    #[serde(default)]
+    pub joined: bool,
+    #[serde(default)]
+    pub hub: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub cids: Option<String>,
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 /// A new owner token, shown once.
@@ -176,8 +193,8 @@ pub struct State {
     pub notice: Option<String>,
     /// The open dialog, if any.
     pub dialog: Option<Dialog>,
-    /// This machine as a node (loaded on open and on the poll); its pid feeds the Status row.
-    pub node: Option<NodeStatus>,
+    /// This machine's link to a network, from the hub (loaded on open and on the poll).
+    pub node: Load<NodeLink>,
     /// The join code being typed; the node's action running; its progress lines and error.
     pub code: String,
     pub node_busy: bool,
@@ -216,13 +233,13 @@ pub enum Msg {
     /// Copy a value to the clipboard.
     Copy(String),
     Close,
-    /// This machine's node status, read from its identity files and the process table.
-    NodeLoaded(NodeStatus),
+    /// This machine's network link, from the hub (`GET /v1/node-link`).
+    NodeLinkLoaded(Result<NodeLink, String>),
     CodeEdit(String),
     /// Join the network the code names, then start the node.
     Join,
-    /// The join finished: its progress lines, or its error.
-    Joined(Result<Vec<String>, String>),
+    /// The join finished: the link the hub answers with, or its error.
+    Joined(Result<NodeLink, String>),
     NodeStart,
     NodeStop,
     /// The node service started or stopped: its progress lines, or its error.
@@ -231,7 +248,7 @@ pub enum Msg {
     CancelLeave,
     ToggleForget(bool),
     Leave,
-    Left(Result<(), String>),
+    Left(Result<NodeLink, String>),
     MachinesLoaded(Result<Vec<PlazaMachine>, String>),
     /// Open a node's detail, or close it.
     Select(String),
@@ -248,13 +265,13 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let (nodes, codes, hub, machines) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
+    let (nodes, codes, hub, machines, link) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     Task::batch([
         client::task(move || nodes.get::<Vec<NodeView>>("/v1/nodes"), Msg::NodesLoaded),
         client::task(move || codes.get::<Vec<JoinCode>>("/v1/nodes/codes"), Msg::CodesLoaded),
         client::task(move || hub.get::<HubIdentity>("/v1/hub/identity"), Msg::HubLoaded),
         client::task(move || machines.get::<Vec<PlazaMachine>>("/v1/machines"), Msg::MachinesLoaded),
-        Task::perform(async { services::node_status() }, Msg::NodeLoaded),
+        client::task(move || link.get::<NodeLink>("/v1/node-link"), Msg::NodeLinkLoaded),
     ])
 }
 
@@ -385,8 +402,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = None;
             Task::none()
         }
-        Msg::NodeLoaded(status) => {
-            state.node = Some(status);
+        Msg::NodeLinkLoaded(result) => {
+            state.node = settle(result);
             Task::none()
         }
         Msg::CodeEdit(value) => {
@@ -405,14 +422,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.node_busy = true;
             state.node_error = None;
             state.progress = vec!["Joining the network…".to_string()];
-            Task::perform(async move { join_and_start(&token) }, Msg::Joined)
+            let client = ctx.client.clone();
+            let body = json!({ "code": token });
+            client::task(move || client.post::<NodeLink>("/v1/node-link/join", &body), Msg::Joined)
         }
         Msg::Joined(result) => {
             state.node_busy = false;
             match result {
-                Ok(lines) => {
+                Ok(link) => {
                     state.code.clear();
-                    state.progress = lines;
+                    state.progress = vec![format!("joined as node {}", link.node_id.as_deref().unwrap_or("?"))];
+                    state.node = Load::Ready(link);
                 }
                 Err(error) => {
                     state.progress.clear();
@@ -452,8 +472,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.node_busy = true;
             state.node_error = None;
-            let forget = state.forget;
-            Task::perform(async move { services::leave(forget) }, Msg::Left)
+            let body = json!({ "forget": state.forget });
+            let client = ctx.client.clone();
+            client::task(move || client.post::<NodeLink>("/v1/node-link/leave", &body), Msg::Left)
         }
         Msg::MachinesLoaded(result) => {
             state.machines = settle(result);
@@ -473,7 +494,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.leaving = false;
             state.forget = false;
             match result {
-                Ok(()) => {
+                Ok(link) => {
+                    state.node = Load::Ready(link);
                     state.progress = vec![if forgot {
                         "Left the network and forgot it.".to_string()
                     } else {
@@ -485,14 +507,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             load(state, ctx)
         }
     }
-}
-
-/// Joins the network the code names, then starts the node; returns the progress lines.
-fn join_and_start(token: &str) -> Result<Vec<String>, String> {
-    let node = services::join(token)?;
-    let mut lines = vec![format!("joined as node {node}")];
-    lines.extend(services::start(Mode::Node)?);
-    Ok(lines)
 }
 
 /// Starts or stops the node service in a task.
@@ -789,9 +803,10 @@ fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
     )
     .into()];
     parts.push(match &state.node {
-        None => ui::loading(),
-        Some(node) if node.joined => joined_view(node, state),
-        Some(_) => join_form(state),
+        Load::Pending => ui::loading(),
+        Load::Failed => ui::empty("alert", "Could not load the network link.", ""),
+        Load::Ready(node) if node.joined => joined_view(node, state),
+        Load::Ready(_) => join_form(state),
     });
     for line in &state.progress {
         parts.push(ui::mono(line.as_str(), 11.0, crate::theme::palette().ink_3).into());
@@ -822,7 +837,7 @@ fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// The joined network: its hub, node and CIDs, the node service's state with Start or Stop, and
 /// Leave (confirmed, with the choice to forget the network).
-fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
+fn joined_view<'a>(node: &'a NodeLink, state: &'a State) -> Element<'a, Msg> {
     let busy = state.node_busy;
     let (badge_text, tone) = if node.running { ("running", ui::Tone::Ok) } else { ("stopped", ui::Tone::Muted) };
     let toggle: Element<'a, Msg> = if node.running {
@@ -851,9 +866,9 @@ fn joined_view<'a>(node: &'a NodeStatus, state: &'a State) -> Element<'a, Msg> {
     }
     let service: Element<'a, Msg> = status.push(toggle).into();
     column![
-        fact("Hub", ui::mono(or_dash(&node.hub), 12.0, crate::theme::palette().ink).into()),
-        fact("This node", ui::mono(or_dash(&node.node_id), 12.0, crate::theme::palette().ink).into()),
-        fact("CIDs", ui::mono(or_dash(&node.cids), 12.0, crate::theme::palette().ink).into()),
+        fact("Hub", ui::mono(or_dash(node.hub.as_deref().unwrap_or("")), 12.0, crate::theme::palette().ink).into()),
+        fact("This node", ui::mono(or_dash(node.node_id.as_deref().unwrap_or("")), 12.0, crate::theme::palette().ink).into()),
+        fact("CIDs", ui::mono(or_dash(node.cids.as_deref().unwrap_or("")), 12.0, crate::theme::palette().ink).into()),
         fact("Status", service),
         leave,
     ]

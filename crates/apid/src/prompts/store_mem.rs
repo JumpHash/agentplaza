@@ -159,6 +159,7 @@ impl StoredVersion {
 
 impl MemoryPrompts {
     /// Not persisted (tests).
+    #[cfg(test)]
     pub fn in_memory() -> MemoryPrompts {
         MemoryPrompts { path: None, inner: Mutex::new(Data::default()) }
     }

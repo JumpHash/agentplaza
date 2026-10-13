@@ -388,6 +388,7 @@ impl MachineStage {
             lod: None,
             fades: Arc::new(Vec::new()), // no cutaways on the stage
             plaza: None,
+            anim_batches: Arc::new(Vec::new()),
             focus: None,
         }
     }

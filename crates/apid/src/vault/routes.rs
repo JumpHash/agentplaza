@@ -478,20 +478,21 @@ pub(super) fn audit(ctx: &Ctx, req: &Request) -> Response {
         Ok(entries) => entries,
         Err(err) => return fail(err),
     };
-    let chain_ok: Value = if req.query_param("verify") == Some("1") {
+    // `first_broken` and `verified` are null unless this request verified the chain.
+    let (chain_ok, first_broken, verified): (Value, Value, Value) = if req.query_param("verify") == Some("1") {
         match ctx.store.check_audit() {
-            Ok((ok, broken_at)) => {
-                if !ok {
-                    ctx.bus.publish("vault.audit_broken", &json!({ "line": broken_at }));
+            Ok(verdict) => {
+                if let Some(line) = verdict.broken_at {
+                    ctx.bus.publish("vault.audit_broken", &json!({ "line": line }));
                 }
-                Value::from(ok)
+                (Value::from(verdict.ok), json!(verdict.first_broken), Value::from(verdict.verified))
             }
             Err(err) => return fail(err),
         }
     } else {
-        json!(ctx.store.audit_ok())
+        (json!(ctx.store.audit_ok()), Value::Null, Value::Null)
     };
-    Response::json(200, &json!({ "entries": entries, "chain_ok": chain_ok }))
+    Response::json(200, &json!({ "entries": entries, "chain_ok": chain_ok, "first_broken": first_broken, "verified": verified }))
 }
 
 fn query_number(req: &Request, name: &str, default: u64) -> Result<u64, Response> {

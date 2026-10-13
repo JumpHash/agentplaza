@@ -42,6 +42,20 @@ function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, 
   return e;
 }
 
+/** The desktop's seeded xorshift (screens/memory_graph.rs `Rng`, same seed), so both apps place a note set alike and
+ *  a given set always lands in the same place. */
+const SEED = 0x2545f4914f6cdd1dn;
+const MASK = (1n << 64n) - 1n;
+function xorshift(seed: bigint): () => number {
+  let x = seed;
+  return () => {
+    x ^= (x << 13n) & MASK;
+    x ^= x >> 7n;
+    x ^= (x << 17n) & MASK;
+    return Number(x >> 11n) / 2 ** 53;
+  };
+}
+
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const radiusOf = (size: number): number => 17 + 4 * Math.log10(size / 200 + 1);
 
@@ -58,6 +72,7 @@ function glyph(kind: Kind): SVGElement {
 }
 
 export function createMemoryGraph(host: HTMLElement, onOpen: (slug: string) => void): MemoryGraph {
+  const unit = xorshift(SEED);
   const svg = el('svg', { class: 'memg', role: 'img', 'aria-label': 'Memory graph' });
   const defs = el(
     'defs',
@@ -135,8 +150,8 @@ export function createMemoryGraph(host: HTMLElement, onOpen: (slug: string) => v
         let dy = b.y - a.y;
         let d2 = dx * dx + dy * dy;
         if (d2 < 1) {
-          dx = Math.random() - 0.5;
-          dy = Math.random() - 0.5;
+          dx = unit() - 0.5;
+          dy = unit() - 0.5;
           d2 = 1;
         }
         const d = Math.sqrt(d2);
@@ -422,7 +437,7 @@ export function createMemoryGraph(host: HTMLElement, onOpen: (slug: string) => v
     for (const p of fresh) {
       const friend = links.find((l) => (l.a === p && !fresh.includes(l.b)) || (l.b === p && !fresh.includes(l.a)));
       const anchor = friend ? (friend.a === p ? friend.b : friend.a) : null;
-      const a = Math.random() * Math.PI * 2;
+      const a = unit() * Math.PI * 2;
       p.x = (anchor?.x ?? 0) + Math.cos(a) * 60;
       p.y = (anchor?.y ?? 0) + Math.sin(a) * 60;
       if (nodes.length > fresh.length) ping(p, 'pop');

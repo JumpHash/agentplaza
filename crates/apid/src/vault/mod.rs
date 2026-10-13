@@ -537,15 +537,15 @@ impl Store {
         self.lock().audit_ok
     }
 
-    /// Checks the whole audit chain now (needs the keys). Returns `(ok, broken_at)`.
-    pub fn check_audit(&self) -> Result<(bool, Option<u64>), VaultError> {
+    /// Checks the whole audit chain now (needs the keys).
+    pub fn check_audit(&self) -> Result<audit::Verdict, VaultError> {
         let inner = self.lock();
         let keys = inner.keys.clone().ok_or_else(|| self.unavailable(&inner))?;
         drop(inner);
         let text = disk::read(&self.audit_path()).map_err(|e| VaultError::Storage(e.to_string()))?.unwrap_or_default();
         let verdict = audit::verify(&text, &keys.audit);
         self.lock().audit_ok = Some(verdict.ok);
-        Ok((verdict.ok, verdict.broken_at))
+        Ok(verdict)
     }
 
     /// The audit lines after sequence number `after`, at most `limit`. They carry no values.

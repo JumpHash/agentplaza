@@ -139,8 +139,20 @@ pub struct Grid {
     pub main: i32,
     /// The walk surfaces the grid was built from (WalkSet::surfaces, same order).
     pub surfaces: Vec<WalkSurface>,
-    /// The fine height field.
-    pub fine: FineField,
+    /// The fine height field, built on the first height_at (see LazyFine). Not serialised.
+    #[serde(skip)]
+    pub fine: LazyFine,
+}
+
+/// The fine height field of a grid, built on first use. It is a cache of the other fields, so grids with equal fields
+/// are equal whatever has been cached. The layout never queries heights, so it never pays for the field.
+#[derive(Debug, Default, Clone)]
+pub struct LazyFine(std::sync::OnceLock<FineField>);
+
+impl PartialEq for LazyFine {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Grid {
@@ -161,7 +173,10 @@ impl Grid {
 
     /// The walk surface height at (x, z) from the fine field, or None where no walk surface lies under the point.
     pub fn height_at(&self, x: f64, z: f64) -> Option<f64> {
-        let f = &self.fine;
+        let f = self.fine.0.get_or_init(|| {
+            let shapes: Vec<Shape> = self.surfaces.iter().map(|s| Shape::new(&s.poly)).collect();
+            fine_field(&shapes, self.x0, self.z0, self.cols, self.rows)
+        });
         if f.cols == 0 || x < f.x0 || z < f.z0 {
             return None;
         }
@@ -455,7 +470,6 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
         }
     }
 
-    let fine = fine_field(&shapes, x0, z0, cols, rows);
     Grid {
         cell: NAV_CELL,
         cols,
@@ -476,7 +490,7 @@ fn build_with(set: &WalkSet, indexed: bool) -> Grid {
         portals,
         main,
         surfaces: surfaces.clone(),
-        fine,
+        fine: LazyFine::default(),
     }
 }
 

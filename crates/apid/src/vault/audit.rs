@@ -108,6 +108,17 @@ pub fn append(path: &Path, head: &mut Head, key: &[u8; 32], record: &Record, ts_
     Ok(())
 }
 
+/// The first line that breaks the chain: its 0-based position, its seq when it has one, and the expected
+/// and found hashes cut to their first 12 characters (both empty when the line is unreadable).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Broken {
+    pub index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    pub expected: String,
+    pub found: String,
+}
+
 /// The result of checking the chain.
 pub struct Verdict {
     pub ok: bool,
@@ -116,6 +127,10 @@ pub struct Verdict {
     pub head: Head,
     /// The timestamp of the last rekey line, when there is one.
     pub last_rekey_ms: Option<u64>,
+    /// The entries that verified before the first broken one (all of them when the chain is intact).
+    pub verified: u64,
+    /// The first broken entry, when the chain is broken.
+    pub first_broken: Option<Broken>,
 }
 
 /// Checks every line: sequence numbers and links everywhere, MACs from the last rekey on.
@@ -124,7 +139,7 @@ pub fn verify(text: &str, key: &[u8; 32]) -> Verdict {
     for (i, line) in text.lines().enumerate() {
         match serde_json::from_str::<Value>(line) {
             Ok(value) if value.is_object() => lines.push(value),
-            _ => return broken(i as u64 + 1, Head::genesis(), None),
+            _ => return broken(i, None, "", "", Head::genesis(), None),
         }
     }
     let keyed_from = lines.iter().rposition(|l| l["event"] == "rekey").unwrap_or(0);
@@ -134,27 +149,41 @@ pub fn verify(text: &str, key: &[u8; 32]) -> Verdict {
     for (i, line) in lines.iter().enumerate() {
         let number = i as u64 + 1;
         let (Some(seq), Some(line_prev), Some(mac)) = (line["seq"].as_u64(), line["prev"].as_str(), line["mac"].as_str()) else {
-            return broken(number, head, last_rekey_ms);
+            return broken(i, line["seq"].as_u64(), &prev, line["prev"].as_str().unwrap_or(""), head, last_rekey_ms);
         };
         if seq != number || line_prev != prev {
-            return broken(number, head, last_rekey_ms);
+            return broken(i, Some(seq), &prev, line_prev, head, last_rekey_ms);
         }
         if i >= keyed_from {
             let mut unsigned = line.as_object().cloned().unwrap_or_default();
             unsigned.remove("mac");
             let expected = crypto::mac_hex(key, &[prev.as_bytes(), crypto::canonical(&Value::Object(unsigned)).as_bytes()]);
             if expected != mac {
-                return broken(number, head, last_rekey_ms);
+                return broken(i, Some(seq), &expected, mac, head, last_rekey_ms);
             }
         }
         prev = mac.to_string();
         head = Head { seq, mac: mac.to_string() };
     }
-    Verdict { ok: true, broken_at: None, head, last_rekey_ms }
+    Verdict { ok: true, broken_at: None, head, last_rekey_ms, verified: lines.len() as u64, first_broken: None }
 }
 
-fn broken(line: u64, head: Head, last_rekey_ms: Option<u64>) -> Verdict {
-    Verdict { ok: false, broken_at: Some(line), head, last_rekey_ms }
+/// The first 12 characters of a hash: enough to compare by eye, never the whole chain.
+fn prefix(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
+/// The verdict for a chain that breaks at the line with 0-based position `index`: the entries before it verified.
+fn broken(index: usize, seq: Option<u64>, expected: &str, found: &str, head: Head, last_rekey_ms: Option<u64>) -> Verdict {
+    let index = index as u64;
+    Verdict {
+        ok: false,
+        broken_at: Some(index + 1),
+        head,
+        last_rekey_ms,
+        verified: index,
+        first_broken: Some(Broken { index, seq, expected: prefix(expected), found: prefix(found) }),
+    }
 }
 
 /// The lines after sequence number `after`, at most `limit` of them, as JSON.
@@ -199,6 +228,37 @@ mod tests {
         let verdict = verify(&edited, &KEY);
         assert!(!verdict.ok);
         assert_eq!(verdict.broken_at, Some(3));
+    }
+
+    #[test]
+    fn the_first_broken_entry_is_named_by_position_with_short_hashes() {
+        let dir = scratch("first-broken");
+        let path = dir.join("vault-audit.jsonl");
+        let mut head = Head::genesis();
+        for (i, event) in ["init", "unseal", "create", "use", "seal"].iter().enumerate() {
+            let record = Record::new(event, "owner").detail(format!("step {i}"));
+            append(&path, &mut head, &KEY, &record, 1000 + i as u64).expect("appended");
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        let clean = verify(&text, &KEY);
+        assert!(clean.ok);
+        assert_eq!(clean.verified, 5);
+        assert!(clean.first_broken.is_none());
+
+        // The middle entry (index 2, seq 3) is edited: the two entries before it verify.
+        let edited = text.replacen("step 2", "step X", 1);
+        let verdict = verify(&edited, &KEY);
+        assert!(!verdict.ok);
+        assert_eq!(verdict.verified, 2);
+        let broken = verdict.first_broken.expect("the edit is named");
+        assert_eq!(broken.index, 2);
+        assert_eq!(broken.seq, Some(3));
+        assert_eq!(broken.expected.len(), 12);
+        assert_eq!(broken.found.len(), 12);
+        assert_ne!(broken.expected, broken.found);
+        let stored: Value = serde_json::from_str(text.lines().nth(2).expect("line 3")).expect("json");
+        let mac = stored["mac"].as_str().expect("mac");
+        assert_eq!(broken.found, &mac[..12], "the found hash is the stored mac's prefix");
     }
 
     #[test]

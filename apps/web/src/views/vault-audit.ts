@@ -1,17 +1,25 @@
 import { h, replace } from '../ui/dom';
 import { attempt, badge, button, card, clip, empty, table, ago, type Column } from '../ui/components';
-import { vaultApi, type VaultAuditLine } from '../api';
+import { vaultApi, type VaultAuditLine, type VaultBrokenEntry } from '../api';
 import { auditDetail, bindingLabel, errorText, nodeName, type VaultCtx } from './vault-common';
 import '../styles/vault-audit.css';
 
 const PAGE = 50;
 
 /** The last verify result. Kept at module level so it survives the section rebuilds on each reload. */
-let verified: { ok: boolean } | null = null;
+let verified: { ok: boolean; message: string; broken: VaultBrokenEntry | null } | null = null;
+
+/** The verify answer in words. The desktop's chain_message says the same thing. */
+function chainMessage(ok: boolean, count: number | null | undefined, broken: VaultBrokenEntry | null): string {
+  if (ok) return count == null ? 'Chain intact' : `Chain intact: ${count} entries verified`;
+  if (!broken) return 'Chain broken';
+  const at = broken.seq == null ? '' : ` (seq ${broken.seq})`;
+  return `Chain broken at entry #${broken.index}${at}: ${count ?? broken.index} entries verified before it`;
+}
 
 export function vaultAuditSection(ctx: VaultCtx): HTMLElement {
   const verifySlot = h('span.vault-audit-verify');
-  const paintVerified = () => replace(verifySlot, verified ? badge(verified.ok ? 'Chain intact' : 'Chain broken', verified.ok ? 'ok' : 'danger', true) : null);
+  const paintVerified = () => replace(verifySlot, verified ? badge(verified.message, verified.ok ? 'ok' : 'danger', true) : null);
 
   const verifyBtn = button('Verify chain', onVerify, {
     disabled: ctx.locked,
@@ -25,15 +33,22 @@ export function vaultAuditSection(ctx: VaultCtx): HTMLElement {
     verifyBtn.textContent = 'Verify chain';
     verifyBtn.disabled = ctx.locked;
     if (!res) return;
-    verified = { ok: res.chain_ok === true };
+    const ok = res.chain_ok === true;
+    const broken = res.first_broken ?? null;
+    verified = { ok, message: chainMessage(ok, res.verified, broken), broken };
     paintVerified();
+    body.querySelector<HTMLElement>('.vault-audit-broken')?.scrollIntoView({ block: 'center' });
   }
 
   const columns: Column<VaultAuditLine>[] = [
     { label: 'Time', cell: (l) => h('span', { title: new Date(l.ts_ms).toLocaleString() }, ago(l.ts_ms)) },
     {
       label: 'Event',
-      cell: (l) => h('div', null, h('span.vault-audit-event', null, l.event), h('small.vault-audit-seq', null, `#${l.seq}`)),
+      cell: (l) => {
+        const isBroken = verified?.broken?.seq === l.seq;
+        const parts = [h('span.vault-audit-event', null, l.event), h('small.vault-audit-seq', null, `#${l.seq}`), ...(isBroken ? [badge('broken', 'danger')] : [])];
+        return isBroken ? h('div.vault-audit-broken', null, ...parts) : h('div', null, ...parts);
+      },
     },
     { label: 'Actor', cell: (l) => l.actor || '—' },
     { label: 'Entry', cell: (l) => (l.name ? h('span.vault-audit-mono', null, l.name) : '—') },

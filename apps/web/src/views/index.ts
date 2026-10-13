@@ -22,6 +22,7 @@ import { mount as overview } from './overview';
 import { mount as projects } from './projects';
 import { mount as prompts } from './prompts';
 import { mount as rules } from './rules';
+import { mount as setup } from './setup';
 import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
@@ -66,6 +67,7 @@ export const SCREENS: Screen[] = [
   { key: 'vault', label: 'Vault', icon: 'key', section: 'Setup', mount: vault },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
+  { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
   { key: 'robot-lab', label: 'Robot lab', icon: 'wrench', section: 'Setup', mount: robotLab, hidden: true },
   { key: 'room-lab', label: 'Room lab', icon: 'wrench', section: 'Setup', mount: roomLab, hidden: true },

@@ -912,6 +912,9 @@ pub struct Frame {
     pub focus: Option<Vec3>,
     /// The plaza's box (min, max): a cutaway standing over it fades as the web's `overArea` does (None: no plaza).
     pub plaza: Option<(Vec3, Vec3)>,
+    /// The static draws the vertex shader animates (fan spin, LED blink: hw_anim.wgsl), from `bake_split`; versioned with
+    /// `statics_version`. Empty while `GPU_HW_ANIM` is off.
+    pub anim_batches: Arc<Vec<AnimBatch>>,
     /// The Machines view instanced animation (cable packets and status rings), or None.
     pub animated: Option<Arc<crate::fleet::FleetInstances>>,
 }

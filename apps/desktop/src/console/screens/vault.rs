@@ -762,6 +762,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.audit.busy = false;
             state.audit.error = None;
             state.audit.chain = Some(page.chain_ok.unwrap_or(false));
+            state.audit.broken = page.first_broken.clone();
+            state.audit.verified = page.verified;
             Task::none()
         }
         Msg::AuditVerified(Err(error)) => {
