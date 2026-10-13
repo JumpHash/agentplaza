@@ -396,7 +396,7 @@ function checkPart(p: unknown, path: string, c: VCtx): void {
     if (!isObj(r)) fail(c, `${path}.repeat`, 'expected {count, step}');
     else {
       shape(r, `${path}.repeat`, c, {
-        count: [true, (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 64) || isCountRef(v), 'count 1..64, a param name or "param/n"'],
+        count: [true, (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 256) || isCountRef(v), 'count 1..256, a param name or "param/n"'],
         step: [true, isVec3, 'step [dx, dy, dz]'],
         wrap: [false, (v) => Number.isInteger(v) && (v as number) >= 1, 'wrap: a whole number 1 or more'],
         row: [false, isVec3, 'row [dx, dy, dz]'],
@@ -636,7 +636,7 @@ export function repeatOffsets(r: Repeat, params: Params): Vec3[] {
   const [sx, sy, sz] = r.step;
   const [rx, ry, rz] = r.row ?? ZERO;
   const out: Vec3[] = [];
-  for (let i = 0; i < Math.min(64, repeatCount(r.count, params)); i++) {
+  for (let i = 0; i < Math.min(256, repeatCount(r.count, params)); i++) {
     const col = r.wrap ? i % r.wrap : i;
     const line = r.wrap ? Math.floor(i / r.wrap) : 0;
     out.push([sx * col + rx * line, sy * col + ry * line, sz * col + rz * line]);

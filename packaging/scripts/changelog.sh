@@ -35,7 +35,7 @@ cat <<EOF
 | **Linux** tarball | [x86_64]($dl/agentplaza-$version-linux-x86_64.tar.gz) · [aarch64]($dl/agentplaza-$version-linux-aarch64.tar.gz) |
 | **Raspberry Pi 4/5** (Raspberry Pi OS 64-bit) | [.deb]($dl/agentplaza_${version}_arm64-raspberrypi.deb) · [AppImage]($dl/AgentPlaza-$version-linux-aarch64.AppImage) · [tarball]($dl/agentplaza-$version-raspberrypi-arm64.tar.gz) |
 
-Checksums: [SHA256SUMS]($dl/SHA256SUMS). Agents run in microVMs on Linux (KVM, x86_64 and arm64, Raspberry Pi 4/5 included) and Apple Silicon Macs; Windows and Intel Macs run the hub and the desktop app and use nodes elsewhere.
+Checksums: [SHA256SUMS]($dl/SHA256SUMS). Agents run in microVMs on Linux (KVM, x86_64 and arm64, Raspberry Pi 4/5 included), Apple Silicon Macs (Hypervisor.framework) and Windows x64 (Windows Hypervisor Platform). Windows arm64 runs the hub, the desktop app and the CLI, and Intel Macs run the hub and the desktop app; both run agents on nodes elsewhere.
 
 EOF
 

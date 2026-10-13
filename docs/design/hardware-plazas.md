@@ -155,7 +155,7 @@ of the preferred type with room, then the fallbacks, then any slot:
 | family | prefers | then |
 |---|---|---|
 | command (orchestrator, mayor, mayor-office) | cpu (the orchestrator on cpu0's centre) | soc |
-| build (architect, builder, qa, reviewer, release) | gpu | cpu, soc |
+| build (architect, builder, qa, reviewer, release) | gpu | npu, cpu, soc |
 | knowledge (librarian, researcher, planner) | memory | storage |
 | operations (edge-operator, incident, security-reviewer) | network | io, bmc, modem |
 | money (finance, auditor) | power | io |

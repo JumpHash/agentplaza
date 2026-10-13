@@ -19,4 +19,4 @@ for Intel. Every release ships both.
 
 - Apple Silicon runs agents. The VMM (`apz-vmm`) uses Hypervisor.framework and
   carries the `com.apple.security.hypervisor` entitlement.
-- Intel Macs run the hub and the desktop, and connect to nodes elsewhere.
+- Intel Macs run the hub and the desktop app only; agents run on nodes elsewhere.

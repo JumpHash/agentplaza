@@ -9,8 +9,9 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 
 # The VM node ships on Linux (KVM), Apple Silicon (Hypervisor.framework) and Windows x64 (Windows
 # Hypervisor Platform). apz-vmm, the per-VM process, is not built for Windows: Windows x64 gets
-# noded, vsockd and vmctl. Windows arm64 and Intel Macs run the hub, the desktop app and the node
-# link only.
+# noded, vsockd and vmctl. Windows arm64 runs the hub, the desktop app and the CLI (its VM node is in
+# development, docs/windows-whp-arm64.md); Intel Macs run the hub and the desktop app and use nodes
+# elsewhere.
 case "$triple" in
   x86_64-pc-windows-msvc) exe=.exe; node=yes; node_bins=(noded vsockd vmctl) ;;
   *windows*) exe=.exe; node=no; node_bins=() ;;

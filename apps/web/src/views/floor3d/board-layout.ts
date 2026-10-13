@@ -39,7 +39,7 @@ export interface BoardLayout {
 /** Where each family's rooms go, in order; each type is one stage, then any slot with room. */
 const FAMILY_TYPES: Record<Family, SlotType[]> = {
   command: ['cpu', 'soc'],
-  build: ['gpu', 'cpu', 'soc'],
+  build: ['gpu', 'npu', 'cpu', 'soc'],
   knowledge: ['memory', 'storage'],
   operations: ['network', 'io', 'bmc', 'modem'],
   money: ['power', 'io'],

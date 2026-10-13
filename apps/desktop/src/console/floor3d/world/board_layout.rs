@@ -107,7 +107,7 @@ struct Group<'a> {
 fn prefers(family: &str) -> &'static [&'static str] {
     match family {
         "command" => &["cpu", "soc"],
-        "build" => &["gpu", "cpu", "soc"],
+        "build" => &["gpu", "npu", "cpu", "soc"],
         "knowledge" => &["memory", "storage"],
         "operations" => &["network", "io", "bmc", "modem"],
         "money" => &["power", "io"],

@@ -263,6 +263,12 @@ fn hypervisor_state() -> (State, String) {
             )
         };
     }
+    if cfg!(all(windows, target_arch = "aarch64")) {
+        return (
+            State::Warning,
+            "agents on Windows arm64 aren't supported yet: agents run on nodes elsewhere for now; the arm64 VM node is in development".to_string(),
+        );
+    }
     if cfg!(windows) {
         let enabled = probe("powershell", &["-NoProfile", "-Command", WHP_QUERY])
             .is_some_and(|out| out.status.success() && first_line(&out.stdout) == "1");

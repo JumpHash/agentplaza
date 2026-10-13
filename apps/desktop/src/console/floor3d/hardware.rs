@@ -924,7 +924,7 @@ impl Builder {
                         .and_then(|(name, div)| self.vals.get(name).map(|v| (v.round().max(0.0) as u32).div_ceil(div)))
                         .unwrap_or(0),
                 };
-                for i in 0..n.min(64) {
+                for i in 0..n.min(256) {
                     let copy = self.node(p, at + repeat_offset(rep, i));
                     group.add(&copy);
                 }
