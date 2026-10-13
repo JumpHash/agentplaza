@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "id": "bee",
+  "name": "Buzz",
+  "blurb": "A striped round drone on four rotors, with antennae and small arms that hold tools underneath. Always spinning, always busy.",
+  "accent": "#ffd84d",
+  "height": 1.0,
+  "label_top": 1.0,
+  "locomotion": "fly",
+  "gait": { "speed": 1.2, "freq": 4.0, "bob": 0.02, "sway": 0.03, "lean": 0.15, "sideways": false },
+  "bones": {
+    "base": { "parent": "root", "at": [0, 0, 0] },
+    "body": { "parent": "root", "at": [0, 0.36, 0] },
+    "head": { "parent": "body", "at": [0, 0.26, 0.1] },
+    "armL": { "parent": "body", "at": [-0.12, -0.2, 0.12] },
+    "armR": { "parent": "body", "at": [0.12, -0.2, 0.12] },
+    "gripL": { "parent": "armL", "at": [0, -0.14, 0.02] },
+    "gripR": { "parent": "armR", "at": [0, -0.14, 0.02] },
+    "carry": { "parent": "body", "at": [0, -0.2, 0.2] },
+    "rotFL": { "parent": "body", "at": [-0.26, 0.2, 0.16] },
+    "rotFR": { "parent": "body", "at": [0.26, 0.2, 0.16] },
+    "rotBL": { "parent": "body", "at": [-0.26, 0.2, -0.16] },
+    "rotBR": { "parent": "body", "at": [0.26, 0.2, -0.16] }
+  },
+  "parts": [
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.3, "seg": [24, 16] }, "scale": [1, 0.95, 1], "mat": "shell" },
+    { "bone": "body", "geo": { "type": "torus", "r": 0.299, "tube": 0.05, "seg": [6, 24] }, "rot": [90, 0, 0], "at": [0, -0.02, 0], "mat": "accent" },
+    { "bone": "body", "geo": { "type": "torus", "r": 0.265, "tube": 0.035, "seg": [6, 24] }, "rot": [90, 0, 0], "at": [0, -0.14, 0], "mat": "ink" },
+    { "bone": "body", "geo": { "type": "cone", "r": 0.04, "h": 0.14, "seg": [8] }, "rot": [-90, 0, 0], "at": [0, -0.02, -0.34], "mat": "ink" },
+
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.012, "rb": 0.012, "h": 0.2, "seg": [6] }, "rot": [0, 0, 20], "at": [-0.06, 0.1, 0], "mat": "ink", "outline": false },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.012, "rb": 0.012, "h": 0.2, "seg": [6] }, "rot": [0, 0, -20], "at": [0.06, 0.1, 0], "mat": "ink", "outline": false },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.03, "seg": [8, 6] }, "at": [-0.12, 0.2, 0], "mat": "signal", "outline": false },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.03, "seg": [8, 6] }, "at": [0.12, 0.2, 0], "mat": "signal", "outline": false },
+
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.028, "rb": 0.022, "h": 0.14, "seg": [8] }, "at": [0, -0.07, 0], "mat": "shell", "outline": false },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.035, "seg": [8, 6] }, "at": [0, -0.14, 0.02], "mat": "paper", "outline": false },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.028, "rb": 0.022, "h": 0.14, "seg": [8] }, "at": [0, -0.07, 0], "mat": "shell", "outline": false },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.035, "seg": [8, 6] }, "at": [0, -0.14, 0.02], "mat": "paper", "outline": false },
+
+    { "bone": "rotFL", "geo": { "type": "cyl", "rt": 0.14, "rb": 0.14, "h": 0.006, "seg": [14] }, "mat": "clear", "outline": false },
+    { "bone": "rotFR", "geo": { "type": "cyl", "rt": 0.14, "rb": 0.14, "h": 0.006, "seg": [14] }, "mat": "clear", "outline": false },
+    { "bone": "rotBL", "geo": { "type": "cyl", "rt": 0.14, "rb": 0.14, "h": 0.006, "seg": [14] }, "mat": "clear", "outline": false },
+    { "bone": "rotBR", "geo": { "type": "cyl", "rt": 0.14, "rb": 0.14, "h": 0.006, "seg": [14] }, "mat": "clear", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "body", "at": [-0.12, 0.13, 0.24], "r": 0.1, "pupil": 0.065, "shape": "round" },
+    { "bone": "body", "at": [0.12, 0.13, 0.24], "r": 0.1, "pupil": 0.065, "shape": "round" }
+  ],
+  "spin": [
+    { "bone": "rotFL", "axis": "y", "walk": 42, "idle": 26, "offline": 0 },
+    { "bone": "rotFR", "axis": "y", "walk": 42, "idle": 26, "offline": 0 },
+    { "bone": "rotBL", "axis": "y", "walk": 42, "idle": 26, "offline": 0 },
+    { "bone": "rotBR", "axis": "y", "walk": 42, "idle": 26, "offline": 0 }
+  ],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 8, "energy": 9, "focus": 3, "curiosity": 6, "play": 8, "tidy": 3 },
+  "quirks": [{ "clip": "bee.loop", "weight": 3 }, { "clip": "bee.pollen", "weight": 2 }],
+  "clips": {
+    "bee.loop": {
+      "loop": false,
+      "dur": 4.0,
+      "channels": [
+        { "bone": "body", "prop": "pos.x", "amp": 0.3, "freq": 0.25, "env": "in-out" },
+        { "bone": "body", "prop": "pos.z", "amp": 0.16, "freq": 0.5, "env": "in-out" },
+        { "bone": "body", "prop": "rot.z", "amp": -0.12, "freq": 0.25, "env": "in-out" }
+      ]
+    },
+    "bee.pollen": {
+      "loop": false,
+      "dur": 2.4,
+      "channels": [
+        { "bone": "head", "prop": "rot.z", "amp": 0.2, "freq": 0.8, "env": "in-out" },
+        { "bone": "body", "prop": "rot.x", "amp": 0.05, "freq": 1.6, "env": "in-out" }
+      ],
+      "fx": [{ "kind": "sparks", "at": "head", "every": 0.25 }]
+    },
+    "bee.type": {
+      "loop": true,
+      "channels": [
+        { "bone": "armL", "prop": "rot.x", "base": -0.7, "amp": 0.2, "freq": 2.4 },
+        { "bone": "armR", "prop": "rot.x", "base": -0.7, "amp": -0.2, "freq": 2.4 },
+        { "bone": "head", "prop": "rot.x", "base": 0.1, "amp": 0.04, "freq": 1.1 }
+      ]
+    }
+  },
+  "overrides": { "type": "bee.type" }
+}

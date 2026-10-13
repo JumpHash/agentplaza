@@ -1,0 +1,263 @@
+{
+  "schema": 1,
+  "id": "ghost",
+  "name": "Boo",
+  "blurb": "A sheet with a domed head, a wavy hem of little bobbles, sheet-nub arms and big eyes. It floats, and plays peek-a-boo.",
+  "accent": "#ffb8d9",
+  "height": 1.0,
+  "label_top": 1.15,
+  "locomotion": "float",
+  "gait": {
+    "speed": 0.7,
+    "freq": 0.45,
+    "bob": 0.05,
+    "sway": 0.03,
+    "lean": 0,
+    "sideways": false
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [0, 0, 0]
+    },
+    "body": {
+      "parent": "root",
+      "at": [0, 0.39, 0]
+    },
+    "head": {
+      "parent": "body",
+      "at": [0, 0.3, 0]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [-0.33, 0.1, 0]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [0.33, 0.1, 0]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [-0.17, 0, 0.03]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [0.17, 0, 0.03]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [0, -0.1, 0.5]
+    }
+  },
+  "parts": [
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.3,
+        "rb": 0.38,
+        "h": 0.6,
+        "seg": [24]
+      },
+      "at": [0, 0, 0],
+      "mat": "shell"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [0.38, -0.3, 0],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [0.2687, -0.26, 0.2687],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [0, -0.3, 0.38],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [-0.2687, -0.26, 0.2687],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [-0.38, -0.3, 0],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [-0.2687, -0.26, -0.2687],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [0, -0.3, -0.38],
+      "mat": "accent"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [10, 8]
+      },
+      "at": [0.2687, -0.26, -0.2687],
+      "mat": "accent"
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.3,
+        "seg": [24, 14],
+        "half": "top"
+      },
+      "mat": "shell"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.095,
+        "seg": [12, 10]
+      },
+      "at": [-0.09, 0, 0],
+      "mat": "shell"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.095,
+        "seg": [12, 10]
+      },
+      "at": [0.09, 0, 0],
+      "mat": "shell"
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "head",
+      "at": [-0.12, 0.06, 0.28],
+      "r": 0.12,
+      "pupil": 0.1,
+      "shape": "round"
+    },
+    {
+      "bone": "head",
+      "at": [0.12, 0.06, 0.28],
+      "r": 0.12,
+      "pupil": 0.1,
+      "shape": "round"
+    }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": true,
+  "personality": {
+    "social": 6,
+    "energy": 5,
+    "focus": 4,
+    "curiosity": 7,
+    "play": 8,
+    "tidy": 3
+  },
+  "quirks": [
+    {
+      "clip": "ghost.peekaboo",
+      "weight": 3
+    },
+    {
+      "clip": "ghost.giggle",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "ghost.peekaboo": {
+      "loop": false,
+      "dur": 2.2,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": -0.95,
+          "freq": 0,
+          "wave": "pulse",
+          "duty": 1,
+          "env": "in-out"
+        }
+      ]
+    },
+    "ghost.giggle": {
+      "loop": false,
+      "dur": 1.6,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "base": 0,
+          "amp": 0.07,
+          "freq": 3.2,
+          "wave": "abs",
+          "env": "in-out"
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "base": 0,
+          "amp": 0.12,
+          "freq": 2.4,
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "base": 0,
+          "amp": -0.1,
+          "freq": 2.4,
+          "env": "in-out"
+        }
+      ]
+    }
+  },
+  "overrides": {}
+}

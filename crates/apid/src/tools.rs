@@ -99,6 +99,12 @@ const GATED: &[&str] = &[
     "plaza_cancel_task",
     "plaza_task_result",
     "plaza_verdict",
+    "foundry_datasets",
+    "foundry_export",
+    "foundry_submit_job",
+    "foundry_job_status",
+    "foundry_request_shadow",
+    "invoke_model",
 ];
 
 /// Where `name` runs, or `None` for an unknown tool.
@@ -119,6 +125,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_git" => Some(Runs::Host),
+        name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
         name if name.starts_with(crate::library::PREFIX) => Some(Runs::Guest),
@@ -195,6 +202,9 @@ fn offered(role: &str, granted: &[String]) -> Vec<String> {
 
 /// The spec for `name`: a one-line description and a JSON Schema input.
 fn spec(name: &str) -> Option<ToolSpec> {
+    if let Some(tool) = crate::foundry::breeder::spec(name) {
+        return Some(tool);
+    }
     let (description, input_schema) = match name {
         "bash" => (
             "Run a shell command in your VM and return its output.",
@@ -500,6 +510,7 @@ fn obj(properties: Value, required: &[&str]) -> Value {
 fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> Result<String, String> {
     let me = agents::connected_agent(agent);
     match name {
+        name if crate::foundry::breeder::TOOLS.contains(&name) => crate::foundry::breeder::run(app, agent, name, input),
         "submit_claim" => {
             str_arg(input, "summary")?;
             Ok("claim recorded".into())

@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "id": "cube",
+  "name": "Qubit",
+  "blurb": "A rounded cube with a glass face screen and glowing eyes. Little arms pop out of its sides, and it rolls over its edges.",
+  "accent": "#b98cff",
+  "height": 1.0,
+  "label_top": 1.2,
+  "locomotion": "tumble",
+  "gait": { "speed": 1, "freq": 0.8, "bob": 0.25, "sway": 0, "lean": 0, "sideways": false },
+  "bones": {
+    "base":  { "parent": "root", "at": [0, 0, 0] },
+    "body":  { "parent": "root", "at": [0, 0.36, 0] },
+    "shell": { "parent": "body", "at": [0, 0, 0] },
+    "head":  { "parent": "shell", "at": [0, 0, 0] },
+    "slice": { "parent": "shell", "at": [0, 0.24, 0.37] },
+    "armL":  { "parent": "shell", "at": [-0.36, 0, 0] },
+    "armR":  { "parent": "shell", "at": [0.36, 0, 0] },
+    "gripL": { "parent": "armL", "at": [-0.22, 0, 0.03] },
+    "gripR": { "parent": "armR", "at": [0.22, 0, 0.03] },
+    "carry": { "parent": "body", "at": [0, 0.36, 0] }
+  },
+  "parts": [
+    { "bone": "shell", "geo": { "type": "rbox", "w": 0.72, "h": 0.72, "d": 0.72, "r": 0.14, "seg": [3] }, "mat": "shell" },
+    { "bone": "shell", "geo": { "type": "rbox", "w": 0.46, "h": 0.32, "d": 0.03, "r": 0.07, "seg": [2] }, "at": [0, -0.02, 0.36], "mat": "glass", "outline": false },
+    { "bone": "slice", "geo": { "type": "rbox", "w": 0.34, "h": 0.085, "d": 0.03, "r": 0.025, "seg": [2] }, "mat": "accent" },
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.2, "seg": [12] }, "at": [-0.1, 0, 0], "rot": [0, 0, 90], "mat": "shell" },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.075, "seg": [12, 8] }, "at": [-0.22, 0, 0], "mat": "paper" },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.2, "seg": [12] }, "at": [0.1, 0, 0], "rot": [0, 0, 90], "mat": "shell" },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.075, "seg": [12, 8] }, "at": [0.22, 0, 0], "mat": "paper" }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [-0.11, 0.02, 0.39], "r": 0.1, "pupil": 0.075, "shape": "round" },
+    { "bone": "head", "at": [0.11, 0.02, 0.39], "r": 0.1, "pupil": 0.075, "shape": "round" }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 4, "energy": 6, "focus": 8, "curiosity": 5, "play": 5, "tidy": 9 },
+  "quirks": [{ "clip": "cube.twist", "weight": 3 }, { "clip": "cube.stack-hop", "weight": 2 }],
+  "clips": {
+    "cube.type": {
+      "loop": true,
+      "channels": [
+        { "bone": "armL", "prop": "rot.z", "base": 0.1, "amp": 0.35, "freq": 1.6 },
+        { "bone": "armR", "prop": "rot.z", "base": -0.1, "amp": -0.35, "freq": 1.6 },
+        { "bone": "head", "prop": "rot.x", "base": 0.14, "amp": 0.05, "freq": 0.8 }
+      ],
+      "fx": [{ "kind": "keys", "at": "gripR", "every": 0.6 }]
+    },
+    "cube.tumble": {
+      "loop": true,
+      "channels": [
+        { "bone": "shell", "prop": "rot.x", "base": 0.7854, "amp": 0.7854, "freq": 1.0, "wave": "saw", "snap": true },
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": 0.5, "wave": "abs" },
+        { "bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 1.0 },
+        { "bone": "armL", "prop": "rot.z", "base": -0.3, "amp": 0.15, "freq": 1.0 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.3, "amp": -0.15, "freq": 1.0 }
+      ]
+    },
+    "cube.twist": {
+      "loop": false,
+      "dur": 1.4,
+      "channels": [
+        { "bone": "slice", "prop": "rot.z", "base": 0, "amp": 1.5708, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" }
+      ]
+    },
+    "cube.stack-hop": {
+      "loop": false,
+      "dur": 1.2,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "base": 0, "amp": 0.4, "freq": 0.4167, "wave": "halfsin" },
+        { "bone": "armL", "prop": "rot.z", "base": 0, "amp": -0.9, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" },
+        { "bone": "armR", "prop": "rot.z", "base": 0, "amp": 0.9, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" }
+      ]
+    }
+  },
+  "overrides": { "type": "cube.type", "walk.tumble": "cube.tumble" }
+}

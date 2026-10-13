@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "species": ["rover", "hover", "tv", "can", "kitty", "owl", "crab", "octo", "bee", "snail", "penguin", "frog", "mole", "lamp", "teapot", "jelly", "bunny", "turtle", "pup", "ufo", "cube", "duck", "mushroom", "astro", "ghost", "unicycle", "ladybug", "pogo", "lifty", "sprout", "oracle"],
+  "tools": ["baton", "gavel", "megaphone", "scroll", "blueprint", "t-square", "tape-measure", "pencil", "wrench", "screwdriver", "soldering-iron", "hammer", "magnifier", "multimeter", "clipboard", "red-pen", "crate", "flag", "cable-spool", "antenna-wand", "extinguisher", "flashlight", "padlock", "book", "book-stack", "feather-duster", "flask", "test-tube", "notebook", "sticky-notes", "marker", "coin-bag", "calculator", "abacus", "ledger", "stamp", "seedling", "watering-can", "dna-vial", "coffee-mug", "broom", "ball"],
+  "props": ["drafting-table", "easel", "whiteboard", "lab-bench", "microscope-desk", "workbench", "book-cart", "counter", "podium", "crate-stack", "server-rack", "alarm-post", "guard-post", "plant-bed", "meeting-table", "charging-dock", "bench"]
+}

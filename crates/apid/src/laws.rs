@@ -1,22 +1,30 @@
 //! The plaza's laws, enforced on every tool call an agent makes (JHRL, `crates/jhrl`).
 //!
+//! The law set is the built-in statutes (`LAW_FILES`) and the owner's rule sets (`RuleSet`), less the
+//! built-ins the owner has disabled (`RuleSet::overrides`) and the laws of disabled rules. It is compiled
+//! as one program and swapped whole on every change, so a check always reads one consistent set. A rule
+//! source that does not compile is never applied.
+//!
 //! `check` decides one tool call against the laws that cover `tool.call`. An applying forbid
 //! refuses the call and is recorded as a violation on the agent's profile. A call that no law
 //! permits is refused too (default deny), but not recorded: a missing permission, not misconduct.
 //! `permits` answers for a role and tool alone; it decides which tools an agent is offered.
+//! With strict permits on, an operation that has permit laws is refused unless one of them allows it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
 use apz_plaza::council;
 use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
-use jhrl::authz::{authorize, Decision, Entity, EntityStore, Request};
-use jhrl::span::SourceMap;
+use jhrl::authz::{authorize_except, check_authz, Decision, Entity, EntityStore, Request};
+use jhrl::span::{Diag, SourceMap};
 use jhrl::value::Value;
 use jhrl::Program;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
+use serde_json::{json, Value as Json};
 
 use crate::settings::{tier_of, Tier};
 use crate::tools::{runs, Runs};
@@ -32,6 +40,16 @@ pub(crate) const LAW_FILES: [(&str, &str); 4] = [
 const KEEP: usize = 200;
 /// The window the profile shows, in milliseconds.
 const WINDOW_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// Tool calls kept for the dry run of a rule source ("would have refused").
+const CALLS_KEPT: usize = 500;
+/// The largest input (as JSON text) a call keeps for the dry run; a bigger one is not replayed.
+const INPUT_KEPT: usize = 16_000;
+/// The most recent refusals a dry run lists.
+const SAMPLES: usize = 50;
+/// The id a dry run compiles its source under; never stored.
+const DRY_RUN_ID: &str = "DRY";
+/// The author of every owner rule and override: the owner is the only one who may write them.
+pub const OWNER: &str = "owner";
 
 /// One recorded violation: the law, when it was refused, and what happened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,17 +70,19 @@ pub struct Verdict {
     pub requested: Vec<String>,
     /// Ids of the permit laws that applied to some requested operation.
     pub permit: Vec<String>,
+    /// Operations that have permit laws, none of which allowed them, with strict permits on.
+    pub denied_ops: Vec<String>,
 }
 
 /// The context one operation's laws read: the flags, and what the operation adds to them.
 type Context = BTreeMap<String, Value>;
 
-/// One law as the console's Rules view shows it.
+/// One law as the Rules view shows it.
 #[derive(Clone, Debug, Serialize)]
 pub struct LawInfo {
     pub id: String,
     pub title: String,
-    /// "constitution" | "statute" | "operations" (the law's tier, or its file's).
+    /// "constitution" | "statute" | "operations" (the law's tier, or its file's); "owner" for an owner rule.
     pub tier: String,
     /// "preventive" (a refusal before the act) | "detective" (recorded after) | "".
     pub enforcement: String,
@@ -87,53 +107,180 @@ pub struct LawInfo {
     /// The file it comes from, and the law's whole source.
     pub file: String,
     pub source: String,
+    /// "built-in" | "owner".
+    pub origin: String,
+    /// Whether the law applies: its rule is enabled (or it is built in) and no override disables it.
+    pub enabled: bool,
+    /// The owner rule the law came from ("" for a built-in).
+    pub rule_id: String,
+    /// The owner's override that disables this built-in, if any.
+    pub overridden: Option<Override>,
+}
+
+/// An owner rule set: JHRL source with one or more `law` blocks, applied while it is enabled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerRule {
+    pub id: String,
+    pub title: String,
+    pub source: String,
+    pub enabled: bool,
+    pub created_ms: u64,
+    pub updated_ms: u64,
+    pub author: String,
+}
+
+/// The owner's disabling of one built-in statute, with who did it and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Override {
+    pub law: String,
+    pub disabled_by: String,
+    pub reason: String,
+    pub at_ms: u64,
+}
+
+/// The owner's rules and overrides: the state that is persisted (the `rules` component).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuleSet {
+    pub rules: Vec<OwnerRule>,
+    pub overrides: Vec<Override>,
+}
+
+/// One compile error: the file it is in, where, and what.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Diagnostic {
+    /// The file: a rule's `owner/<id>.jhrl`, or a built-in law file.
+    pub file: String,
+    /// Line and column, from 1; 0 when the error has no place in a file.
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+}
+
+/// Why a change to the laws was refused. Nothing is applied when one is returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The source does not compile.
+    Diagnostics(Vec<Diagnostic>),
+    /// No rule or law has that id.
+    NotFound(String),
+    /// The change is not allowed, and why.
+    Invalid(String),
+}
+
+impl Failure {
+    /// The failure as one line of text.
+    pub fn message(&self) -> String {
+        match self {
+            Failure::Diagnostics(list) => list.iter().map(|d| format!("{}:{}: {}", d.line, d.column, d.message)).collect::<Vec<_>>().join("; "),
+            Failure::NotFound(what) => format!("not found: {what}"),
+            Failure::Invalid(why) => why.clone(),
+        }
+    }
+}
+
+/// What a dry run found: the laws its source declares, and the recent calls those laws would refuse.
+#[derive(Debug, Serialize)]
+pub struct DryRun {
+    pub laws: Vec<String>,
+    pub would_refuse: Vec<Json>,
 }
 
 /// Where each recorded violation is also written (Postgres): (cid, violation, tool).
 pub type InfractionSink = Box<dyn Fn(u64, &Violation, &str) + Send + Sync>;
 
-pub struct Laws {
+/// The compiled live set: what every check reads. Built whole, then swapped in.
+struct Compiled {
     program: Program,
-    /// Law id to its title, read from the law source.
+    /// Law id to its title, read from the law sources.
     titles: BTreeMap<String, String>,
-    path: PathBuf,
+    /// Laws left out of the program: overridden built-ins and the laws of disabled rules.
+    off: HashSet<String>,
+    /// Every law in the program, enabled or not, for the Rules view.
+    catalog: Vec<LawInfo>,
+    /// The operations some enabled permit law covers ("any" covers all).
+    permit_ops: HashSet<String>,
+}
+
+impl Compiled {
+    /// Whether an enabled permit law covers `op`, so strict permits apply to it.
+    fn has_permit(&self, op: &str) -> bool {
+        self.permit_ops.contains(op) || self.permit_ops.contains("any")
+    }
+}
+
+/// A tool call the laws were asked about, kept for the dry run of a new rule.
+#[derive(Clone, Debug)]
+struct Seen {
+    cid: u64,
+    role: String,
+    tool: String,
+    input: Json,
+    at_ms: u64,
+}
+
+pub struct Laws {
+    /// The built-in law sources: `LAW_FILES`, or the sources given to `from_files`.
+    base: Vec<(String, String)>,
+    /// The live set, swapped whole on every change; a check reads one `Arc` of it.
+    live: RwLock<Arc<Compiled>>,
+    /// The owner's rules and overrides. Changes are made under this lock, then committed.
+    rules: Mutex<RuleSet>,
+    /// The state directory: `violations.json` and `rules.json` are written there.
+    dir: Mutex<PathBuf>,
     violations: Mutex<BTreeMap<String, Vec<Violation>>>,
     sink: Mutex<Option<InfractionSink>>,
-    /// Memoized [`Laws::permits`] answers, keyed by (role, tool). The seats and tiers a role has
-    /// are fixed constants, so an answer never changes while apid runs.
+    /// Memoized [`Laws::permits`] answers, keyed by (role, tool). Cleared whenever the laws change.
     permitted: Mutex<HashMap<(String, String), bool>>,
+    /// Whether an operation with permit laws must be allowed by one of them (`settings.laws`).
+    strict: AtomicBool,
+    /// The most recent tool calls checked, for the dry run.
+    seen: Mutex<VecDeque<Seen>>,
 }
 
 impl Laws {
-    /// Compiles the laws and loads the recorded violations from `<state_dir>/violations.json`.
-    /// Panics at startup if the laws do not compile: an unenforced law is worse than no start.
+    /// Compiles the built-in laws and loads the violations and the owner's rules from `state_dir`.
+    /// Panics at startup if the built-in laws do not compile: an unenforced law is worse than no start.
     pub fn load(state_dir: &Path) -> Laws {
-        let files: Vec<(String, String)> =
-            LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect();
+        let files: Vec<(String, String)> = LAW_FILES.iter().map(|(name, text)| (name.to_string(), text.to_string())).collect();
         Laws::from_files(state_dir, files)
     }
 
-    /// [`Laws::load`] for the given law sources (`(file name, text)`): the same compile, titles and
-    /// record. Tests use it to put a rule in or leave one out.
+    /// [`Laws::load`] for the given built-in law sources (`(file name, text)`). Tests use it to put a
+    /// rule in or leave one out.
     pub fn from_files(state_dir: &Path, files: Vec<(String, String)>) -> Laws {
-        let mut titles = BTreeMap::new();
-        for (_, text) in &files {
-            titles_of(text, &mut titles);
-        }
-        let (program, diags) = Program::load(files);
-        assert!(diags.is_empty(), "the laws do not compile: {} diagnostics", diags.len());
-        let path = state_dir.join("violations.json");
-        let violations = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Laws {
-            program,
-            titles,
-            path,
-            violations: Mutex::new(violations),
+        let compiled = match compile(&files, &RuleSet::default()) {
+            Ok(compiled) => compiled,
+            Err(failure) => panic!("the laws do not compile: {}", failure.message()),
+        };
+        let laws = Laws {
+            base: files,
+            live: RwLock::new(Arc::new(compiled)),
+            rules: Mutex::new(RuleSet::default()),
+            dir: Mutex::new(state_dir.to_path_buf()),
+            violations: Mutex::new(BTreeMap::new()),
             sink: Mutex::new(None),
             permitted: Mutex::new(HashMap::new()),
+            strict: AtomicBool::new(false),
+            seen: Mutex::new(VecDeque::new()),
+        };
+        laws.attach(state_dir);
+        laws
+    }
+
+    /// Makes `state_dir` the home of this law set: the violations and the owner's rules are read from
+    /// it, and written back to it on every change. A rules file that no longer compiles is not applied.
+    pub fn attach(&self, state_dir: &Path) {
+        *lock(&self.dir) = state_dir.to_path_buf();
+        *lock(&self.violations) = read_json(&state_dir.join("violations.json")).unwrap_or_default();
+        let rules: RuleSet = read_json(&state_dir.join("rules.json")).unwrap_or_default();
+        let mut slot = lock(&self.rules);
+        match compile(&self.base, &rules) {
+            Ok(compiled) => {
+                *slot = rules;
+                self.swap(compiled);
+            }
+            Err(failure) => eprintln!("laws: rules.json not applied: {}", failure.message()),
         }
     }
 
@@ -144,12 +291,16 @@ impl Laws {
     /// the laws written for those operations apply too. Only `tool.call`'s default deny is
     /// reported as `unpermitted`.
     pub fn check(&self, agent_cid: &str, role: &str, tool: &str, input: &Json) -> Verdict {
+        self.check_with(&self.live(), agent_cid, role, tool, input)
+    }
+
+    fn check_with(&self, live: &Compiled, agent_cid: &str, role: &str, tool: &str, input: &Json) -> Verdict {
         let flags = detect_flags(tool, input);
         let agent = Entity { ty: "Agent".into(), id: agent_cid.into() };
         let tool_entity = Entity { ty: "Tool".into(), id: tool.into() };
         let sandbox = Entity { ty: "Sandbox".into(), id: format!("vm-{agent_cid}") };
         let mut store = EntityStore::default();
-        store.insert(&agent, member_attrs(role));
+        store.insert(&agent, member_attrs_of(agent_cid, role));
         store.insert(
             &tool_entity,
             BTreeMap::from([
@@ -171,7 +322,7 @@ impl Laws {
         if matches!(tool, "plaza_send_message" | "plaza_board_post" | "plaza_board_comment") {
             let to = input.get("to_cid").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
             let peer = Entity { ty: "Agent".into(), id: to };
-            store.insert(&peer, member_attrs(""));
+            store.insert(&peer, member_attrs_of(&peer.id, ""));
             requests.push(("message.send", peer, Context::new()));
         }
         // A file shared or delivered to the plaza is an artifact published.
@@ -180,7 +331,8 @@ impl Laws {
             store.insert(&artifact, BTreeMap::new());
             requests.push(("artifact.publish", artifact, Context::new()));
         }
-        requests.extend(plaza_operations(tool, input, agent_cid, &mut store));
+        requests.extend(plaza_operations(tool, input, agent_cid, role, &mut store));
+        let strict = self.strict.load(Ordering::Relaxed);
         let mut verdict = Verdict::default();
         for (i, (operation, resource, extra)) in requests.into_iter().enumerate() {
             verdict.requested.push(operation.to_string());
@@ -192,7 +344,7 @@ impl Laws {
                 resource,
                 context: Value::record(context),
             };
-            match authorize(&self.program, &store, &request).decision {
+            match authorize_except(&live.program, &store, &request, &live.off).decision {
                 Decision::Deny { by, .. } if !by.is_empty() => {
                     for id in by {
                         if !verdict.forbid.contains(&id) {
@@ -201,6 +353,7 @@ impl Laws {
                     }
                 }
                 Decision::Deny { .. } if i == 0 => verdict.unpermitted = true,
+                Decision::Deny { .. } if strict && live.has_permit(operation) => verdict.denied_ops.push(operation.to_string()),
                 Decision::Allow { by } => {
                     for id in by {
                         if !verdict.permit.contains(&id) {
@@ -218,80 +371,94 @@ impl Laws {
     /// Decided on the role, tier and seat alone (an empty input), and memoized.
     pub fn permits(&self, role: &str, tool: &str) -> bool {
         let key = (role.to_string(), tool.to_string());
-        if let Some(answer) = self.permitted.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
+        if let Some(answer) = lock(&self.permitted).get(&key) {
             return *answer;
         }
-        let verdict = self.check("0", role, tool, &Json::Object(Default::default()));
-        let answer = verdict.forbid.is_empty() && !verdict.unpermitted;
-        self.permitted.lock().unwrap_or_else(PoisonError::into_inner).insert(key, answer);
+        let live = self.live();
+        let verdict = self.check_with(&live, "0", role, tool, &Json::Object(Default::default()));
+        let answer = verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty();
+        let mut memo = lock(&self.permitted);
+        // Remembered only while the laws it was decided under are still the live ones.
+        if Arc::ptr_eq(&live, &self.live()) {
+            memo.insert(key, answer);
+        }
         answer
     }
 
-    /// The refusal reason when a law forbids the call (recorded as a violation) or no law permits
+    /// The refusal reason when a law forbids the call (recorded as a violation), or no law permits
     /// it (default deny, not recorded); `None` when it may run.
     pub fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Json) -> Option<String> {
+        self.remember(cid, role, tool, input);
         let verdict = self.check(&cid.to_string(), role, tool, input);
         if verdict.forbid.is_empty() {
             if verdict.unpermitted {
                 return Some(format!("refused: no law permits {tool} for the {role} role"));
             }
+            if let Some(op) = verdict.denied_ops.first() {
+                return Some(format!("refused: no law permits {op} for the {role} role"));
+            }
             return None;
         }
         self.record(cid, &verdict.forbid, tool, apz_plaza::now_ms());
-        let titles: Vec<&str> =
-            verdict.forbid.iter().filter_map(|id| self.titles.get(id)).map(String::as_str).collect();
+        let live = self.live();
+        let titles: Vec<&str> = verdict.forbid.iter().filter_map(|id| live.titles.get(id)).map(String::as_str).collect();
         Some(format!("refused by law {}: {}", verdict.forbid.join(", "), titles.join("; ")))
     }
 
     /// The refusal reason when a law forbids an operation an agent's VM performs straight at a hub
     /// route, outside any tool call (a git push, a file publish), `None` when no law forbids it. Only
-    /// forbids are decided here, since these routes have no tool to be offered; a forbid is recorded.
+    /// forbids are decided here (and, with strict permits, an operation no permit allows), since these
+    /// routes have no tool to be offered; a forbid is recorded.
     pub fn refuse_op(&self, cid: u64, role: &str, operation: &str, resource: Entity, attrs: BTreeMap<String, Value>, input: &Json) -> Option<String> {
+        self.refuse_op_with(cid, role, operation, resource, attrs, input, BTreeMap::new())
+    }
+
+    /// As `refuse_op`, with extra request context fields (`training.submit` reads `gpu_hours`, S-006c/d).
+    #[allow(clippy::too_many_arguments)]
+    pub fn refuse_op_with(&self, cid: u64, role: &str, operation: &str, resource: Entity, attrs: BTreeMap<String, Value>, input: &Json, extra: BTreeMap<String, Value>) -> Option<String> {
         let flags = detect_flags("", input);
         let agent = Entity { ty: "Agent".into(), id: cid.to_string() };
         let mut store = EntityStore::default();
-        store.insert(&agent, member_attrs(role));
+        store.insert(&agent, member_attrs_of(&cid.to_string(), role));
         store.insert(&resource, attrs);
-        let context = Value::record(BTreeMap::from([(
+        let mut fields = BTreeMap::from([(
             "flags".to_string(),
             Value::set(flags.iter().map(|flag| Value::str(flag))),
-        )]));
+        )]);
+        fields.extend(extra);
+        let context = Value::record(fields);
         let request = Request { principal: agent, operation: operation.into(), resource, context };
-        let by = match authorize(&self.program, &store, &request).decision {
-            Decision::Deny { by, .. } => by,
+        let live = self.live();
+        let decision = authorize_except(&live.program, &store, &request, &live.off).decision;
+        let by = match &decision {
+            Decision::Deny { by, .. } => by.clone(),
             _ => Vec::new(),
         };
         if by.is_empty() {
+            let strict = self.strict.load(Ordering::Relaxed);
+            if matches!(decision, Decision::Deny { .. }) && strict && live.has_permit(operation) {
+                return Some(format!("refused: no law permits {operation} for the {role} role"));
+            }
             return None;
         }
         self.record(cid, &by, operation, apz_plaza::now_ms());
-        let titles: Vec<&str> = by.iter().filter_map(|id| self.titles.get(id)).map(String::as_str).collect();
+        let titles: Vec<&str> = by.iter().filter_map(|id| live.titles.get(id)).map(String::as_str).collect();
         Some(format!("refused by law {}: {}", by.join(", "), titles.join("; ")))
     }
 
-    /// Every law, in file then source order, for the Rules view.
+    /// Every law, in file then source order, built-in and owner, enabled or not, for the Rules view.
     pub fn catalog(&self) -> Vec<LawInfo> {
-        let sources = &self.program.sources;
-        let mut out = Vec::new();
-        for module in &self.program.modules {
-            let file = sources.files[module.file as usize].path.clone();
-            for item in &module.items {
-                if let Item::Law(law) = item {
-                    out.push(law_info(law, &file, sources));
-                }
-            }
-        }
-        out
+        self.live().catalog.clone()
     }
 
     /// Every violation recorded from now on is also handed to `sink`.
     pub fn set_sink(&self, sink: InfractionSink) {
-        *self.sink.lock().unwrap_or_else(PoisonError::into_inner) = Some(sink);
+        *lock(&self.sink) = Some(sink);
     }
 
     /// Every recorded violation, as (cid, violation), for the Rules view and the one-time import.
     pub fn all_violations(&self) -> Vec<(u64, Violation)> {
-        let all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        let all = lock(&self.violations);
         all.iter()
             .flat_map(|(cid, list)| {
                 let cid = cid.parse::<u64>().unwrap_or(0);
@@ -302,11 +469,207 @@ impl Laws {
 
     /// The agent's violations within the last 30 days, newest first, as profile JSON.
     pub fn recent(&self, cid: u64, now_ms: u64) -> Vec<Json> {
-        let all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+        let all = lock(&self.violations);
         let Some(list) = all.get(&cid.to_string()) else { return Vec::new() };
         let mut found: Vec<&Violation> = list.iter().filter(|v| v.at_ms + WINDOW_MS >= now_ms).collect();
         found.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
         found.into_iter().map(|v| serde_json::to_value(v).unwrap_or(Json::Null)).collect()
+    }
+
+    /// Whether strict permits are on: an operation with permit laws is refused unless one allows it.
+    pub fn strict(&self) -> bool {
+        self.strict.load(Ordering::Relaxed)
+    }
+
+    /// Turns strict permits on or off (`settings.laws.strict_permits`). Memoized answers are dropped.
+    pub fn set_strict(&self, on: bool) {
+        let mut memo = lock(&self.permitted);
+        self.strict.store(on, Ordering::Relaxed);
+        memo.clear();
+    }
+
+    /// The owner's rules and overrides.
+    pub fn rules(&self) -> RuleSet {
+        lock(&self.rules).clone()
+    }
+
+    /// Adds a rule set and applies it when its source compiles (and it is enabled).
+    pub fn add_rule(&self, title: &str, source: &str, enabled: bool, now_ms: u64) -> Result<OwnerRule, Failure> {
+        let mut slot = lock(&self.rules);
+        let mut next = slot.clone();
+        let rule = OwnerRule {
+            id: format!("R-{:03}", next_number(&next)),
+            title: title_of(title, source),
+            source: source.to_string(),
+            enabled,
+            created_ms: now_ms,
+            updated_ms: now_ms,
+            author: OWNER.to_string(),
+        };
+        next.rules.push(rule.clone());
+        let compiled = compile(&self.base, &next)?;
+        self.commit(&mut slot, next, compiled);
+        Ok(rule)
+    }
+
+    /// Changes a rule's title (when `title` is not blank) and/or its source, and applies the result.
+    pub fn update_rule(&self, id: &str, title: &str, source: Option<&str>, now_ms: u64) -> Result<OwnerRule, Failure> {
+        self.edit_rule(id, now_ms, |rule| {
+            if !title.trim().is_empty() {
+                rule.title = title.trim().to_string();
+            }
+            if let Some(source) = source {
+                rule.source = source.to_string();
+            }
+        })
+    }
+
+    /// Enables or disables a rule set: its laws apply, or stop applying, from now on.
+    pub fn set_rule_enabled(&self, id: &str, enabled: bool, now_ms: u64) -> Result<OwnerRule, Failure> {
+        self.edit_rule(id, now_ms, |rule| rule.enabled = enabled)
+    }
+
+    /// Deletes a rule set and its laws.
+    pub fn delete_rule(&self, id: &str) -> Result<(), Failure> {
+        let mut slot = lock(&self.rules);
+        if !slot.rules.iter().any(|rule| rule.id == id) {
+            return Err(Failure::NotFound(format!("rule {id}")));
+        }
+        let mut next = slot.clone();
+        next.rules.retain(|rule| rule.id != id);
+        let compiled = compile(&self.base, &next)?;
+        self.commit(&mut slot, next, compiled);
+        Ok(())
+    }
+
+    /// Disables a built-in statute (with the owner's reason, recorded) or enables it again.
+    pub fn set_override(&self, law: &str, disabled: bool, reason: &str, now_ms: u64) -> Result<Option<Override>, Failure> {
+        let mut slot = lock(&self.rules);
+        match self.live().catalog.iter().find(|info| info.id == law) {
+            None => return Err(Failure::NotFound(format!("law {law}"))),
+            Some(info) if info.origin != "built-in" => {
+                return Err(Failure::Invalid(format!("{law} is an owner rule; disable its rule instead")));
+            }
+            Some(_) => {}
+        }
+        if disabled && reason.trim().is_empty() {
+            return Err(Failure::Invalid("say why the statute is disabled".into()));
+        }
+        let mut next = slot.clone();
+        next.overrides.retain(|o| o.law != law);
+        let made = disabled.then(|| Override { law: law.to_string(), disabled_by: OWNER.to_string(), reason: reason.trim().to_string(), at_ms: now_ms });
+        next.overrides.extend(made.clone());
+        let compiled = compile(&self.base, &next)?;
+        self.commit(&mut slot, next, compiled);
+        Ok(made)
+    }
+
+    /// Compiles `source` as an enabled rule set on top of the owner's rules, without applying it, and
+    /// replays the recent calls its laws would refuse. `replaces` names the rule being edited: its
+    /// source is what is compiled in its place, so its own laws are not declared twice.
+    pub fn dry_run(&self, source: &str, replaces: Option<&str>) -> Result<DryRun, Failure> {
+        let mut next = lock(&self.rules).clone();
+        let id = match next.rules.iter_mut().find(|rule| Some(rule.id.as_str()) == replaces) {
+            Some(rule) => {
+                rule.source = source.to_string();
+                rule.enabled = true;
+                rule.id.clone()
+            }
+            None => {
+                next.rules.retain(|rule| rule.id != DRY_RUN_ID);
+                next.rules.push(OwnerRule {
+                    id: DRY_RUN_ID.to_string(),
+                    title: title_of("", source),
+                    source: source.to_string(),
+                    enabled: true,
+                    created_ms: 0,
+                    updated_ms: 0,
+                    author: OWNER.to_string(),
+                });
+                DRY_RUN_ID.to_string()
+            }
+        };
+        let compiled = compile(&self.base, &next)?;
+        let mut laws: Vec<String> = compiled.catalog.iter().filter(|info| info.rule_id == id).map(|info| info.id.clone()).collect();
+        laws.sort();
+        let calls: Vec<Seen> = lock(&self.seen).iter().cloned().collect();
+        let mut would_refuse = Vec::new();
+        for call in calls.iter().rev() {
+            let verdict = self.check_with(&compiled, &call.cid.to_string(), &call.role, &call.tool, &call.input);
+            let by: Vec<&String> = verdict.forbid.iter().filter(|id| laws.contains(*id)).collect();
+            if !by.is_empty() {
+                would_refuse.push(json!({ "cid": call.cid, "role": call.role, "tool": call.tool, "at_ms": call.at_ms, "laws": by }));
+                if would_refuse.len() == SAMPLES {
+                    break;
+                }
+            }
+        }
+        Ok(DryRun { laws, would_refuse })
+    }
+
+    /// The whole owner state as JSON, for Postgres (`crate::db`).
+    pub fn rules_snapshot(&self) -> String {
+        serde_json::to_string_pretty(&*lock(&self.rules)).unwrap_or_default()
+    }
+
+    /// Replaces the owner's rules with a [`Laws::rules_snapshot`]; a source that does not compile changes nothing.
+    pub fn rules_restore(&self, json: &str) -> Result<(), String> {
+        let next: RuleSet = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut slot = lock(&self.rules);
+        let compiled = compile(&self.base, &next).map_err(|failure| failure.message())?;
+        self.commit(&mut slot, next, compiled);
+        Ok(())
+    }
+
+    /// Applies a change to one rule: the change is compiled first, and nothing is applied unless it compiles.
+    fn edit_rule(&self, id: &str, now_ms: u64, change: impl FnOnce(&mut OwnerRule)) -> Result<OwnerRule, Failure> {
+        let mut slot = lock(&self.rules);
+        let mut next = slot.clone();
+        let rule = next.rules.iter_mut().find(|rule| rule.id == id).ok_or_else(|| Failure::NotFound(format!("rule {id}")))?;
+        change(rule);
+        rule.updated_ms = now_ms;
+        let edited = rule.clone();
+        let compiled = compile(&self.base, &next)?;
+        self.commit(&mut slot, next, compiled);
+        Ok(edited)
+    }
+
+    /// Stores `next` as the owner's rules, swaps in its compiled set and writes the rules to disk.
+    fn commit(&self, slot: &mut MutexGuard<'_, RuleSet>, next: RuleSet, compiled: Compiled) {
+        **slot = next;
+        self.swap(compiled);
+        let path = lock(&self.dir).join("rules.json");
+        if let Err(e) = write_json(&path, &**slot) {
+            eprintln!("laws: could not save rules: {e}");
+        }
+    }
+
+    /// Swaps in a compiled set. The memo lock is held so that no answer computed under the old set
+    /// is remembered after the swap.
+    fn swap(&self, next: Compiled) {
+        let mut memo = lock(&self.permitted);
+        *self.live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
+        memo.clear();
+    }
+
+    fn live(&self) -> Arc<Compiled> {
+        self.live.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn violations_path(&self) -> PathBuf {
+        lock(&self.dir).join("violations.json")
+    }
+
+    /// Keeps the call for the dry run. A call whose input is too large to replay is not kept.
+    fn remember(&self, cid: u64, role: &str, tool: &str, input: &Json) {
+        if input.to_string().len() > INPUT_KEPT {
+            return;
+        }
+        let mut seen = lock(&self.seen);
+        if seen.len() == CALLS_KEPT {
+            seen.pop_front();
+        }
+        seen.push_back(Seen { cid, role: role.to_string(), tool: tool.to_string(), input: input.clone(), at_ms: apz_plaza::now_ms() });
     }
 
     fn record(&self, cid: u64, laws: &[String], tool: &str, at_ms: u64) {
@@ -315,17 +678,17 @@ impl Laws {
             .map(|law| Violation { law: law.clone(), at_ms, detail: format!("tool {tool} refused") })
             .collect();
         {
-            let mut all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut all = lock(&self.violations);
             let list = all.entry(cid.to_string()).or_default();
             list.extend(recorded.iter().cloned());
             let excess = list.len().saturating_sub(KEEP);
             list.drain(..excess);
-            if let Err(e) = save(&self.path, &all) {
+            if let Err(e) = save(&self.violations_path(), &all) {
                 eprintln!("laws: could not save violations: {e}");
             }
         }
         // The sink runs outside the violations lock: it writes to Postgres.
-        let guard = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = lock(&self.sink);
         if let Some(sink) = guard.as_ref() {
             for violation in &recorded {
                 sink(cid, violation, tool);
@@ -334,11 +697,132 @@ impl Laws {
     }
 }
 
+/// Locks a mutex, ignoring poisoning: the guarded data is always left whole by its writers.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The name a rule's source is compiled under, so its diagnostics and its laws can be traced to it.
+fn rule_file(id: &str) -> String {
+    format!("owner/{id}.jhrl")
+}
+
+/// The next free id of an owner rule (`R-001`, `R-002`, …).
+fn next_number(set: &RuleSet) -> u32 {
+    set.rules.iter().filter_map(|rule| rule.id.strip_prefix("R-")?.parse::<u32>().ok()).max().unwrap_or(0) + 1
+}
+
+/// A rule's title when none was given: the first law's title in its source.
+fn title_of(title: &str, source: &str) -> String {
+    let title = title.trim();
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    let mut titles = BTreeMap::new();
+    titles_of(source, &mut titles);
+    titles.into_values().next().unwrap_or_else(|| "Untitled rule".to_string())
+}
+
+/// Compiles the built-in sources with the owner's rules as one program. Every error is returned with
+/// its place; a rule set with any error is refused whole.
+fn compile(base: &[(String, String)], state: &RuleSet) -> Result<Compiled, Failure> {
+    let mut files = base.to_vec();
+    files.extend(state.rules.iter().map(|rule| (rule_file(&rule.id), rule.source.clone())));
+    let (program, diags) = Program::load(files.clone());
+    let mut errors: Vec<Diagnostic> = diags.iter().filter(|d| !d.warning).map(|d| diagnostic(&program.sources, d)).collect();
+    errors.extend(check_authz(&program).iter().filter(|d| !d.warning).map(|d| diagnostic(&program.sources, d)));
+    for rule in &state.rules {
+        let file = rule_file(&rule.id);
+        let declares = program
+            .modules
+            .iter()
+            .filter(|module| program.sources.files[module.file as usize].path == file)
+            .any(|module| module.items.iter().any(|item| matches!(item, Item::Law(_))));
+        if !declares && !errors.iter().any(|error| error.file == file) {
+            errors.push(Diagnostic { file, line: 1, column: 1, message: "the source declares no law".to_string() });
+        }
+    }
+    if !errors.is_empty() {
+        return Err(Failure::Diagnostics(errors));
+    }
+    let mut titles = BTreeMap::new();
+    for (_, text) in &files {
+        titles_of(text, &mut titles);
+    }
+    let mut catalog = Vec::new();
+    let mut off = HashSet::new();
+    for module in &program.modules {
+        let file = program.sources.files[module.file as usize].path.clone();
+        let rule = state.rules.iter().find(|rule| rule_file(&rule.id) == file);
+        for item in &module.items {
+            let Item::Law(law) = item else { continue };
+            let overridden = state.overrides.iter().find(|o| o.law == law.id).cloned();
+            let enabled = rule.is_none_or(|rule| rule.enabled) && overridden.is_none();
+            if !enabled {
+                off.insert(law.id.clone());
+            }
+            let mut info = law_info(law, &file, &program.sources);
+            info.origin = if rule.is_some() { "owner" } else { "built-in" }.to_string();
+            info.enabled = enabled;
+            info.rule_id = rule.map(|rule| rule.id.clone()).unwrap_or_default();
+            info.overridden = overridden;
+            catalog.push(info);
+        }
+    }
+    let permit_ops = catalog.iter().filter(|info| info.enabled && info.effect == "permit").flat_map(|info| info.ops.iter().cloned()).collect();
+    Ok(Compiled { program, titles, off, catalog, permit_ops })
+}
+
+/// A diagnostic with the place it is in, when it has one.
+fn diagnostic(sources: &SourceMap, diag: &Diag) -> Diagnostic {
+    match diag.span {
+        Some(span) => {
+            let source = &sources.files[span.file as usize];
+            let (line, column) = source.line_col(span.lo as usize);
+            Diagnostic { file: source.path.clone(), line, column, message: diag.msg.clone() }
+        }
+        None => Diagnostic { file: String::new(), line: 0, column: 0, message: diag.msg.clone() },
+    }
+}
+
+/// Reads a JSON file; `None` when it is missing or does not parse.
+fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok())
+}
+
+/// Writes a value as JSON atomically: a temporary file, then a rename over the old one.
+fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(value).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
+
 /// The compiled-in laws for questions asked outside an `App` (tool offers), compiled once.
 /// Only [`Laws::permits`] is answered from it, which records nothing, so its violations path is never written.
 pub fn global() -> &'static Laws {
     static LAWS: OnceLock<Laws> = OnceLock::new();
     LAWS.get_or_init(|| Laws::load(&std::env::temp_dir().join("apz-laws-gate")))
+}
+
+/// The attributes of an agent as the laws read them: [`member_attrs`] plus its kind, `model` for a
+/// CID in the model range (`foundry::registry`) and `llm` for every other agent.
+fn member_attrs_of(cid: &str, role: &str) -> BTreeMap<String, Value> {
+    let mut attrs = member_attrs(role);
+    let model = cid.parse::<u64>().is_ok_and(crate::foundry::registry::is_model_cid);
+    attrs.insert("kind".to_string(), Value::str(if model { "model" } else { "llm" }));
+    attrs
+}
+
+/// The town as the statutes read it: a Town record carrying its `name`, so `principal.town.name`
+/// and `resource.town == principal.town` compare the same way the jhrl cases do (S-003c, S-003d, S-004b).
+fn town_record() -> Value {
+    Value::Record(std::sync::Arc::new(BTreeMap::from([
+        ("$type".to_string(), Value::str("Town")),
+        ("$id".to_string(), Value::str(TOWN)),
+        ("name".to_string(), Value::str(TOWN)),
+    ])))
 }
 
 /// The attributes of an agent with `role` as the laws read them: its role, town, tier and seat.
@@ -349,7 +833,7 @@ fn member_attrs(role: &str) -> BTreeMap<String, Value> {
     };
     BTreeMap::from([
         ("role".to_string(), Value::str(role)),
-        ("town".to_string(), Value::str(TOWN)),
+        ("town".to_string(), town_record()),
         ("tier".to_string(), Value::str(tier)),
         ("seated".to_string(), Value::Bool(council::is_seated(role))),
     ])
@@ -455,14 +939,19 @@ const TOWN: &str = "plaza";
 /// context its laws read. A forbid whose condition reads a missing attribute applies (fail closed),
 /// so every attribute a forbid reads is supplied here. A tool performing several operations
 /// requests all of them.
-fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, store: &mut EntityStore) -> Vec<(&'static str, Entity, Context)> {
+fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, role: &str, store: &mut EntityStore) -> Vec<(&'static str, Entity, Context)> {
     let text = |key: &str| input.get(key).and_then(Json::as_str).unwrap_or_default().to_string();
     match tool {
-        "plaza_post_task" => vec![("task.create", Entity { ty: "Town".into(), id: TOWN.into() }, Context::new())],
+        // The town is named by its `name` attribute (a bare resource is its `$type`/`$id` record).
+        "plaza_post_task" => {
+            let town = Entity { ty: "Town".into(), id: TOWN.into() };
+            store.insert(&town, BTreeMap::from([("name".to_string(), Value::str(TOWN))]));
+            vec![("task.create", town, Context::new())]
+        }
         "plaza_assign" => {
             let cid = input.get("agent").and_then(Json::as_u64).map(|n| n.to_string()).unwrap_or_default();
             let assignee = Entity { ty: "Agent".into(), id: cid };
-            store.insert(&assignee, member_attrs(""));
+            store.insert(&assignee, member_attrs_of(&assignee.id, ""));
             let context = Context::from([("assignee".to_string(), jhrl::authz::entity_value(&assignee))]);
             vec![("task.assign", task_resource(store, text("task")), context)]
         }
@@ -503,6 +992,20 @@ fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, store: &mut Entit
             store.insert(&artifact, BTreeMap::from([("hidden_from".to_string(), Value::set(std::iter::empty::<Value>()))]));
             vec![("artifact.read", artifact, Context::new())]
         }
+        // A training job is checked for its GPU-hours: a breeder's over 8 is forbidden (S-006d).
+        "foundry_submit_job" => vec![(
+            "training.submit",
+            Entity { ty: "Town".into(), id: TOWN.into() },
+            Context::from([("gpu_hours".to_string(), Value::int(crate::foundry::breeder::budget_hours(input)))]),
+        )],
+        // A model runs only where its card allows the caller's role (S-006e).
+        "invoke_model" => {
+            let id = text("model");
+            let model = Entity { ty: "Model".into(), id: id.clone() };
+            store.insert(&model, BTreeMap::new());
+            let allowed = crate::foundry::registry::allowed_roles(&id).iter().any(|allowed| allowed == role);
+            vec![("model.invoke", model, Context::from([("role_allowed".to_string(), Value::Bool(allowed))]))]
+        }
         _ => Vec::new(),
     }
 }
@@ -510,7 +1013,7 @@ fn plaza_operations(tool: &str, input: &Json, agent_cid: &str, store: &mut Entit
 /// The task a call names, as an entity of this town.
 fn task_resource(store: &mut EntityStore, id: String) -> Entity {
     let task = Entity { ty: "Task".into(), id };
-    store.insert(&task, BTreeMap::from([("town".to_string(), Value::str(TOWN))]));
+    store.insert(&task, BTreeMap::from([("town".to_string(), town_record())]));
     task
 }
 
@@ -562,7 +1065,7 @@ impl Laws {
     pub fn restore(&self, json: &str) -> Result<(), String> {
         let violations: BTreeMap<String, Vec<Violation>> = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let mut all = self.violations.lock().unwrap_or_else(PoisonError::into_inner);
-        save(&self.path, &violations).map_err(|e| e.to_string())?;
+        save(&self.violations_path(), &violations).map_err(|e| e.to_string())?;
         *all = violations;
         Ok(())
     }
@@ -595,6 +1098,10 @@ fn law_info(law: &Law, file: &str, sources: &SourceMap) -> LawInfo {
         explanation,
         file: file.to_string(),
         source: sources.snippet(law.span).to_string(),
+        origin: String::new(),
+        enabled: true,
+        rule_id: String::new(),
+        overridden: None,
     }
 }
 
@@ -604,6 +1111,7 @@ fn file_tier(file: &str) -> &'static str {
         "constitution.jhrl" => "constitution",
         "statutes.jhrl" => "statute",
         "operations.jhrl" => "operations",
+        file if file.starts_with("owner/") => "owner",
         _ => "",
     }
 }
@@ -967,5 +1475,160 @@ mod tests {
         let read = laws.check("7", "builder", "plaza_get_file", &json!({"id": "report.txt"}));
         assert!(read.requested.iter().any(|op| op == "artifact.read"), "{read:?}");
         assert!(read.forbid.is_empty(), "{read:?}");
+    }
+}
+
+#[cfg(test)]
+mod owner_rules_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A rule an owner might add: no reading files, for any agent.
+    const NO_READS: &str = "law \"O-001\" \"No reading files\" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement \"Test rule: no agent may read a file.\"
+  forbid tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == \"read_file\"
+}
+";
+
+    /// A permit an owner might add: only a sensor may read a device.
+    const SENSORS_ONLY: &str = "law \"O-020\" \"Only sensors read devices\" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement \"Test rule: only a sensor may read a device.\"
+  permit device.read
+  principal is Agent
+  when principal.role == \"sensor\"
+}
+";
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apid-owner-rules-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn now() -> u64 {
+        apz_plaza::now_ms()
+    }
+
+    /// The gate every tool call passes: `Ok` with where it runs, or the refusal.
+    fn gate(laws: &Laws, tool: &str, input: &Json) -> Result<Runs, String> {
+        let granted = crate::tools::offered_names("builder");
+        crate::internal::gate_call(laws, 7, "builder", &granted, tool, input)
+    }
+
+    #[test]
+    fn a_rule_that_does_not_compile_is_rejected_with_its_place_and_not_applied() {
+        let laws = Laws::load(&scratch("compile"));
+        let broken = "law \"O-900\" \"Broken\" {\n  tier statute\n  frobnicate everything\n}\n";
+        match laws.add_rule("", broken, true, now()) {
+            Err(Failure::Diagnostics(list)) => assert!(list.iter().any(|d| d.line >= 1 && d.column >= 1), "{list:?}"),
+            other => panic!("expected diagnostics, got {other:?}"),
+        }
+        assert!(laws.rules().rules.is_empty());
+        assert!(!laws.catalog().iter().any(|info| info.id == "O-900"));
+        // A source that declares no law is refused too.
+        assert!(matches!(laws.add_rule("", "// nothing here\n", true, now()), Err(Failure::Diagnostics(_))));
+    }
+
+    #[test]
+    fn an_added_forbid_refuses_the_call_at_once_and_disabling_it_stops_that() {
+        let laws = Laws::load(&scratch("forbid"));
+        let input = json!({"path": "a.md"});
+        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        let rule = laws.add_rule("No reading files", NO_READS, true, now()).expect("compiles");
+        assert_eq!(rule.id, "R-001");
+        let reason = gate(&laws, "read_file", &input).unwrap_err();
+        assert!(reason.contains("O-001"), "{reason}");
+        assert!(laws.catalog().iter().any(|info| info.id == "O-001" && info.origin == "owner" && info.rule_id == "R-001"));
+        laws.set_rule_enabled(&rule.id, false, now()).unwrap();
+        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        laws.set_rule_enabled(&rule.id, true, now()).unwrap();
+        assert!(gate(&laws, "read_file", &input).is_err());
+        laws.delete_rule(&rule.id).unwrap();
+        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert!(matches!(laws.delete_rule("R-001"), Err(Failure::NotFound(_))));
+    }
+
+    #[test]
+    fn an_owner_disables_one_builtin_statute_with_a_reason_on_record() {
+        let laws = Laws::load(&scratch("override"));
+        let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
+        let forbids = |laws: &Laws| laws.check("7", "builder", "plaza_send_message", &input).forbid;
+        assert!(forbids(&laws).iter().any(|id| id == "C-002b"));
+        assert!(matches!(laws.set_override("C-002b", true, "  ", now()), Err(Failure::Invalid(_))), "a reason is required");
+        let made = laws.set_override("C-002b", true, "testing the override", now()).unwrap().expect("disabled");
+        assert_eq!(made.disabled_by, OWNER);
+        assert_eq!(made.reason, "testing the override");
+        assert!(!forbids(&laws).iter().any(|id| id == "C-002b"));
+        let info = laws.catalog().into_iter().find(|info| info.id == "C-002b").unwrap();
+        assert!(!info.enabled && info.overridden.is_some());
+        assert_eq!(laws.rules().overrides.len(), 1);
+        laws.set_override("C-002b", false, "", now()).unwrap();
+        assert!(forbids(&laws).iter().any(|id| id == "C-002b"));
+        // Only built-in statutes take an override; an owner rule is disabled as a rule.
+        laws.add_rule("No reading files", NO_READS, true, now()).unwrap();
+        assert!(matches!(laws.set_override("O-001", true, "why", now()), Err(Failure::Invalid(_))));
+        assert!(matches!(laws.set_override("Z-999", true, "why", now()), Err(Failure::NotFound(_))));
+    }
+
+    #[test]
+    fn strict_permits_refuse_an_operation_no_permit_allows_only_when_on() {
+        let laws = Laws::load(&scratch("strict"));
+        laws.add_rule("Only sensors read devices", SENSORS_ONLY, true, now()).expect("compiles");
+        let device = || Entity { ty: "Device".into(), id: "d1".into() };
+        let read = |laws: &Laws, role: &str| laws.refuse_op(7, role, "device.read", device(), BTreeMap::new(), &Json::Null);
+        assert!(!laws.strict());
+        assert!(read(&laws, "builder").is_none(), "strict permits are off");
+        laws.set_strict(true);
+        assert!(read(&laws, "builder").is_some_and(|why| why.contains("device.read")));
+        assert!(read(&laws, "sensor").is_none());
+        // The orchestrator still posts tasks under strict permits: S-003c grants it task.create.
+        let verdict = laws.check("7", crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task", &json!({"title": "t", "body": "b"}));
+        assert!(verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty(), "{verdict:?}");
+        laws.set_strict(false);
+        assert!(read(&laws, "builder").is_none());
+    }
+
+    #[test]
+    fn owner_rules_and_overrides_survive_a_restart_and_a_snapshot() {
+        let dir = scratch("persist");
+        let laws = Laws::load(&dir);
+        laws.add_rule("No reading files", NO_READS, true, now()).unwrap();
+        laws.set_override("C-002b", true, "testing", now()).unwrap();
+        let before = laws.rules();
+        let again = Laws::load(&dir);
+        assert_eq!(again.rules(), before);
+        assert!(gate(&again, "read_file", &json!({"path": "a.md"})).is_err());
+        // The Postgres copy restores the same state into a fresh set.
+        let other = Laws::load(&scratch("persist-db"));
+        other.rules_restore(&again.rules_snapshot()).unwrap();
+        assert_eq!(other.rules(), before);
+        assert!(other.catalog().iter().any(|info| info.id == "O-001" && info.enabled));
+        // A snapshot whose source does not compile changes nothing.
+        let mut bad = before.clone();
+        bad.rules[0].source = "law \"O-901\" \"Bad\" {".into();
+        assert!(other.rules_restore(&serde_json::to_string(&bad).unwrap()).is_err());
+        assert_eq!(other.rules(), before);
+    }
+
+    #[test]
+    fn a_dry_run_lists_the_recent_calls_a_rule_would_refuse_and_applies_nothing() {
+        let laws = Laws::load(&scratch("dry"));
+        assert!(laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"})).is_none());
+        let run = laws.dry_run(NO_READS, None).expect("compiles");
+        assert_eq!(run.laws, vec!["O-001".to_string()]);
+        assert_eq!(run.would_refuse.len(), 1, "{:?}", run.would_refuse);
+        assert_eq!(run.would_refuse[0]["tool"], "read_file");
+        assert!(laws.rules().rules.is_empty());
+        assert!(matches!(laws.dry_run("law \"O-902\" \"x\" {", None), Err(Failure::Diagnostics(_))));
     }
 }

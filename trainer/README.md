@@ -45,7 +45,8 @@ only, loaded with `weights_only=True`).
 
 A recipe is a directory with `recipe.json` (id, input and output names, the feature schema, defaults,
 `shard`) and `recipe.py` with `build_model(cfg)`, `dataset(paths, split, cfg)` (`train`, `val`, `frozen`),
-`loss(batch, out)`, `metrics(batch, out)`, `example_input()`, and optionally `bind(cfg)`. Batch items are
+`loss(batch, out)`, `metrics(batch, out)`, `example_input()`, `serving_schema()` (the registry's inference contract; export refuses a recipe without
+it), and optionally `bind(cfg)`. Batch items are
 dicts; the model's `forward` takes the input names in order.
 
 `rung-predictor@1`: an MLP over numeric features (signed log) and hashed categorical features (blake2b,

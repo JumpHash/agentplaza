@@ -1,0 +1,621 @@
+{
+  "schema": 1,
+  "id": "turtle",
+  "name": "Shellby",
+  "blurb": "A hex-plated shell on four stumpy legs, with a head on a long neck. Tucks in when shy and sunbathes when content.",
+  "accent": "#7fd98f",
+  "height": 1.0,
+  "label_top": 1.02,
+  "locomotion": "walk4",
+  "gait": {
+    "speed": 0.4,
+    "freq": 0.7,
+    "bob": 0.02,
+    "sway": 0.03,
+    "lean": 0.0,
+    "sideways": false
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "root",
+      "at": [
+        0,
+        0.3,
+        0
+      ]
+    },
+    "neck": {
+      "parent": "body",
+      "at": [
+        0,
+        0.1,
+        0.36
+      ]
+    },
+    "head": {
+      "parent": "neck",
+      "at": [
+        0,
+        0.3,
+        0.04
+      ]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [
+        -0.3,
+        -0.1,
+        0.2
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        0,
+        -0.22,
+        0.06
+      ]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [
+        0.3,
+        -0.1,
+        0.2
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0,
+        -0.22,
+        0.06
+      ]
+    },
+    "legBL": {
+      "parent": "base",
+      "at": [
+        -0.22,
+        0,
+        -0.2
+      ]
+    },
+    "legBR": {
+      "parent": "base",
+      "at": [
+        0.22,
+        0,
+        -0.2
+      ]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [
+        0,
+        0.4,
+        0
+      ]
+    }
+  },
+  "parts": [
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.42,
+        "seg": [
+          6,
+          5
+        ],
+        "half": "top"
+      },
+      "scale": [
+        1,
+        1.0,
+        1.05
+      ],
+      "mat": "shell"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.44,
+        "rb": 0.46,
+        "h": 0.07,
+        "seg": [
+          6
+        ]
+      },
+      "mat": "shell2"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        0,
+        0.41,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        0.2,
+        0.369,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        0.1,
+        0.369,
+        0.173
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        -0.1,
+        0.369,
+        0.173
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        -0.2,
+        0.369,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        -0.1,
+        0.369,
+        -0.173
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.08,
+        "rb": 0.08,
+        "h": 0.03,
+        "seg": [
+          6
+        ]
+      },
+      "at": [
+        0.1,
+        0.369,
+        -0.173
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cone",
+        "r": 0.07,
+        "h": 0.14,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.02,
+        -0.45
+      ],
+      "rot": [
+        -90,
+        0,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "neck",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.09,
+        "rb": 0.1,
+        "h": 0.3,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0
+      ],
+      "mat": "shell"
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "rbox",
+        "w": 0.42,
+        "h": 0.34,
+        "d": 0.4,
+        "r": 0.17,
+        "seg": [
+          4
+        ]
+      },
+      "at": [
+        0,
+        0.05,
+        0
+      ],
+      "mat": "shell"
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "rbox",
+        "w": 0.18,
+        "h": 0.11,
+        "d": 0.12,
+        "r": 0.05,
+        "seg": [
+          3
+        ]
+      },
+      "at": [
+        0,
+        -0.07,
+        0.22
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.1,
+        "rb": 0.11,
+        "h": 0.26,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        -0.13,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.11,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.26,
+        0.04
+      ],
+      "scale": [
+        1,
+        0.6,
+        1.2
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.1,
+        "rb": 0.11,
+        "h": 0.26,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        -0.13,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.11,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.26,
+        0.04
+      ],
+      "scale": [
+        1,
+        0.6,
+        1.2
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legBL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.11,
+        "rb": 0.12,
+        "h": 0.3,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "legBL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        0.02,
+        0.03
+      ],
+      "scale": [
+        1,
+        0.6,
+        1.2
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legBR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.11,
+        "rb": 0.12,
+        "h": 0.3,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "legBR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.12,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        0.02,
+        0.03
+      ],
+      "scale": [
+        1,
+        0.6,
+        1.2
+      ],
+      "mat": "shell2",
+      "outline": false
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "head",
+      "at": [
+        -0.1,
+        0.1,
+        0.2
+      ],
+      "r": 0.08,
+      "pupil": 0.055,
+      "shape": "round"
+    },
+    {
+      "bone": "head",
+      "at": [
+        0.1,
+        0.1,
+        0.2
+      ],
+      "r": 0.08,
+      "pupil": 0.055,
+      "shape": "round"
+    }
+  ],
+  "spin": [],
+  "feet": [
+    "legBL",
+    "legBR"
+  ],
+  "floats": false,
+  "personality": {
+    "social": 4,
+    "energy": 2,
+    "focus": 8,
+    "curiosity": 3,
+    "play": 2,
+    "tidy": 8
+  },
+  "quirks": [
+    {
+      "clip": "turtle.tuck",
+      "weight": 3
+    },
+    {
+      "clip": "turtle.sunbathe",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "turtle.tuck": {
+      "loop": false,
+      "dur": 2.4,
+      "channels": [
+        {
+          "bone": "neck",
+          "prop": "pos.y",
+          "base": -0.3
+        },
+        {
+          "bone": "neck",
+          "prop": "pos.z",
+          "base": -0.27
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.5
+        }
+      ]
+    },
+    "turtle.sunbathe": {
+      "loop": false,
+      "dur": 5.0,
+      "channels": [
+        {
+          "bone": "neck",
+          "prop": "rot.x",
+          "base": -0.2
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": -0.5
+        },
+        {
+          "bone": "head",
+          "prop": "lid",
+          "base": 0.08
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.004,
+          "freq": 0.35
+        }
+      ]
+    }
+  },
+  "overrides": {}
+}

@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "id": "bunny",
+  "name": "Hops",
+  "blurb": "Long floppy ears on a round body, a round tail and big feet. Hops about, twitches its nose, and binkies when happy.",
+  "accent": "#ff9fbf",
+  "height": 1.0,
+  "label_top": 1.45,
+  "locomotion": "hop",
+  "gait": { "speed": 1.2, "freq": 1.6, "bob": 0.14, "sway": 0.03, "lean": 0.06, "sideways": false },
+  "bones": {
+    "base": { "parent": "root", "at": [0, 0, 0] },
+    "body": { "parent": "root", "at": [0, 0.3, 0] },
+    "head": { "parent": "body", "at": [0, 0.34, 0] },
+    "nose": { "parent": "head", "at": [0, 0.02, 0.3] },
+    "earL": { "parent": "head", "at": [-0.15, 0.27, 0] },
+    "earR": { "parent": "head", "at": [0.15, 0.27, 0] },
+    "armL": { "parent": "body", "at": [-0.3, 0, 0.1] },
+    "gripL": { "parent": "armL", "at": [0, -0.25, 0.03] },
+    "armR": { "parent": "body", "at": [0.3, 0, 0.1] },
+    "gripR": { "parent": "armR", "at": [0, -0.25, 0.03] },
+    "carry": { "parent": "body", "at": [0, -0.06, 0.36] }
+  },
+  "parts": [
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.3, "seg": [24, 16] }, "scale": [1, 1.05, 0.95], "mat": "shell" },
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.2, "seg": [16, 12] }, "at": [0, -0.05, 0.13], "scale": [1, 1.05, 0.55], "mat": "paper", "outline": false },
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.12, "seg": [10, 8] }, "at": [0, -0.07, -0.27], "mat": "paper", "outline": false },
+
+    { "bone": "head", "geo": { "type": "rbox", "w": 0.52, "h": 0.44, "d": 0.46, "r": 0.2, "seg": [4] }, "at": [0, 0.1, 0], "mat": "shell" },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.11, "seg": [14, 10] }, "at": [0, 0, 0.22], "scale": [1.3, 0.85, 0.7], "mat": "paper", "outline": false },
+
+    { "bone": "nose", "geo": { "type": "sphere", "r": 0.05, "seg": [10, 8] }, "mat": "accent", "outline": false },
+
+    { "bone": "earL", "geo": { "type": "rbox", "w": 0.12, "h": 0.46, "d": 0.05, "r": 0.05, "seg": [3] }, "at": [0, 0.23, 0], "rot": [0, 0, -8], "mat": "shell", "outline": false },
+    { "bone": "earL", "geo": { "type": "rbox", "w": 0.06, "h": 0.38, "d": 0.06, "r": 0.025, "seg": [2] }, "at": [0, 0.23, 0.03], "rot": [0, 0, -8], "mat": "paper", "outline": false },
+    { "bone": "earR", "geo": { "type": "rbox", "w": 0.12, "h": 0.46, "d": 0.05, "r": 0.05, "seg": [3] }, "at": [0, 0.23, 0], "rot": [0, 0, 8], "mat": "shell", "outline": false },
+    { "bone": "earR", "geo": { "type": "rbox", "w": 0.06, "h": 0.38, "d": 0.06, "r": 0.025, "seg": [2] }, "at": [0, 0.23, 0.03], "rot": [0, 0, 8], "mat": "paper", "outline": false },
+
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.22, "seg": [10] }, "at": [0, -0.11, 0], "mat": "shell", "outline": false },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.065, "seg": [12, 10] }, "at": [0, -0.24, 0.02], "mat": "paper", "outline": false },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.22, "seg": [10] }, "at": [0, -0.11, 0], "mat": "shell", "outline": false },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.065, "seg": [12, 10] }, "at": [0, -0.24, 0.02], "mat": "paper", "outline": false },
+
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.17, "h": 0.08, "d": 0.26, "r": 0.04, "seg": [2] }, "at": [-0.14, 0.04, 0.06], "mat": "shell2", "outline": false },
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.17, "h": 0.08, "d": 0.26, "r": 0.04, "seg": [2] }, "at": [0.14, 0.04, 0.06], "mat": "shell2", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [-0.14, 0.14, 0.235], "r": 0.095, "pupil": 0.06, "shape": "round", "stretch": 1.1 },
+    { "bone": "head", "at": [0.14, 0.14, 0.235], "r": 0.095, "pupil": 0.06, "shape": "round", "stretch": 1.1 }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 7, "energy": 9, "focus": 3, "curiosity": 7, "play": 9, "tidy": 3 },
+  "quirks": [{ "clip": "bunny.flop", "weight": 3 }, { "clip": "bunny.twitch", "weight": 3 }, { "clip": "bunny.binky", "weight": 2 }],
+  "clips": {
+    "bunny.flop": {
+      "loop": false,
+      "dur": 1.8,
+      "channels": [
+        { "bone": "earL", "prop": "rot.z", "base": 1.25, "amp": 0.1, "freq": 2.4 },
+        { "bone": "earR", "prop": "rot.z", "base": -1.25, "amp": -0.1, "freq": 2.4, "phase": 0.6 },
+        { "bone": "head", "prop": "rot.x", "base": 0.05 }
+      ]
+    },
+    "bunny.twitch": {
+      "loop": false,
+      "dur": 1.4,
+      "channels": [
+        { "bone": "nose", "prop": "scale", "base": 1, "amp": 0.18, "freq": 6, "env": "in-out" },
+        { "bone": "nose", "prop": "pos.y", "amp": 0.01, "freq": 6, "env": "in-out" },
+        { "bone": "earL", "prop": "rot.z", "amp": 0.08, "freq": 3, "env": "in-out" },
+        { "bone": "earR", "prop": "rot.z", "amp": -0.08, "freq": 3, "env": "in-out" }
+      ]
+    },
+    "bunny.binky": {
+      "loop": false,
+      "dur": 1.1,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": 0.42, "freq": 0, "phase": 1.5708, "env": "in-out" },
+        { "bone": "body", "prop": "rot.y", "rate": 5.712 },
+        { "bone": "armL", "prop": "rot.z", "base": -2.4 },
+        { "bone": "armR", "prop": "rot.z", "base": 2.4 },
+        { "bone": "earL", "prop": "rot.x", "base": -0.45 },
+        { "bone": "earR", "prop": "rot.x", "base": -0.45 }
+      ]
+    }
+  },
+  "overrides": {}
+}

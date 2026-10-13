@@ -35,4 +35,6 @@ operation memory.read(principal: Agent, resource: MemoryStore, context: {scope: 
 operation memory.change(principal: Agent, resource: MemoryStore, context: {to_scope: String, verified: Bool, tainted: Bool, owner_reviewed: Bool})
 operation audit_sample.get(principal: Agent, resource: AuditSample, context: {})
 operation device.read(principal: Agent, resource: Device, context: {on_node: String})
+operation training.submit(principal: Agent, resource: Town, context: {gpu_hours: Long})
+operation model.invoke(principal: Agent, resource: Model, context: {role_allowed: Bool})
 operation device.actuate(principal: Agent, resource: Device, context: {within_envelope: Bool, on_node: String, owner_approval: Approval optional})

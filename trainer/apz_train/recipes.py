@@ -40,6 +40,11 @@ class Recipe:
     def example_input(self):
         return self.mod.example_input()
 
+    def serving_schema(self):
+        """The recipe's inference contract from its serving_schema() hook, or None when it declares none."""
+        hook = getattr(self.mod, "serving_schema", None)
+        return hook() if hook is not None else None
+
 
 def load(recipe_id, recipes_dir=None):
     if not _ID.fullmatch(recipe_id or ""):

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "id": "can",
+  "name": "Dome",
+  "blurb": "A round can on two stubby feet, with a glass dome head and one big eye.",
+  "accent": "#7ee0a0",
+  "height": 1.0,
+  "label_top": 1.35,
+  "locomotion": "wheels",
+  "gait": { "speed": 1, "freq": 0.9549, "bob": 0.012, "sway": 0.05, "lean": 0, "sideways": false },
+  "bones": {
+    "base": { "parent": "root", "at": [0, 0, 0] },
+    "body": { "parent": "root", "at": [0, 0, 0] },
+    "head": { "parent": "body", "at": [0, 0.64, 0] },
+    "armL": { "parent": "body", "at": [-0.3, 0.56, 0] },
+    "armR": { "parent": "body", "at": [0.3, 0.56, 0] },
+    "gripL": { "parent": "armL", "at": [0, -0.24, 0] },
+    "gripR": { "parent": "armR", "at": [0, -0.24, 0] },
+    "footL": { "parent": "base", "at": [-0.12, 0, 0] },
+    "footR": { "parent": "base", "at": [0.12, 0, 0] },
+    "carry": { "parent": "body", "at": [0, 0.42, 0.3] }
+  },
+  "parts": [
+    { "bone": "base", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.05, "h": 0.14, "seg": [10] }, "at": [-0.12, 0.14, 0], "mat": "trim", "outline": false },
+    { "bone": "base", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.05, "h": 0.14, "seg": [10] }, "at": [0.12, 0.14, 0], "mat": "trim", "outline": false },
+    { "bone": "footL", "geo": { "type": "rbox", "w": 0.16, "h": 0.08, "d": 0.24, "r": 0.035, "seg": [2] }, "at": [0, 0.04, 0.03], "mat": "ink" },
+    { "bone": "footR", "geo": { "type": "rbox", "w": 0.16, "h": 0.08, "d": 0.24, "r": 0.035, "seg": [2] }, "at": [0, 0.04, 0.03], "mat": "ink" },
+
+    { "bone": "body", "geo": { "type": "cyl", "rt": 0.27, "rb": 0.27, "h": 0.44, "seg": [28] }, "at": [0, 0.42, 0], "mat": "shell" },
+    { "bone": "body", "geo": { "type": "torus", "r": 0.27, "tube": 0.022, "seg": [8, 32] }, "rot": [90, 0, 0], "at": [0, 0.22, 0], "mat": "trim" },
+    { "bone": "body", "geo": { "type": "torus", "r": 0.27, "tube": 0.022, "seg": [8, 32] }, "rot": [90, 0, 0], "at": [0, 0.62, 0], "mat": "trim" },
+    { "bone": "body", "geo": { "type": "rbox", "w": 0.2, "h": 0.16, "d": 0.04, "r": 0.015, "seg": [2] }, "at": [0, 0.42, 0.262], "mat": "panel" },
+
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.27, "seg": [28, 14], "half": "top" }, "mat": "paper" },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.27, "rb": 0.27, "h": 0.001, "seg": [28] }, "at": [0, 0.005, 0], "mat": "paper", "outline": false },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.11, "rb": 0.11, "h": 0.1, "seg": [24] }, "rot": [90, 0, 0], "at": [0, 0.12, 0.23], "mat": "ink" },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.035, "rb": 0.045, "h": 0.05, "seg": [10] }, "at": [0, 0.29, 0], "mat": "ink" },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.04, "seg": [12, 8] }, "at": [0, 0.33, 0], "mat": "signal" },
+
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.24, "seg": [12] }, "at": [0, -0.12, 0], "mat": "shell" },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.065, "seg": [14, 10] }, "at": [0, -0.24, 0], "mat": "ink" },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.24, "seg": [12] }, "at": [0, -0.12, 0], "mat": "shell" },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.065, "seg": [14, 10] }, "at": [0, -0.24, 0], "mat": "ink" }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [0, 0.12, 0.282], "r": 0.09, "pupil": 0.06, "shape": "round" }
+  ],
+  "spin": [],
+  "feet": ["footL", "footR"],
+  "floats": false,
+  "personality": { "social": 4, "energy": 4, "focus": 8, "curiosity": 4, "play": 3, "tidy": 7 },
+  "quirks": [],
+  "clips": {},
+  "overrides": {}
+}

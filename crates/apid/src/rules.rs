@@ -11,6 +11,7 @@ use apz_http::{Params, Request, Response, Router};
 use serde_json::{json, Value};
 
 use crate::db::Infraction;
+use crate::laws::{Failure, Override};
 use crate::state::App;
 
 /// Rows read to count refusals per law, plaza-wide.
@@ -19,11 +20,149 @@ const ALL: i64 = 10_000;
 const DEFAULT_LIMIT: i64 = 200;
 const MAX_LIMIT: i64 = 10_000;
 
+/// The Rules view's routes. Every one is owner-only: `hub_auth::gate` asks for the owner token of any
+/// `/v1/` request that does not come from loopback.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/laws", laws_route)
+        .get("/v1/laws/rules", rules_list_route)
+        .post("/v1/laws/rules", rule_create_route)
+        .route("PUT", "/v1/laws/rules/{id}", rule_update_route)
+        .post("/v1/laws/rules/{id}/enable", rule_enable_route)
+        .post("/v1/laws/rules/{id}/disable", rule_disable_route)
+        .route("DELETE", "/v1/laws/rules/{id}", rule_delete_route)
+        .post("/v1/laws/check", check_route)
+        .route("PUT", "/v1/laws/overrides/{law}", override_route)
+        .get("/v1/laws/violations", violations_route)
         .get("/v1/infractions", infractions_route)
         .get("/v1/agents/{cid}/infractions", agent_infractions_route)
+}
+
+/// The owner's rules and overrides, and whether permits are strict.
+fn rules_list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
+    let set = app.laws.rules();
+    Response::json(200, &json!({ "rules": set.rules, "overrides": set.overrides, "strict_permits": app.laws.strict() }))
+}
+
+/// `POST /v1/laws/rules` with `{title, source, enabled}`: a new rule set, applied only if it compiles.
+fn rule_create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let body = match body_of(req) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let enabled = body.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    match app.laws.add_rule(&text_field(&body, "title"), &text_field(&body, "source"), enabled, apz_plaza::now_ms()) {
+        Ok(rule) => Response::json(201, &rule),
+        Err(failure) => failure_response(failure),
+    }
+}
+
+/// `PUT /v1/laws/rules/{id}` with `{title?, source?}`: an edited rule set, applied only if it compiles.
+fn rule_update_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
+    let body = match body_of(req) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let source = body.get("source").and_then(Value::as_str);
+    match app.laws.update_rule(params.get("id"), &text_field(&body, "title"), source, apz_plaza::now_ms()) {
+        Ok(rule) => Response::json(200, &rule),
+        Err(failure) => failure_response(failure),
+    }
+}
+
+fn rule_enable_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
+    set_enabled(app, params.get("id"), true)
+}
+
+fn rule_disable_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
+    set_enabled(app, params.get("id"), false)
+}
+
+fn set_enabled(app: &App, id: &str, enabled: bool) -> Response {
+    match app.laws.set_rule_enabled(id, enabled, apz_plaza::now_ms()) {
+        Ok(rule) => Response::json(200, &rule),
+        Err(failure) => failure_response(failure),
+    }
+}
+
+fn rule_delete_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
+    match app.laws.delete_rule(params.get("id")) {
+        Ok(()) => Response::json(200, &json!({ "deleted": params.get("id") })),
+        Err(failure) => failure_response(failure),
+    }
+}
+
+/// `POST /v1/laws/check` with `{source, id?}`: a dry run (`id` names the rule the source would replace). A source that does not compile comes back with
+/// its diagnostics (status 200, `ok` false); one that does lists the laws it declares and the recent
+/// calls they would have refused. Nothing is applied.
+fn check_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let body = match body_of(req) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let replaces = body.get("id").and_then(Value::as_str);
+    match app.laws.dry_run(&text_field(&body, "source"), replaces) {
+        Ok(run) => Response::json(200, &json!({ "ok": true, "diagnostics": [], "laws": run.laws, "would_refuse": run.would_refuse })),
+        Err(Failure::Diagnostics(list)) => Response::json(200, &json!({ "ok": false, "diagnostics": list, "laws": [], "would_refuse": [] })),
+        Err(failure) => failure_response(failure),
+    }
+}
+
+/// `PUT /v1/laws/overrides/{law}` with `{disabled, reason}`: disables a built-in statute, with the
+/// reason on record, or enables it again (`disabled` false).
+fn override_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
+    let body = match body_of(req) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let disabled = body.get("disabled").and_then(Value::as_bool).unwrap_or(true);
+    let law = params.get("law");
+    match app.laws.set_override(law, disabled, &text_field(&body, "reason"), apz_plaza::now_ms()) {
+        Ok(made) => {
+            let made: Option<Override> = made;
+            Response::json(200, &json!({ "law": law, "override": made }))
+        }
+        Err(failure) => failure_response(failure),
+    }
+}
+
+/// `GET /v1/laws/violations?law=&limit=`: the recorded refusals, newest first, of one law (or of all).
+fn violations_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let law = req.query_param("law");
+    let limit = req
+        .query_param("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_LIMIT)
+        .clamp(1, MAX_LIMIT);
+    let found: Vec<Infraction> = infractions_of(app, None, ALL)
+        .into_iter()
+        .filter(|infraction| law.is_none_or(|law| infraction.law == law))
+        .take(usize::try_from(limit).unwrap_or(0))
+        .collect();
+    Response::json(200, &infraction_rows(app, found))
+}
+
+/// The request's JSON body as an object, or a 400 saying why it is not one.
+fn body_of(req: &Request) -> Result<Value, Response> {
+    match req.json::<Value>() {
+        Ok(body) if body.is_object() => Ok(body),
+        Ok(_) => Err(Response::json(400, &json!({ "error": "the body must be a JSON object" }))),
+        Err(e) => Err(Response::json(400, &json!({ "error": format!("bad JSON: {e}") }))),
+    }
+}
+
+fn text_field(body: &Value, key: &str) -> String {
+    body.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// A refused change: 404 for an unknown id, 400 otherwise with the reason (and the diagnostics, when
+/// the source does not compile).
+fn failure_response(failure: Failure) -> Response {
+    match &failure {
+        Failure::NotFound(_) => Response::json(404, &json!({ "error": failure.message() })),
+        Failure::Invalid(_) => Response::json(400, &json!({ "error": failure.message() })),
+        Failure::Diagnostics(list) => Response::json(400, &json!({ "error": "the source does not compile", "diagnostics": list })),
+    }
 }
 
 fn laws_route(app: &App, _: &Request, _: &Params<'_>) -> Response {

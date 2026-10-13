@@ -104,6 +104,7 @@ def _finish(recipe, job, plan, ctx, cfg, state, budget, out_dir, datasets, extra
                  "bytes": os.path.getsize(onnx_path)},
         "gpu_hours": round(budget.hours(), 6),
         "objective": "expected_cost",
+        "serving": export.serving_block(recipe),
         **extra,
     }
     card_path = os.path.join(out_dir, "model_card.json")
@@ -119,6 +120,7 @@ def _run(args, job, plan):
     ctx = backend.setup(isl.get("backend", "auto"))
     set_context(island=args.island, rank=ctx.rank)
     recipe = recipes.load(job["recipe"], args.recipes)
+    export.serving_block(recipe)  # fails before training when the recipe declares no serving contract
     cfg = _base_cfg(recipe, job, plan)
     cfg["frozen"] = plan.get("frozen")
     mode = plan.get("mode", "single")

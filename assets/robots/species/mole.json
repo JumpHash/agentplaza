@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "id": "mole",
+  "name": "Digger",
+  "blurb": "A round mole with a spinning drill nose, goggles and treads. It sinks into the floor and pops back up.",
+  "accent": "#f5c542",
+  "height": 1.0,
+  "label_top": 1.2,
+  "locomotion": "treads",
+  "gait": { "speed": 0.8, "freq": 0.9549, "bob": 0.01, "sway": 0.04, "lean": 0.02, "sideways": false },
+  "bones": {
+    "base": { "parent": "root", "at": [0, 0, 0] },
+    "body": { "parent": "root", "at": [0, 0, 0] },
+    "head": { "parent": "body", "at": [0, 0.72, 0.06] },
+    "drill": { "parent": "head", "at": [0, 0, 0.2] },
+    "armL": { "parent": "body", "at": [-0.34, 0.5, 0.1] },
+    "armR": { "parent": "body", "at": [0.34, 0.5, 0.1] },
+    "gripL": { "parent": "armL", "at": [0, -0.3, 0.1] },
+    "gripR": { "parent": "armR", "at": [0, -0.3, 0.1] },
+    "carry": { "parent": "body", "at": [0, 0.14, 0.44] }
+  },
+  "parts": [
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.16, "h": 0.26, "d": 0.8, "r": 0.09, "seg": [3] }, "at": [-0.3, 0.13, 0], "mat": "ink" },
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.16, "h": 0.26, "d": 0.8, "r": 0.09, "seg": [3] }, "at": [0.3, 0.13, 0], "mat": "ink" },
+
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.36 }, "at": [0, 0.42, 0], "scale": [1, 0.85, 1.05], "mat": "shell" },
+
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.28 }, "mat": "shell" },
+    { "bone": "head", "geo": { "type": "torus", "r": 0.29, "tube": 0.026, "seg": [8, 40] }, "rot": [90, 0, 0], "mat": "trim" },
+    { "bone": "head", "geo": { "type": "torus", "r": 0.085, "tube": 0.024, "seg": [8, 20] }, "at": [-0.12, 0.05, 0.255], "mat": "trim" },
+    { "bone": "head", "geo": { "type": "torus", "r": 0.085, "tube": 0.024, "seg": [8, 20] }, "at": [0.12, 0.05, 0.255], "mat": "trim" },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.075, "rb": 0.075, "h": 0.02, "seg": [16] }, "rot": [90, 0, 0], "at": [-0.12, 0.05, 0.25], "mat": "glass", "outline": false },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.075, "rb": 0.075, "h": 0.02, "seg": [16] }, "rot": [90, 0, 0], "at": [0.12, 0.05, 0.25], "mat": "glass", "outline": false },
+
+    { "bone": "drill", "geo": { "type": "cone", "r": 0.12, "h": 0.26 }, "rot": [90, 0, 0], "at": [0, 0, 0.13], "mat": "accent" },
+    { "bone": "drill", "geo": { "type": "box", "w": 0.03, "h": 0.03, "d": 0.2 }, "at": [0.07, 0, 0.12], "mat": "signal", "outline": false },
+    { "bone": "drill", "geo": { "type": "box", "w": 0.03, "h": 0.03, "d": 0.2 }, "at": [-0.07, 0, 0.12], "mat": "signal", "outline": false },
+    { "bone": "drill", "geo": { "type": "box", "w": 0.03, "h": 0.03, "d": 0.2 }, "at": [0, 0.07, 0.12], "mat": "signal", "outline": false },
+    { "bone": "drill", "geo": { "type": "box", "w": 0.03, "h": 0.03, "d": 0.2 }, "at": [0, -0.07, 0.12], "mat": "signal", "outline": false },
+
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.06, "h": 0.26, "seg": [12] }, "at": [0, -0.13, 0], "mat": "shell", "outline": false },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.085 }, "at": [0, -0.28, 0.03], "mat": "paper", "outline": false },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.06, "h": 0.26, "seg": [12] }, "at": [0, -0.13, 0], "mat": "shell", "outline": false },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.085 }, "at": [0, -0.28, 0.03], "mat": "paper", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [-0.12, 0.05, 0.262], "r": 0.075, "pupil": 0.04, "shape": "round", "glass": false },
+    { "bone": "head", "at": [0.12, 0.05, 0.262], "r": 0.075, "pupil": 0.04, "shape": "round", "glass": false }
+  ],
+  "spin": [{ "bone": "drill", "axis": "z", "walk": 12, "idle": 3, "offline": 0 }],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 2, "energy": 7, "focus": 8, "curiosity": 6, "play": 3, "tidy": 6 },
+  "quirks": [{ "clip": "mole.burrow", "weight": 3 }, { "clip": "mole.drill", "weight": 2 }],
+  "clips": {
+    "mole.burrow": {
+      "loop": false,
+      "dur": 1.8,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": -0.9, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" },
+        { "bone": "base", "prop": "pos.y", "amp": -0.9, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" },
+        { "bone": "drill", "prop": "rot.z", "rate": 20 }
+      ]
+    },
+    "mole.drill": {
+      "loop": false,
+      "dur": 1.4,
+      "channels": [
+        { "bone": "drill", "prop": "rot.z", "rate": 26 },
+        { "bone": "head", "prop": "rot.x", "amp": 0.1, "freq": 1.5, "env": "in-out" }
+      ]
+    }
+  },
+  "overrides": {}
+}

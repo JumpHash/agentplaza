@@ -91,6 +91,8 @@ pub struct Settings {
     pub retention: Retention,
     /// What the plaza does to an agent that breaks a law (see `sanctions.rs`).
     pub sanctions: Sanctions,
+    /// How the plaza's laws are applied (see `laws.rs`).
+    pub laws: LawsSettings,
 }
 
 impl Default for Settings {
@@ -109,6 +111,7 @@ impl Default for Settings {
             memory_autoscale: true,
             retention: Retention::default(),
             sanctions: Sanctions::default(),
+            laws: LawsSettings::default(),
         }
     }
 }
@@ -135,6 +138,15 @@ impl Default for Sanctions {
     fn default() -> Self {
         Self { enabled: true, fines: true, suspensions: true, max_fine: 300 }
     }
+}
+
+/// How the laws are applied (`laws.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LawsSettings {
+    /// Whether an operation that has permit laws is refused unless one of them allows it. Off: only
+    /// forbids refuse, and a permit only allows.
+    pub strict_permits: bool,
 }
 
 /// The fewest a retention count may be, so the plaza keeps a usable window.
@@ -238,6 +250,7 @@ impl Store {
                 s
             }
         };
+        crate::laws::global().set_strict(settings.laws.strict_permits);
         Ok(Self { path, dev_models, inner: Mutex::new(settings) })
     }
 
@@ -345,6 +358,7 @@ impl Store {
         std::fs::write(&tmp, &bytes).map_err(|e| format!("write settings: {e}"))?;
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("replace settings: {e}"))?;
         *guard = new.clone();
+        crate::laws::global().set_strict(new.laws.strict_permits);
         Ok(new)
     }
 

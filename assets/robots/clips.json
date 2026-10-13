@@ -1,0 +1,647 @@
+{
+  "schema": 1,
+  "clips": {
+    "idle": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "amp": 0.03, "freq": 0.0796 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.12, "freq": 0.1432 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.012, "freq": 0.2546 },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.05, "freq": 0.1751 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.05, "freq": 0.1751 },
+        { "bone": "head", "prop": "lid", "base": 1, "amp": -0.9, "freq": 0.2778, "wave": "pulse", "duty": 0.0389, "snap": true }
+      ]
+    },
+    "type": {
+      "loop": true,
+      "channels": [
+        { "bone": "armL", "prop": "rot.x", "base": -0.9, "amp": 0.2, "freq": 1.7507 },
+        { "bone": "armR", "prop": "rot.x", "base": -0.9, "amp": -0.2, "freq": 1.7507 },
+        { "bone": "head", "prop": "rot.x", "base": 0.14, "amp": 0.08, "freq": 0.7958 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.04, "freq": 0.2069 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.004, "freq": 0.3979 }
+      ]
+    },
+    "walk.treads": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "base": 0.04 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.4775 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.9549, "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "base", "prop": "pos.y", "amp": "gait.bob", "freq": 1.5915, "wave": "abs" },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.25, "freq": 0.9549 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.25, "freq": 0.9549 }
+      ]
+    },
+    "walk.wheels": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "base": 0.04 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.4775 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.9549, "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "base", "prop": "pos.y", "amp": "gait.bob", "freq": 1.5915, "wave": "abs" },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.25, "freq": 0.9549 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.25, "freq": 0.9549 }
+      ]
+    },
+    "walk.ball": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "base": 0.04 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.4775 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.9549, "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "base", "prop": "pos.y", "amp": "gait.bob", "freq": 1.5915, "wave": "abs" },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.25, "freq": 0.9549 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.25, "freq": 0.9549 }
+      ]
+    },
+    "walk.walk4": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "base": 0.04 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.4775 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.9549, "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "base", "prop": "pos.y", "amp": "gait.bob", "freq": 1.5915, "wave": "abs" },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.25, "freq": 0.9549 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.25, "freq": 0.9549 }
+      ]
+    },
+    "walk.hover": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "base": 0.04 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.4775 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.9549, "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.25, "freq": 0.9549 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.25, "freq": 0.9549 }
+      ]
+    },
+    "offline": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "rot.x", "base": 0.5 },
+        { "bone": "head", "prop": "rot.z", "base": 0.12 },
+        { "bone": "body", "prop": "pos.y", "base": -0.02 },
+        { "bone": "armL", "prop": "rot.x", "base": 0.2 },
+        { "bone": "armR", "prop": "rot.x", "base": 0.2 },
+        { "bone": "head", "prop": "lid", "base": 0.45 }
+      ]
+    },
+    "blink": {
+      "loop": true,
+      "channels": [
+        { "bone": "head", "prop": "lid", "base": 1, "amp": -0.9, "freq": 0.2778, "wave": "pulse", "duty": 0.0389, "snap": true }
+      ]
+    },
+    "wave": {
+      "loop": true,
+      "channels": [
+        { "bone": "armR", "prop": "rot.z", "base": 2.5 },
+        { "bone": "armL", "prop": "rot.z", "base": -0.25 },
+        { "bone": "head", "prop": "rot.z", "base": -0.15 }
+      ]
+    },
+    "proud": {
+      "loop": true,
+      "channels": [
+        { "bone": "armL", "prop": "rot.z", "base": -0.55 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.55 },
+        { "bone": "head", "prop": "rot.x", "base": -0.12 }
+      ]
+    },
+    "think": {
+      "loop": true,
+      "channels": [
+        { "bone": "armR", "prop": "rot.x", "base": -1.9 },
+        { "bone": "armR", "prop": "rot.z", "base": -0.35 },
+        { "bone": "head", "prop": "rot.z", "base": 0.2 },
+        { "bone": "head", "prop": "rot.x", "base": 0.08 }
+      ]
+    },
+    "cheer": {
+      "loop": true,
+      "channels": [
+        { "bone": "armL", "prop": "rot.z", "base": -2.7 },
+        { "bone": "armR", "prop": "rot.z", "base": 2.7 },
+        { "bone": "head", "prop": "rot.x", "base": -0.15 }
+      ]
+    },
+    "walk.hop": {
+      "loop": true,
+      "channels": [
+        { "bone": "base", "prop": "pos.y", "amp": "gait.bob", "freq": 1.6, "wave": "halfsin" },
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": 1.6, "wave": "halfsin" },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "head", "prop": "rot.x", "amp": 0.05, "freq": 1.6, "wave": "halfsin" },
+        { "bone": "armL", "prop": "rot.z", "base": -0.35, "amp": 0.12, "freq": 1.6 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.35, "amp": -0.12, "freq": 1.6 }
+      ]
+    },
+    "walk.scuttle": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.x", "amp": 0.03, "freq": 1.4 },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 1.4 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 1.4 },
+        { "bone": "armL", "prop": "rot.z", "amp": 0.1, "freq": 1.4 },
+        { "bone": "armR", "prop": "rot.z", "amp": -0.1, "freq": 1.4 }
+      ]
+    },
+    "walk.float": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": 0.03, "freq": 0.5 },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.5 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.15, "freq": 0.5 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.15, "freq": 0.5 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.5 }
+      ]
+    },
+    "walk.fly": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": 0.02, "freq": 3.0 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 1.5 },
+        { "bone": "armL", "prop": "rot.x", "base": -0.2, "amp": 0.1, "freq": 3.0 },
+        { "bone": "armR", "prop": "rot.x", "base": -0.2, "amp": -0.1, "freq": 3.0 }
+      ]
+    },
+    "walk.slither": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.6 },
+        { "bone": "body", "prop": "rot.y", "amp": 0.05, "freq": 0.6 },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.6 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.08, "freq": 0.6 },
+        { "bone": "head", "prop": "rot.x", "base": 0.1 },
+        { "bone": "armL", "prop": "rot.z", "amp": 0.1, "freq": 0.6 },
+        { "bone": "armR", "prop": "rot.z", "amp": -0.1, "freq": 0.6 }
+      ]
+    },
+    "walk.tumble": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "rot.x", "base": 0.7854, "amp": 0.7854, "freq": 1.0, "wave": "saw", "snap": true },
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": 0.5, "wave": "abs" },
+        { "bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 1.0 },
+        { "bone": "armL", "prop": "rot.z", "base": -0.3, "amp": 0.15, "freq": 1.0 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.3, "amp": -0.15, "freq": 1.0 }
+      ]
+    },
+    "walk.walk2": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": 0.715, "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.715 },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.715 },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.3, "freq": 0.715 },
+        { "bone": "armR", "prop": "rot.x", "amp": -0.3, "freq": 0.715 }
+      ]
+    },
+    "walk.waddle": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549 },
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": 1.9098, "wave": "abs" },
+        { "bone": "body", "prop": "rot.x", "base": "gait.lean" },
+        { "bone": "head", "prop": "rot.z", "amp": "gait.sway", "freq": 0.9549, "phase": 3.1416 },
+        { "bone": "armL", "prop": "rot.z", "base": -0.3, "amp": 0.25, "freq": 0.9549 },
+        { "bone": "armR", "prop": "rot.z", "base": 0.3, "amp": -0.25, "freq": 0.9549 }
+      ]
+    },
+    "walk.unicycle": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": "gait.freq" },
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": "gait.freq", "wave": "abs" },
+        { "bone": "armL", "prop": "rot.z", "amp": 0.3, "freq": "gait.freq" },
+        { "bone": "armR", "prop": "rot.z", "amp": -0.3, "freq": "gait.freq" },
+        { "bone": "head", "prop": "rot.z", "amp": 0.05, "freq": "gait.freq" }
+      ]
+    },
+    "walk.walk6": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": "gait.freq", "wave": "abs" },
+        { "bone": "head", "prop": "rot.z", "amp": 0.06, "freq": "gait.freq" },
+        { "bone": "armL", "prop": "rot.z", "amp": 0.12, "freq": "gait.freq" },
+        { "bone": "armR", "prop": "rot.z", "amp": -0.12, "freq": "gait.freq" }
+      ]
+    },
+    "walk.bounce": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": "gait.freq", "wave": "abs" },
+        { "bone": "body", "prop": "scale", "base": 1, "amp": -0.06, "freq": "gait.freq", "wave": "abs", "phase": 1.5708 },
+        { "bone": "head", "prop": "rot.x", "amp": 0.05, "freq": "gait.freq", "phase": 1.5708 },
+        { "bone": "armL", "prop": "rot.z", "amp": 0.2, "freq": "gait.freq" },
+        { "bone": "armR", "prop": "rot.z", "amp": -0.2, "freq": "gait.freq" }
+      ]
+    },
+    "draw": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.1, "amp": 0.1, "freq": 1.4},
+        {"bone": "armR", "prop": "rot.z", "amp": 0.12, "freq": 0.7, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.x", "base": -0.6},
+        {"bone": "armL", "prop": "rot.z", "base": -0.2},
+        {"bone": "head", "prop": "rot.x", "base": 0.28, "amp": 0.03, "freq": 0.3},
+        {"bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.25},
+        {"bone": "body", "prop": "pos.y", "amp": 0.004, "freq": 1.4}
+      ]
+    },
+    "write": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -0.9, "amp": 0.12, "freq": 1.1},
+        {"bone": "armR", "prop": "rot.x", "base": -0.9, "amp": -0.12, "freq": 1.1},
+        {"bone": "head", "prop": "rot.x", "base": 0.3, "amp": 0.03, "freq": 0.4},
+        {"bone": "head", "prop": "rot.z", "amp": 0.03, "freq": 0.2}
+      ]
+    },
+    "sticky": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.3, "amp": -0.3, "wave": "pulse", "duty": 0.3, "freq": 0.6},
+        {"bone": "armR", "prop": "rot.z", "base": 0.2},
+        {"bone": "armL", "prop": "rot.x", "base": -0.7},
+        {"bone": "armL", "prop": "rot.z", "base": -0.3},
+        {"bone": "head", "prop": "rot.x", "base": -0.05},
+        {"bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.3}
+      ]
+    },
+    "read": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -1.0},
+        {"bone": "armR", "prop": "rot.x", "base": -1.0},
+        {"bone": "armL", "prop": "rot.z", "base": -0.2},
+        {"bone": "armR", "prop": "rot.z", "base": 0.2, "amp": 0.15, "wave": "pulse", "duty": 0.08, "freq": 0.25},
+        {"bone": "head", "prop": "rot.x", "base": 0.35},
+        {"bone": "head", "prop": "rot.z", "amp": 0.03, "freq": 0.2}
+      ]
+    },
+    "talk": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.z", "base": 0.35, "amp": 0.25, "freq": 1.6},
+        {"bone": "armR", "prop": "rot.x", "base": -0.5, "amp": 0.1, "freq": 1.6, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.z", "base": -0.3, "amp": -0.2, "freq": 1.3, "phase": 3.1416},
+        {"bone": "armL", "prop": "rot.x", "base": -0.4},
+        {"bone": "head", "prop": "rot.x", "base": 0.05, "amp": 0.06, "freq": 1.6, "wave": "abs"},
+        {"bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.5},
+        {"bone": "body", "prop": "pos.y", "amp": 0.004, "freq": 1.6, "wave": "abs"}
+      ],
+      "fx": [{"kind": "dots", "at": "head", "every": 1.6}]
+    },
+    "listen": {
+      "loop": true,
+      "channels": [
+        {"bone": "head", "prop": "rot.z", "base": 0.22, "amp": 0.03, "freq": 0.15},
+        {"bone": "head", "prop": "rot.x", "base": 0.08, "amp": 0.03, "freq": 0.4},
+        {"bone": "body", "prop": "rot.z", "base": 0.06},
+        {"bone": "armL", "prop": "rot.x", "base": 0.1},
+        {"bone": "armR", "prop": "rot.x", "base": 0.1},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1}
+      ]
+    },
+    "point": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.5, "amp": 0.05, "freq": 0.7},
+        {"bone": "armR", "prop": "rot.z", "base": 0.15},
+        {"bone": "armL", "prop": "rot.x", "base": -0.2},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "head", "prop": "rot.z", "base": -0.2},
+        {"bone": "head", "prop": "rot.x", "base": -0.05},
+        {"bone": "body", "prop": "rot.y", "base": -0.25}
+      ]
+    },
+    "celebrate": {
+      "loop": false,
+      "dur": 2.2,
+      "channels": [
+        {"bone": "armL", "prop": "rot.z", "amp": -2.7, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "armR", "prop": "rot.z", "amp": 2.7, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "body", "prop": "pos.y", "amp": 0.12, "freq": 2.2, "wave": "abs", "env": "in-out"},
+        {"bone": "head", "prop": "rot.x", "base": -0.15}
+      ],
+      "fx": [{"kind": "confetti", "at": "head", "every": 0.12}]
+    },
+    "nap": {
+      "loop": true,
+      "channels": [
+        {"bone": "head", "prop": "rot.x", "base": 0.5},
+        {"bone": "head", "prop": "rot.z", "base": 0.1},
+        {"bone": "head", "prop": "lid", "base": 0.1},
+        {"bone": "body", "prop": "rot.x", "base": 0.18},
+        {"bone": "body", "prop": "pos.y", "base": -0.02, "amp": 0.012, "freq": 0.25},
+        {"bone": "armL", "prop": "rot.x", "base": 0.25},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "armR", "prop": "rot.x", "base": 0.25},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1}
+      ],
+      "fx": [{"kind": "zzz", "at": "head", "every": 1.4}]
+    },
+    "stretch": {
+      "loop": false,
+      "dur": 2.4,
+      "channels": [
+        {"bone": "armL", "prop": "rot.z", "amp": -2.6, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "armR", "prop": "rot.z", "amp": 2.6, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "body", "prop": "rot.x", "amp": -0.18, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "head", "prop": "rot.x", "amp": -0.2, "env": "in-out", "wave": "pulse", "duty": 1}
+      ]
+    },
+    "dance": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.z", "base": -0.9, "amp": 0.9, "freq": 1.0},
+        {"bone": "armR", "prop": "rot.z", "base": 0.9, "amp": -0.9, "freq": 1.0},
+        {"bone": "body", "prop": "rot.z", "amp": 0.12, "freq": 1.0},
+        {"bone": "body", "prop": "pos.y", "amp": 0.03, "freq": 2.0, "wave": "abs"},
+        {"bone": "head", "prop": "rot.z", "amp": 0.1, "freq": 1.0, "phase": 1.5708},
+        {"bone": "head", "prop": "rot.x", "base": 0.04, "amp": 0.03, "freq": 2.0, "wave": "abs"}
+      ]
+    },
+    "sweep": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -1.0},
+        {"bone": "armR", "prop": "rot.x", "base": -1.0},
+        {"bone": "armL", "prop": "rot.z", "base": -0.15},
+        {"bone": "armR", "prop": "rot.z", "base": 0.15},
+        {"bone": "body", "prop": "rot.y", "amp": 0.3, "freq": 0.5},
+        {"bone": "head", "prop": "rot.x", "base": 0.3},
+        {"bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.5}
+      ]
+    },
+    "carry": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -1.1},
+        {"bone": "armR", "prop": "rot.x", "base": -1.1},
+        {"bone": "armL", "prop": "rot.z", "base": 0.2},
+        {"bone": "armR", "prop": "rot.z", "base": -0.2},
+        {"bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 1.2, "wave": "abs"},
+        {"bone": "head", "prop": "rot.x", "base": 0.15},
+        {"bone": "head", "prop": "rot.z", "amp": 0.04, "freq": 0.6}
+      ]
+    },
+    "hold": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -0.95},
+        {"bone": "armR", "prop": "rot.x", "base": -0.95},
+        {"bone": "armL", "prop": "rot.z", "base": 0.12},
+        {"bone": "armR", "prop": "rot.z", "base": -0.12},
+        {"bone": "body", "prop": "pos.y", "amp": 0.005, "freq": 0.35},
+        {"bone": "head", "prop": "rot.x", "base": 0.12},
+        {"bone": "head", "prop": "rot.z", "amp": 0.03, "freq": 0.2}
+      ]
+    },
+    "solder": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.2, "amp": 0.02, "freq": 9},
+        {"bone": "armR", "prop": "rot.z", "base": 0.05, "amp": 0.02, "freq": 9, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.x", "base": -0.8},
+        {"bone": "armL", "prop": "rot.z", "base": 0.15},
+        {"bone": "head", "prop": "rot.x", "base": 0.45},
+        {"bone": "head", "prop": "rot.z", "base": 0.1},
+        {"bone": "body", "prop": "pos.y", "amp": 0.002, "freq": 0.4}
+      ],
+      "fx": [{"kind": "sparks", "at": "gripR", "every": 0.35}]
+    },
+    "screw": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.0, "amp": 0.08, "freq": 1.6},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1, "amp": 0.1, "freq": 1.6, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.x", "base": -0.7},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 1.6, "wave": "abs"},
+        {"bone": "head", "prop": "rot.x", "base": 0.3},
+        {"bone": "head", "prop": "rot.z", "base": 0.05}
+      ]
+    },
+    "hammer": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.4, "amp": -0.8, "wave": "saw", "freq": 0.9},
+        {"bone": "armL", "prop": "rot.x", "base": -0.7},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "head", "prop": "rot.x", "base": 0.25},
+        {"bone": "body", "prop": "pos.y", "amp": -0.01, "freq": 0.9, "wave": "saw"}
+      ],
+      "fx": [{"kind": "sparks", "at": "gripR", "every": 0.9}]
+    },
+    "probe": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.15, "amp": 0.08, "freq": 0.7},
+        {"bone": "armR", "prop": "rot.z", "base": 0.05, "amp": 0.06, "freq": 0.7, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.x", "base": -0.6},
+        {"bone": "armL", "prop": "rot.z", "base": -0.2},
+        {"bone": "head", "prop": "rot.x", "base": 0.3},
+        {"bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.5}
+      ]
+    },
+    "inspect": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.6},
+        {"bone": "armR", "prop": "rot.z", "base": 0.25},
+        {"bone": "armL", "prop": "rot.x", "base": -0.5},
+        {"bone": "armL", "prop": "rot.z", "base": -0.15},
+        {"bone": "head", "prop": "rot.x", "base": -0.05},
+        {"bone": "head", "prop": "rot.z", "amp": 0.18, "freq": 0.22},
+        {"bone": "body", "prop": "rot.y", "amp": 0.12, "freq": 0.22}
+      ]
+    },
+    "pour": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.2},
+        {"bone": "armR", "prop": "rot.z", "base": 0.35, "amp": 0.7, "wave": "tri", "freq": 0.3},
+        {"bone": "armL", "prop": "rot.x", "base": -0.7},
+        {"bone": "armL", "prop": "rot.z", "base": -0.2},
+        {"bone": "head", "prop": "rot.x", "base": 0.4}
+      ],
+      "fx": [{"kind": "bubbles", "at": "gripR", "every": 0.4}]
+    },
+    "microscope": {
+      "loop": true,
+      "channels": [
+        {"bone": "head", "prop": "rot.x", "base": 0.6},
+        {"bone": "head", "prop": "rot.z", "base": 0.05},
+        {"bone": "armR", "prop": "rot.x", "base": -0.9, "amp": 0.04, "freq": 1.0},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1},
+        {"bone": "armL", "prop": "rot.x", "base": -0.4},
+        {"bone": "armL", "prop": "rot.z", "base": -0.05},
+        {"bone": "body", "prop": "rot.x", "base": 0.12},
+        {"bone": "body", "prop": "pos.y", "base": -0.02}
+      ]
+    },
+    "water": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.3, "amp": 0.05, "freq": 0.6},
+        {"bone": "armR", "prop": "rot.z", "base": 0.2, "amp": 0.06, "freq": 0.6, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.x", "base": -0.4},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "head", "prop": "rot.x", "base": 0.35},
+        {"bone": "head", "prop": "rot.z", "amp": 0.05, "freq": 0.3},
+        {"bone": "body", "prop": "rot.x", "base": 0.08}
+      ],
+      "fx": [{"kind": "bubbles", "at": "gripR", "every": 0.5}]
+    },
+    "count": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -0.9, "amp": 0.15, "freq": 2.2},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1, "amp": 0.12, "freq": 2.2, "phase": 1.5708},
+        {"bone": "armL", "prop": "rot.x", "base": -0.8, "amp": 0.12, "freq": 2.2, "phase": 3.1416},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "head", "prop": "rot.x", "base": 0.35},
+        {"bone": "head", "prop": "rot.z", "amp": 0.04, "freq": 0.5}
+      ]
+    },
+    "stamp": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.2, "amp": -0.4, "wave": "pulse", "duty": 0.25, "freq": 0.8},
+        {"bone": "armL", "prop": "rot.x", "base": -0.7},
+        {"bone": "armL", "prop": "rot.z", "base": -0.15},
+        {"bone": "head", "prop": "rot.x", "base": 0.25},
+        {"bone": "body", "prop": "pos.y", "amp": -0.01, "wave": "pulse", "duty": 0.25, "freq": 0.8}
+      ]
+    },
+    "conduct": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.2, "amp": -0.25, "freq": 2.0, "wave": "abs"},
+        {"bone": "armR", "prop": "rot.z", "base": 0.2, "amp": 0.3, "freq": 0.5},
+        {"bone": "armL", "prop": "rot.x", "base": -0.9, "amp": 0.1, "freq": 0.5, "phase": 3.1416},
+        {"bone": "armL", "prop": "rot.z", "base": -0.3, "amp": -0.2, "freq": 0.5, "phase": 3.1416},
+        {"bone": "head", "prop": "rot.x", "base": 0.08, "amp": 0.03, "freq": 2.0, "wave": "abs"}
+      ]
+    },
+    "speech": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.45},
+        {"bone": "armR", "prop": "rot.z", "base": 0.15, "amp": 0.04, "freq": 0.5},
+        {"bone": "armL", "prop": "rot.z", "base": -0.8, "amp": -0.25, "freq": 1.3},
+        {"bone": "armL", "prop": "rot.x", "base": -0.3},
+        {"bone": "head", "prop": "rot.z", "amp": 0.1, "freq": 0.6},
+        {"bone": "head", "prop": "rot.x", "base": -0.05},
+        {"bone": "body", "prop": "pos.y", "amp": 0.006, "freq": 1.3, "wave": "abs"}
+      ]
+    },
+    "spray": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.4},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1, "amp": 0.08, "freq": 0.8},
+        {"bone": "armL", "prop": "rot.x", "base": -1.1},
+        {"bone": "armL", "prop": "rot.z", "base": 0.15},
+        {"bone": "body", "prop": "rot.x", "base": 0.1},
+        {"bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.8}
+      ],
+      "fx": [{"kind": "steam", "at": "gripR", "every": 0.2}]
+    },
+    "patrol": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -1.2},
+        {"bone": "armR", "prop": "rot.z", "base": 0.25, "amp": 0.35, "freq": 0.2},
+        {"bone": "armL", "prop": "rot.x", "base": -0.3},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "body", "prop": "rot.y", "amp": 0.25, "freq": 0.2},
+        {"bone": "head", "prop": "rot.z", "amp": 0.2, "freq": 0.2}
+      ],
+      "fx": [{"kind": "glow", "at": "gripR", "every": 0.3}]
+    },
+    "lay-cable": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -0.9, "amp": 0.1, "freq": 0.6},
+        {"bone": "armR", "prop": "rot.x", "base": -0.9, "amp": -0.1, "freq": 0.6},
+        {"bone": "armR", "prop": "rot.z", "base": 0.1},
+        {"bone": "body", "prop": "rot.x", "base": 0.2},
+        {"bone": "body", "prop": "pos.y", "amp": 0.01, "freq": 0.6, "wave": "abs"},
+        {"bone": "head", "prop": "rot.x", "base": 0.35}
+      ]
+    },
+    "shelve": {
+      "loop": true,
+      "channels": [
+        {"bone": "armR", "prop": "rot.x", "base": -0.8, "amp": -0.6, "freq": 0.5, "wave": "tri"},
+        {"bone": "armR", "prop": "rot.z", "base": 0.2},
+        {"bone": "armL", "prop": "rot.x", "base": -0.9},
+        {"bone": "armL", "prop": "rot.z", "base": -0.1},
+        {"bone": "head", "prop": "rot.z", "amp": 0.1, "freq": 0.5},
+        {"bone": "head", "prop": "rot.x", "base": -0.1}
+      ]
+    },
+    "measure": {
+      "loop": true,
+      "channels": [
+        {"bone": "armL", "prop": "rot.x", "base": -1.1},
+        {"bone": "armL", "prop": "rot.z", "base": -0.45, "amp": -0.05, "freq": 0.3},
+        {"bone": "armR", "prop": "rot.x", "base": -1.1},
+        {"bone": "armR", "prop": "rot.z", "base": 0.45, "amp": 0.05, "freq": 0.3, "phase": 3.1416},
+        {"bone": "head", "prop": "rot.x", "base": 0.3},
+        {"bone": "head", "prop": "rot.z", "amp": 0.04, "freq": 0.3}
+      ]
+    },
+    "highfive": {
+      "loop": false,
+      "dur": 1.2,
+      "channels": [
+        {"bone": "armR", "prop": "rot.z", "amp": 2.3, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "armR", "prop": "rot.x", "amp": -0.6, "env": "in-out", "wave": "pulse", "duty": 1},
+        {"bone": "body", "prop": "rot.y", "base": -0.2}
+      ]
+    },
+    "sit": {
+      "loop": true,
+      "channels": [
+        {"bone": "body", "prop": "pos.y", "base": -0.05},
+        {"bone": "body", "prop": "rot.x", "base": 0.05},
+        {"bone": "armL", "prop": "rot.x", "base": 0.25},
+        {"bone": "armR", "prop": "rot.x", "base": 0.25},
+        {"bone": "armL", "prop": "rot.z", "base": -0.12},
+        {"bone": "armR", "prop": "rot.z", "base": 0.12},
+        {"bone": "head", "prop": "rot.x", "base": 0.08},
+        {"bone": "head", "prop": "rot.z", "amp": 0.06, "freq": 0.2}
+      ]
+    },
+    "gaze": {
+      "loop": true,
+      "channels": [
+        {"bone": "head", "prop": "rot.x", "base": -0.18, "amp": 0.04, "freq": 0.1},
+        {"bone": "head", "prop": "rot.z", "base": 0.12, "amp": 0.18, "freq": 0.07},
+        {"bone": "head", "prop": "lid", "base": 0.6},
+        {"bone": "armL", "prop": "rot.x", "base": 0.08},
+        {"bone": "armR", "prop": "rot.x", "base": 0.08},
+        {"bone": "body", "prop": "pos.y", "amp": 0.008, "freq": 0.2}
+      ]
+    }
+  }
+}

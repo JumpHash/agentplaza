@@ -30,6 +30,7 @@ apz-uds = { path = "crates/apz-uds" }
 windows-sys = "0.61"
 ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
+blake2 = "0.10"
 hmac = "0.12"
 
 # Debug builds keep line tables only (backtraces still name file:line) and

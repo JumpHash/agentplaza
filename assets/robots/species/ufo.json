@@ -1,0 +1,290 @@
+{
+  "schema": 1,
+  "id": "ufo",
+  "name": "Saucy",
+  "blurb": "A saucer with a glass cockpit and a little alien-bot face inside. Tiny arms, a tractor beam, and a wobble spin.",
+  "accent": "#8dff9e",
+  "height": 1.0,
+  "label_top": 1.15,
+  "locomotion": "hover",
+  "gait": {
+    "speed": 1,
+    "freq": 0.9549,
+    "bob": 0.012,
+    "sway": 0.05,
+    "lean": 0,
+    "sideways": false
+  },
+  "bones": {
+    "base": {"parent": "root", "at": [0, 0, 0]},
+    "body": {"parent": "root", "at": [0, 0.72, 0]},
+    "head": {"parent": "body", "at": [0, 0.1, 0]},
+    "armL": {"parent": "body", "at": [-0.5, -0.02, 0]},
+    "gripL": {"parent": "armL", "at": [0, -0.22, 0]},
+    "armR": {"parent": "body", "at": [0.5, -0.02, 0]},
+    "gripR": {"parent": "armR", "at": [0, -0.22, 0]},
+    "carry": {"parent": "body", "at": [0, -0.38, 0]}
+  },
+  "parts": [
+    {"bone": "base", "geo": {"type": "cyl", "rt": 0.18, "rb": 0.18, "h": 0.002, "seg": [20]}, "at": [0, 0.005, 0], "mat": "thruster", "outline": false},
+    {"bone": "body", "geo": {"type": "cyl", "rt": 0.5, "rb": 0.42, "h": 0.12, "seg": [28]}, "mat": "shell"},
+    {"bone": "body", "geo": {"type": "cyl", "rt": 0.28, "rb": 0.3, "h": 0.05, "seg": [24]}, "at": [0, -0.08, 0], "mat": "shell2", "outline": false},
+    {"bone": "body", "geo": {"type": "torus", "r": 0.5, "tube": 0.035, "seg": [8, 36]}, "rot": [90, 0, 0], "mat": "accent", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [0.52, 0, 0], "mat": "signal", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [0.26, 0, 0.45], "mat": "signal", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [-0.26, 0, 0.45], "mat": "signal", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [-0.52, 0, 0], "mat": "signal", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [-0.26, 0, -0.45], "mat": "signal", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [0.26, 0, -0.45], "mat": "signal", "outline": false},
+    {"bone": "body", "geo": {"type": "sphere", "r": 0.26, "seg": [24, 14], "half": "top"}, "at": [0, 0.06, 0], "mat": "clear", "outline": false},
+    {"bone": "head", "geo": {"type": "sphere", "r": 0.14, "seg": [16, 12]}, "at": [0, 0.04, 0], "mat": "accent"},
+    {"bone": "head", "geo": {"type": "cyl", "rt": 0.01, "rb": 0.01, "h": 0.1, "seg": [6]}, "at": [0, 0.2, 0], "mat": "ink", "outline": false},
+    {"bone": "head", "geo": {"type": "sphere", "r": 0.03, "seg": [8, 6]}, "at": [0, 0.27, 0], "mat": "signal", "outline": false},
+    {"bone": "armL", "geo": {"type": "cyl", "rt": 0.028, "rb": 0.024, "h": 0.2, "seg": [8]}, "at": [0, -0.1, 0], "mat": "shell", "outline": false},
+    {"bone": "armL", "geo": {"type": "sphere", "r": 0.05, "seg": [10, 8]}, "at": [0, -0.22, 0], "mat": "paper", "outline": false},
+    {"bone": "armR", "geo": {"type": "cyl", "rt": 0.028, "rb": 0.024, "h": 0.2, "seg": [8]}, "at": [0, -0.1, 0], "mat": "shell", "outline": false},
+    {"bone": "armR", "geo": {"type": "sphere", "r": 0.05, "seg": [10, 8]}, "at": [0, -0.22, 0], "mat": "paper", "outline": false},
+    {"bone": "carry", "geo": {"type": "cone", "r": 0.3, "h": 0.6, "seg": [20]}, "mat": {"color": "#d9fbff", "emissive": "#8ff3ff", "glow": 0.6, "opacity": 0.35}, "outline": false}
+  ],
+  "eyes": [
+    {"bone": "head", "at": [-0.06, 0.07, 0.12], "pupil": 0.045, "shape": "round", "glass": false},
+    {"bone": "head", "at": [0.06, 0.07, 0.12], "pupil": 0.045, "shape": "round", "glass": false}
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": true,
+  "personality": {
+    "social": 5,
+    "energy": 6,
+    "focus": 5,
+    "curiosity": 9,
+    "play": 6,
+    "tidy": 5
+  },
+  "quirks": [
+    {
+      "clip": "saucy.beam",
+      "weight": 2
+    },
+    {
+      "clip": "saucy.wobble",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "saucy.beam": { "loop": false, "dur": 3.2, "channels": [
+      {"bone": "body", "prop": "pos.y", "amp": 0.12, "freq": 0, "phase": 1.5708, "env": "in-out"},
+      {"bone": "carry", "prop": "scale", "base": 1, "amp": 0.18, "freq": 1.8, "env": "in-out"},
+      {"bone": "head", "prop": "rot.x", "base": 0.25},
+      {"bone": "armL", "prop": "rot.z", "base": -0.5},
+      {"bone": "armR", "prop": "rot.z", "base": 0.5}
+    ] },
+    "saucy.wobble": { "loop": false, "dur": 2.6, "channels": [
+      {"bone": "body", "prop": "rot.y", "rate": 2.4166},
+      {"bone": "body", "prop": "rot.z", "amp": 0.16, "freq": 1.2, "env": "in-out"},
+      {"bone": "body", "prop": "rot.x", "amp": 0.08, "freq": 1.2, "phase": 1.5708, "env": "in-out"}
+    ] },
+    "saucy.type": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.25, "freq": 1.75},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.08, "freq": 1.2},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.05, "freq": 0.8}
+    ] },
+    "saucy.hold": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.0, "amp": 0.02, "freq": 0.5},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "body", "prop": "pos.y", "base": 0, "amp": 0.005, "freq": 0.35},
+      {"bone": "head", "prop": "rot.x", "base": 0.12, "amp": 0.03, "freq": 0.2}
+    ] },
+    "saucy.solder": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.0, "amp": 0.1, "freq": 2.4},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.08, "freq": 2.4},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.05, "freq": 1.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.25, "amp": 0.03, "freq": 1.2}
+    ], "fx": [{"kind": "sparks", "at": "gripR", "every": 0.35}] },
+    "saucy.screw": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.y", "base": 0.0, "amp": 0.9, "freq": 1.2},
+      {"bone": "armR", "prop": "rot.x", "base": 0.05, "amp": 0.05, "freq": 1.2},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.02, "freq": 0.6}
+    ] },
+    "saucy.hammer": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.0, "amp": 0.35, "freq": 1.2},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.05, "freq": 1.2},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.04, "freq": 1.2}
+    ], "fx": [{"kind": "sparks", "at": "gripR", "every": 0.6}] },
+    "saucy.probe": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.12, "amp": 0.12, "freq": 0.9},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.1, "freq": 0.9},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.25, "amp": 0.04, "freq": 0.6}
+    ] },
+    "saucy.inspect": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "body", "prop": "rot.y", "base": 0.0, "amp": 0.5, "freq": 0.25},
+      {"bone": "armR", "prop": "rot.x", "base": 0.05, "amp": 0.03, "freq": 0.25},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.3, "amp": 0.05, "freq": 0.25}
+    ] },
+    "saucy.measure": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.0, "amp": 0.12, "freq": 0.5},
+      {"bone": "body", "prop": "rot.y", "base": 0.0, "amp": 0.2, "freq": 0.4},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.02, "freq": 0.4}
+    ] },
+    "saucy.write": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.05, "amp": 0.12, "freq": 2.0},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.04, "freq": 2.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.3, "amp": 0.03, "freq": 0.8}
+    ] },
+    "saucy.draw": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.0, "amp": 0.2, "freq": 0.8},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.05, "freq": 0.8},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.02, "freq": 0.8}
+    ] },
+    "saucy.sticky": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.15, "freq": 1.0},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.1, "freq": 1.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.03, "freq": 1.0}
+    ] },
+    "saucy.read": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.02, "freq": 0.3},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.35, "amp": 0.04, "freq": 0.3},
+      {"bone": "head", "prop": "rot.z", "base": 0.0, "amp": 0.06, "freq": 0.3}
+    ] },
+    "saucy.count": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.05, "amp": 0.12, "freq": 1.4},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.05, "freq": 1.4},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.03, "freq": 1.4}
+    ] },
+    "saucy.stamp": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.2, "amp": 0.25, "freq": 0.6},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "body", "prop": "pos.y", "base": 0, "amp": 0.01, "freq": 0.6},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.02, "freq": 0.6}
+    ] },
+    "saucy.pour": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.15, "amp": 0.1, "freq": 0.5},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.03, "freq": 0.5}
+    ] },
+    "saucy.microscope": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.03, "freq": 0.4},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "body", "prop": "pos.y", "base": 0, "amp": 0.01, "freq": 0.4},
+      {"bone": "head", "prop": "rot.x", "base": 0.35, "amp": 0.04, "freq": 0.4}
+    ] },
+    "saucy.water": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.15, "amp": 0.15, "freq": 0.8},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.08, "freq": 0.8},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.03, "freq": 0.8}
+    ] },
+    "saucy.spray": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.25, "amp": 0.08, "freq": 1.5},
+      {"bone": "armR", "prop": "rot.z", "base": 0.0, "amp": 0.1, "freq": 1.5},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.15, "amp": 0.02, "freq": 1.5}
+    ] },
+    "saucy.shelve": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.x", "base": 0.15, "amp": 0.15, "freq": 0.7},
+      {"bone": "body", "prop": "pos.y", "base": 0, "amp": 0.01, "freq": 0.7},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.1, "freq": 0.7},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.02, "freq": 0.7}
+    ] },
+    "saucy.conduct": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.0, "amp": 0.22, "freq": 1.0},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.22, "freq": 1.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.1, "amp": 0.03, "freq": 1.0}
+    ] },
+    "saucy.lay-cable": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.z", "base": 0.1, "amp": 0.12, "freq": 0.6},
+      {"bone": "body", "prop": "pos.y", "base": 0, "amp": 0.01, "freq": 0.6},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.x", "base": 0.3, "amp": 0.02, "freq": 0.6}
+    ] },
+    "saucy.patrol": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "body", "prop": "rot.y", "base": 0.0, "amp": 0.35, "freq": 0.3},
+      {"bone": "armR", "prop": "rot.z", "base": 0.12, "amp": 0.05, "freq": 0.3},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "head", "prop": "rot.z", "base": 0.0, "amp": 0.06, "freq": 0.3}
+    ] },
+    "saucy.sweep": { "loop": true, "channels": [
+      {"bone": "armR", "prop": "pos.x", "base": -0.5, "amp": 0.0, "freq": 0.0},
+      {"bone": "gripR", "prop": "rot.x", "base": 1.5708, "amp": 0.0, "freq": 0.0},
+      {"bone": "armR", "prop": "rot.y", "base": 0.0, "amp": 0.7, "freq": 0.4},
+      {"bone": "armR", "prop": "rot.x", "base": 0.1, "amp": 0.03, "freq": 0.4},
+      {"bone": "body", "prop": "rot.y", "base": 0.0, "amp": 0.25, "freq": 0.4},
+      {"bone": "armL", "prop": "rot.z", "base": 0.5, "amp": 0.05, "freq": 0.4},
+      {"bone": "head", "prop": "rot.x", "base": 0.2, "amp": 0.02, "freq": 0.4}
+    ] }
+  },
+  "overrides": {
+    "type": "saucy.type",
+    "hold": "saucy.hold",
+    "solder": "saucy.solder",
+    "screw": "saucy.screw",
+    "hammer": "saucy.hammer",
+    "probe": "saucy.probe",
+    "inspect": "saucy.inspect",
+    "measure": "saucy.measure",
+    "write": "saucy.write",
+    "draw": "saucy.draw",
+    "sticky": "saucy.sticky",
+    "read": "saucy.read",
+    "count": "saucy.count",
+    "stamp": "saucy.stamp",
+    "pour": "saucy.pour",
+    "microscope": "saucy.microscope",
+    "water": "saucy.water",
+    "spray": "saucy.spray",
+    "shelve": "saucy.shelve",
+    "conduct": "saucy.conduct",
+    "lay-cable": "saucy.lay-cable",
+    "patrol": "saucy.patrol",
+    "sweep": "saucy.sweep"
+  }
+}

@@ -19,6 +19,7 @@ import yaml
 PLANNING_ROLES = [
     "architect",
     "auditor",
+    "breeder",
     "builder",
     "edge-operator",
     "finance",

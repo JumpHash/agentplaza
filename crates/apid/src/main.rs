@@ -43,6 +43,7 @@ mod db;
 mod rules;
 mod control;
 mod lifecycle;
+mod looks;
 mod roles_custom;
 mod agent_proposals;
 mod nodes;

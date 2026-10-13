@@ -1,0 +1,360 @@
+{
+  "serving": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "prompt_chars": {
+          "type": "number"
+        },
+        "prompt_tokens": {
+          "type": "number"
+        },
+        "tool_count": {
+          "type": "number"
+        },
+        "history_turns": {
+          "type": "number"
+        },
+        "attachments": {
+          "type": "number"
+        },
+        "prior_failures": {
+          "type": "number"
+        },
+        "task_kind": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "tenant_tier": {
+          "type": "string"
+        },
+        "requested_model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_chars",
+        "prompt_tokens",
+        "tool_count",
+        "history_turns",
+        "attachments",
+        "prior_failures",
+        "task_kind",
+        "domain",
+        "tenant_tier",
+        "requested_model"
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "enum": [
+            "cheap",
+            "mid",
+            "frontier"
+          ]
+        },
+        "probabilities": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "label",
+        "probabilities"
+      ]
+    },
+    "features": [
+      {
+        "name": "prompt_chars",
+        "kind": "numeric",
+        "transform": "signlog"
+      },
+      {
+        "name": "prompt_tokens",
+        "kind": "numeric",
+        "transform": "signlog"
+      },
+      {
+        "name": "tool_count",
+        "kind": "numeric",
+        "transform": "signlog"
+      },
+      {
+        "name": "history_turns",
+        "kind": "numeric",
+        "transform": "signlog"
+      },
+      {
+        "name": "attachments",
+        "kind": "numeric",
+        "transform": "signlog"
+      },
+      {
+        "name": "prior_failures",
+        "kind": "numeric",
+        "transform": "signlog"
+      },
+      {
+        "name": "task_kind",
+        "kind": "hash",
+        "hash": "blake2b",
+        "digest_size": 8,
+        "buckets": 4096,
+        "input": "key=value",
+        "byte_order": "little"
+      },
+      {
+        "name": "domain",
+        "kind": "hash",
+        "hash": "blake2b",
+        "digest_size": 8,
+        "buckets": 4096,
+        "input": "key=value",
+        "byte_order": "little"
+      },
+      {
+        "name": "tenant_tier",
+        "kind": "hash",
+        "hash": "blake2b",
+        "digest_size": 8,
+        "buckets": 4096,
+        "input": "key=value",
+        "byte_order": "little"
+      },
+      {
+        "name": "requested_model",
+        "kind": "hash",
+        "hash": "blake2b",
+        "digest_size": 8,
+        "buckets": 4096,
+        "input": "key=value",
+        "byte_order": "little"
+      }
+    ],
+    "allowed_roles": [
+      "orchestrator",
+      "builder",
+      "plaza"
+    ],
+    "output_activation": "logits",
+    "labels": [
+      "cheap",
+      "mid",
+      "frontier"
+    ]
+  },
+  "rows": [
+    {
+      "input": {
+        "prompt_chars": 0,
+        "prompt_tokens": -3.5,
+        "tool_count": 1000000.0,
+        "history_turns": 1e-06,
+        "attachments": 0.25,
+        "prior_failures": -1000000.0,
+        "task_kind": "chat",
+        "domain": "code",
+        "tenant_tier": "café",
+        "requested_model": "日本語"
+      },
+      "features": [
+        0.0,
+        -1.5040773967762742,
+        13.815511557963774,
+        9.999995000003334e-07,
+        0.22314355131420976,
+        -13.815511557963774,
+        3629.0,
+        956.0,
+        3543.0,
+        888.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": -3.5,
+        "prompt_tokens": 1000000.0,
+        "tool_count": 1e-06,
+        "history_turns": 0.25,
+        "attachments": -1000000.0,
+        "prior_failures": 7,
+        "task_kind": "code",
+        "domain": "café",
+        "tenant_tier": "日本語",
+        "requested_model": "emoji 🙂"
+      },
+      "features": [
+        -1.5040773967762742,
+        13.815511557963774,
+        9.999995000003334e-07,
+        0.22314355131420976,
+        -13.815511557963774,
+        2.0794415416798357,
+        2297.0,
+        2772.0,
+        3233.0,
+        2990.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": 1000000.0,
+        "prompt_tokens": 1e-06,
+        "tool_count": 0.25,
+        "history_turns": -1000000.0,
+        "attachments": 7,
+        "prior_failures": -1e-06,
+        "task_kind": "café",
+        "domain": "日本語",
+        "tenant_tier": "emoji 🙂",
+        "requested_model": "a=b"
+      },
+      "features": [
+        13.815511557963774,
+        9.999995000003334e-07,
+        0.22314355131420976,
+        -13.815511557963774,
+        2.0794415416798357,
+        -9.999995000003334e-07,
+        1190.0,
+        2111.0,
+        4044.0,
+        990.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": 1e-06,
+        "prompt_tokens": 0.25,
+        "tool_count": -1000000.0,
+        "history_turns": 7,
+        "attachments": -1e-06,
+        "prior_failures": 0,
+        "task_kind": "日本語",
+        "domain": "emoji 🙂",
+        "tenant_tier": "a=b",
+        "requested_model": ""
+      },
+      "features": [
+        9.999995000003334e-07,
+        0.22314355131420976,
+        -13.815511557963774,
+        2.0794415416798357,
+        -9.999995000003334e-07,
+        0.0,
+        1505.0,
+        2738.0,
+        3658.0,
+        58.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": 0.25,
+        "prompt_tokens": -1000000.0,
+        "tool_count": 7,
+        "history_turns": -1e-06,
+        "attachments": 0,
+        "prior_failures": -3.5,
+        "task_kind": "emoji 🙂",
+        "domain": "a=b",
+        "tenant_tier": "",
+        "requested_model": "tenant-ß"
+      },
+      "features": [
+        0.22314355131420976,
+        -13.815511557963774,
+        2.0794415416798357,
+        -9.999995000003334e-07,
+        0.0,
+        -1.5040773967762742,
+        2545.0,
+        2010.0,
+        2373.0,
+        451.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": -1000000.0,
+        "prompt_tokens": 7,
+        "tool_count": -1e-06,
+        "history_turns": 0,
+        "attachments": -3.5,
+        "prior_failures": 1000000.0,
+        "task_kind": "a=b",
+        "domain": "",
+        "tenant_tier": "tenant-ß",
+        "requested_model": "chat"
+      },
+      "features": [
+        -13.815511557963774,
+        2.0794415416798357,
+        -9.999995000003334e-07,
+        0.0,
+        -1.5040773967762742,
+        13.815511557963774,
+        718.0,
+        1518.0,
+        1040.0,
+        1099.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": 7,
+        "prompt_tokens": -1e-06,
+        "tool_count": 0,
+        "history_turns": -3.5,
+        "attachments": 1000000.0,
+        "prior_failures": 1e-06,
+        "task_kind": "",
+        "domain": "tenant-ß",
+        "tenant_tier": "chat",
+        "requested_model": "code"
+      },
+      "features": [
+        2.0794415416798357,
+        -9.999995000003334e-07,
+        0.0,
+        -1.5040773967762742,
+        13.815511557963774,
+        9.999995000003334e-07,
+        1237.0,
+        2156.0,
+        1515.0,
+        865.0
+      ]
+    },
+    {
+      "input": {
+        "prompt_chars": -1e-06,
+        "prompt_tokens": 0,
+        "tool_count": -3.5,
+        "history_turns": 1000000.0,
+        "attachments": 1e-06,
+        "prior_failures": 0.25,
+        "task_kind": "tenant-ß",
+        "domain": "chat",
+        "tenant_tier": "code",
+        "requested_model": "café"
+      },
+      "features": [
+        -9.999995000003334e-07,
+        0.0,
+        -1.5040773967762742,
+        13.815511557963774,
+        9.999995000003334e-07,
+        0.22314355131420976,
+        3668.0,
+        187.0,
+        2715.0,
+        445.0
+      ]
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "id": "ladybug",
+  "name": "Dot",
+  "blurb": "A spotted red dome on six legs, with wing covers that lift to show clear wings beneath. Spots twinkle.",
+  "accent": "#e8362d",
+  "height": 1.0,
+  "label_top": 0.9,
+  "locomotion": "walk6",
+  "gait": { "speed": 0.9, "freq": 2.4, "bob": 0.02, "sway": 0.0, "lean": 0.0, "sideways": false },
+  "bones": {
+    "base":   { "parent": "root", "at": [0, 0, 0] },
+    "body":   { "parent": "base", "at": [0, 0.24, 0] },
+    "head":   { "parent": "body", "at": [0, 0.1, 0.26] },
+    "coverL": { "parent": "body", "at": [0, 0.12, 0] },
+    "coverR": { "parent": "body", "at": [0, 0.12, 0] },
+    "armL":   { "parent": "body", "at": [-0.22, -0.02, 0.18] },
+    "armR":   { "parent": "body", "at": [0.22, -0.02, 0.18] },
+    "gripL":  { "parent": "armL", "at": [0, -0.14, 0.1] },
+    "gripR":  { "parent": "armR", "at": [0, -0.14, 0.1] },
+    "carry":  { "parent": "body", "at": [0, 0.12, -0.2] },
+    "legA":   { "parent": "body", "at": [0, 0, 0] },
+    "legB":   { "parent": "body", "at": [0, 0, 0] }
+  },
+  "parts": [
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.28, "seg": [20, 12] }, "mat": "ink", "scale": [1.15, 0.35, 1.0], "outline": false },
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.28, "seg": [16, 10] }, "at": [0, 0.03, -0.36], "mat": "clear", "scale": [0.9, 0.06, 0.9], "outline": false },
+
+    { "bone": "head", "geo": { "type": "rbox", "w": 0.26, "h": 0.16, "d": 0.2, "r": 0.08, "seg": [3] }, "mat": "ink", "outline": false },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.008, "rb": 0.008, "h": 0.2, "seg": [6] }, "at": [-0.06, 0.16, 0.03], "rot": [0, 0, 14], "mat": "ink", "outline": false },
+    { "bone": "head", "geo": { "type": "cyl", "rt": 0.008, "rb": 0.008, "h": 0.2, "seg": [6] }, "at": [0.06, 0.16, 0.03], "rot": [0, 0, -14], "mat": "ink", "outline": false },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.018, "seg": [6, 4] }, "at": [-0.08, 0.27, 0.03], "mat": "paper", "outline": false },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.018, "seg": [6, 4] }, "at": [0.08, 0.27, 0.03], "mat": "paper", "outline": false },
+
+    { "bone": "coverL", "geo": { "type": "sphere", "r": 0.3, "seg": [20, 10], "half": "top" }, "at": [-0.165, 0, 0], "mat": "accent", "scale": [0.55, 0.55, 1.0], "outline": false },
+    { "bone": "coverR", "geo": { "type": "sphere", "r": 0.3, "seg": [20, 10], "half": "top" }, "at": [0.165, 0, 0], "mat": "accent", "scale": [0.55, 0.55, 1.0], "outline": false },
+
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.02, "rb": 0.014, "h": 0.2, "seg": [6] }, "at": [0, -0.1, 0], "rot": [-12, 0, -14], "mat": "ink", "outline": false },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.02, "rb": 0.014, "h": 0.2, "seg": [6] }, "at": [0, -0.1, 0], "rot": [-12, 0, 14], "mat": "ink", "outline": false },
+
+    { "bone": "legA", "geo": { "type": "cyl", "rt": 0.016, "rb": 0.012, "h": 0.24, "seg": [6] }, "at": [0.22, -0.12, 0], "rot": [0, 0, 35], "mat": "ink", "outline": false },
+    { "bone": "legA", "geo": { "type": "cyl", "rt": 0.016, "rb": 0.012, "h": 0.24, "seg": [6] }, "at": [-0.2, -0.12, -0.14], "rot": [0, 0, -35], "mat": "ink", "outline": false },
+    { "bone": "legB", "geo": { "type": "cyl", "rt": 0.016, "rb": 0.012, "h": 0.24, "seg": [6] }, "at": [-0.22, -0.12, 0], "rot": [0, 0, -35], "mat": "ink", "outline": false },
+    { "bone": "legB", "geo": { "type": "cyl", "rt": 0.016, "rb": 0.012, "h": 0.24, "seg": [6] }, "at": [0.2, -0.12, -0.14], "rot": [0, 0, 35], "mat": "ink", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [-0.07, 0.02, 0.1], "r": 0.05, "pupil": 0.035, "shape": "round" },
+    { "bone": "head", "at": [0.07, 0.02, 0.1], "r": 0.05, "pupil": 0.035, "shape": "round" },
+    { "bone": "coverL", "at": [-0.2, 0.13, 0.16], "pupil": 0.035, "shape": "round", "glass": false },
+    { "bone": "coverL", "at": [-0.1, 0.13, 0.14], "pupil": 0.035, "shape": "round", "glass": false },
+    { "bone": "coverR", "at": [0.2, 0.13, 0.16], "pupil": 0.035, "shape": "round", "glass": false },
+    { "bone": "coverR", "at": [0.1, 0.13, 0.14], "pupil": 0.035, "shape": "round", "glass": false }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 6, "energy": 6, "focus": 6, "curiosity": 7, "play": 6, "tidy": 6 },
+  "quirks": [{ "clip": "dot.flight", "weight": 3 }, { "clip": "dot.twinkle", "weight": 4 }],
+  "clips": {
+    "dot.walk": {
+      "loop": true,
+      "channels": [
+        { "bone": "legA", "prop": "rot.x", "amp": 0.45, "freq": "gait.freq", "phase": 0 },
+        { "bone": "legB", "prop": "rot.x", "amp": 0.45, "freq": "gait.freq", "phase": 3.1416 },
+        { "bone": "armL", "prop": "rot.x", "amp": 0.45, "freq": "gait.freq", "phase": 0 },
+        { "bone": "armR", "prop": "rot.x", "amp": 0.45, "freq": "gait.freq", "phase": 3.1416 },
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": "gait.freq", "wave": "abs" }
+      ]
+    },
+    "dot.type": {
+      "loop": true,
+      "channels": [
+        { "bone": "armR", "prop": "rot.x", "base": -0.7, "amp": 0.18, "freq": 1.75 },
+        { "bone": "armL", "prop": "rot.x", "base": -0.35, "amp": 0.08, "freq": 1.1 },
+        { "bone": "head", "prop": "rot.x", "base": 0.14, "amp": 0.08, "freq": 0.8 },
+        { "bone": "head", "prop": "rot.z", "amp": 0.04, "freq": 0.2 },
+        { "bone": "body", "prop": "pos.y", "amp": 0.004, "freq": 0.4 }
+      ]
+    },
+    "dot.flight": {
+      "loop": false,
+      "dur": 2.6,
+      "channels": [
+        { "bone": "coverL", "prop": "rot.z", "amp": -1.0, "freq": 0.19, "wave": "halfsin", "env": "in-out" },
+        { "bone": "coverR", "prop": "rot.z", "amp": 1.0, "freq": 0.19, "wave": "halfsin", "env": "in-out" },
+        { "bone": "body", "prop": "pos.y", "amp": 0.22, "freq": 0.19, "wave": "halfsin", "env": "in-out" }
+      ]
+    },
+    "dot.twinkle": {
+      "loop": false,
+      "dur": 2.4,
+      "channels": [
+        { "bone": "head", "prop": "lid", "base": 1, "amp": -0.6, "freq": 1.4, "wave": "pulse", "duty": 0.35, "snap": true }
+      ],
+      "fx": [{ "kind": "sparks", "at": "coverL", "every": 0.5 }, { "kind": "sparks", "at": "coverR", "every": 0.5 }]
+    }
+  },
+  "overrides": { "walk.walk6": "dot.walk", "type": "dot.type" }
+}

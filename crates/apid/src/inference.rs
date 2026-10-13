@@ -6,8 +6,6 @@
 //!
 //! The foundry's jobs and registry routes and the `invoke_model` tool wire this up next.
 
-// Not wired into a route yet: the foundry's registry and `invoke_model` call this next.
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
@@ -15,6 +13,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use blake2::Blake2b;
+use blake2::digest::consts::U8;
 use sha2::{Digest, Sha256};
 use tract_onnx::prelude::{
     Datum, Framework, InferenceFact, InferenceModelExt, IntoRunnable, TValue, Tensor,
@@ -105,6 +105,9 @@ pub struct ModelCard {
     pub created_ms: u64,
     #[serde(default)]
     pub metrics: Value,
+    /// The trainer's `serving` block, for a card the trainer wrote (see [`featurize_serving`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving: Option<Value>,
 }
 
 /// A model card with its ONNX graph compiled for inference at batch 1.
@@ -328,6 +331,131 @@ pub fn featurize(features: &[FeatureSpec], input: &Value) -> Result<Vec<f32>, St
     Ok(row)
 }
 
+/// The model's input length: a trainer card's feature count (each hash feature is one column, the
+/// bucket index), else the typed columns.
+fn row_width(card: &ModelCard) -> usize {
+    match &card.serving {
+        Some(serving) => serving.get("features").and_then(Value::as_array).map_or(0, Vec::len),
+        None => feature_width(&card.features),
+    }
+}
+
+/// The trainer's featurization, from a card's `serving` block (the trainer's `serving_schema()`),
+/// one column per feature in card order. `numeric` with transform `signlog` is sign(x) * ln(1 + |x|)
+/// (0 maps to 0); `zscore` is (x - mean) / std with `mean` and `std` on the feature. `hash` with
+/// blake2b (digest_size 8, little byte order) is the bucket of "key=value", where key is the feature
+/// name: the digest as a little-endian u64 modulo `buckets`, one column holding that index.
+/// Unlike the trainer's `encode`, a missing field is an error (the input schema requires them).
+pub fn featurize_serving(serving: &Value, input: &Value) -> Result<Vec<f64>, String> {
+    let object = input.as_object().ok_or("input must be a JSON object")?;
+    let features = serving
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or("serving: features must be an array")?;
+    let mut row = Vec::with_capacity(features.len());
+    for feature in features {
+        let name = feature
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("serving: a feature has no name")?;
+        let field = object
+            .get(name)
+            .ok_or_else(|| format!("missing feature field `{name}`"))?;
+        let value = match feature.get("kind").and_then(Value::as_str) {
+            Some("numeric") => {
+                let x = field
+                    .as_f64()
+                    .ok_or_else(|| format!("feature `{name}` must be a number"))?;
+                match feature.get("transform").and_then(Value::as_str) {
+                    Some("signlog") => x.signum() * x.abs().ln_1p(),
+                    Some("zscore") => {
+                        let mean = serving_f64(feature, "mean", name)?;
+                        let std = serving_f64(feature, "std", name)?;
+                        if std == 0.0 {
+                            return Err(format!("feature `{name}`: std is zero"));
+                        }
+                        (x - mean) / std
+                    }
+                    other => return Err(format!("feature `{name}`: unknown transform {other:?}")),
+                }
+            }
+            Some("hash") => {
+                let served = feature.get("hash").and_then(Value::as_str) == Some("blake2b")
+                    && feature.get("digest_size").and_then(Value::as_u64) == Some(8)
+                    && feature.get("byte_order").and_then(Value::as_str) == Some("little");
+                if !served {
+                    return Err(format!(
+                        "feature `{name}`: only blake2b, digest_size 8, little byte order is served"
+                    ));
+                }
+                let buckets = feature
+                    .get("buckets")
+                    .and_then(Value::as_u64)
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| format!("feature `{name}` has no buckets"))?;
+                let text = field
+                    .as_str()
+                    .ok_or_else(|| format!("feature `{name}` must be a string"))?;
+                let digest = Blake2b::<U8>::digest(format!("{name}={text}").as_bytes());
+                let bytes: [u8; 8] = digest.into();
+                (u64::from_le_bytes(bytes) % buckets) as f64
+            }
+            other => return Err(format!("feature `{name}`: unknown kind {other:?}")),
+        };
+        row.push(value);
+    }
+    Ok(row)
+}
+
+fn serving_f64(feature: &Value, key: &str, name: &str) -> Result<f64, String> {
+    feature
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|x| x.is_finite())
+        .ok_or_else(|| format!("feature `{name}` needs a finite `{key}`"))
+}
+
+#[cfg(test)]
+mod serving_parity {
+    use super::*;
+
+    /// The trainer's parity fixture: a serving block and rows of (input, expected features).
+    const FIXTURE: &str = include_str!("../../../trainer/tests/fixtures/featurize_parity.json");
+
+    #[test]
+    fn featurize_serving_reproduces_the_trainer_rows() {
+        let fixture: Value = serde_json::from_str(FIXTURE).expect("the parity fixture parses");
+        let rows = fixture["rows"].as_array().expect("the fixture has rows");
+        assert!(!rows.is_empty());
+        for (i, row) in rows.iter().enumerate() {
+            let got = featurize_serving(&fixture["serving"], &row["input"])
+                .unwrap_or_else(|e| panic!("row {i}: {e}"));
+            let want: Vec<f64> = row["features"]
+                .as_array()
+                .expect("expected features")
+                .iter()
+                .map(|x| x.as_f64().expect("a number"))
+                .collect();
+            assert_eq!(got.len(), want.len(), "row {i}: width");
+            for (j, (g, w)) in got.iter().zip(&want).enumerate() {
+                let hashed = fixture["serving"]["features"][j]["kind"] == "hash";
+                let ok = if hashed { g == w } else { (g - w).abs() <= 1e-12 };
+                assert!(ok, "row {i} column {j}: got {g}, want {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn logits_are_softmaxed_even_when_they_look_like_probabilities() {
+        let labels: Vec<String> = ["cheap", "mid", "frontier"].iter().map(|s| s.to_string()).collect();
+        let out = classify(&labels, &[0.2, 0.3, 0.5], true).unwrap();
+        let p = out["probabilities"]["frontier"].as_f64().unwrap();
+        let total: f64 = out["probabilities"].as_object().unwrap().values().map(|v| v.as_f64().unwrap()).sum();
+        assert_eq!(out["label"], "frontier");
+        assert!((p - 0.5).abs() > 0.1 && (total - 1.0).abs() < 1e-9);
+    }
+}
+
 /// FNV-1a, 64-bit. Unlike `DefaultHasher` its output is fixed, so a hashed feature keeps its
 /// columns across builds and machines.
 pub fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -385,7 +513,7 @@ impl LoadedModel {
                 card.onnx_sha256
             ));
         }
-        let width = feature_width(&card.features);
+        let width = row_width(&card);
         let model = tract_onnx::onnx()
             .model_for_read(&mut Cursor::new(onnx))
             .map_err(|e| format!("reading the ONNX graph: {e:#}"))?;
@@ -397,6 +525,7 @@ impl LoadedModel {
         Ok(Self { card, plan, width })
     }
 
+    #[allow(dead_code)] // for holders of a loaded model alone; the registry reads its own records
     pub fn card(&self) -> &ModelCard {
         &self.card
     }
@@ -409,7 +538,13 @@ impl LoadedModel {
             .input
             .validate(input)
             .map_err(|e| format!("input: {e}"))?;
-        let row = featurize(&self.card.features, input)?;
+        let row: Vec<f32> = match &self.card.serving {
+            Some(serving) => featurize_serving(serving, input)?
+                .into_iter()
+                .map(|x| x as f32)
+                .collect(),
+            None => featurize(&self.card.features, input)?,
+        };
         debug_assert_eq!(row.len(), self.width);
         let tensor = Tensor::from_shape(&[1, row.len()], &row)
             .map_err(|e| format!("input tensor: {e:#}"))?;
@@ -427,8 +562,15 @@ impl LoadedModel {
         if scores.iter().any(|s| !s.is_finite()) {
             return Err("the model produced a non-finite score".into());
         }
+        let logits = self
+            .card
+            .serving
+            .as_ref()
+            .and_then(|s| s.get("output_activation"))
+            .and_then(Value::as_str)
+            == Some("logits");
         let output = match &self.card.labels {
-            Some(labels) => classify(labels, &scores)?,
+            Some(labels) => classify(labels, &scores, logits)?,
             None => json!({ "values": scores }),
         };
         self.card
@@ -440,8 +582,8 @@ impl LoadedModel {
 }
 
 /// `{label, probabilities}` for the best class. The scores are used as they are when they already
-/// are probabilities (in [0, 1], summing to 1), else softmaxed.
-fn classify(labels: &[String], scores: &[f32]) -> Result<Value, String> {
+/// are probabilities (in [0, 1], summing to 1) and the card does not say `logits`, else softmaxed.
+fn classify(labels: &[String], scores: &[f32], logits: bool) -> Result<Value, String> {
     if scores.len() != labels.len() {
         return Err(format!(
             "the model produced {} scores for {} labels",
@@ -451,7 +593,7 @@ fn classify(labels: &[String], scores: &[f32]) -> Result<Value, String> {
     }
     let sum: f64 = scores.iter().map(|&s| f64::from(s)).sum();
     let probabilities: Vec<f64> =
-        if scores.iter().all(|s| (0.0..=1.0).contains(s)) && (sum - 1.0).abs() < 1e-3 {
+        if !logits && scores.iter().all(|s| (0.0..=1.0).contains(s)) && (sum - 1.0).abs() < 1e-3 {
             scores.iter().map(|&s| f64::from(s)).collect()
         } else {
             softmax(scores)
@@ -507,6 +649,7 @@ impl Registry {
     }
 
     /// The cards of every loaded model, by id.
+    #[allow(dead_code)] // the registry lists its own records; kept for callers of this registry
     pub fn list(&self) -> Vec<ModelCard> {
         let mut cards: Vec<ModelCard> = self.models().values().map(|m| m.card.clone()).collect();
         cards.sort_by(|a, b| a.id.cmp(&b.id));
@@ -598,6 +741,7 @@ mod tests {
             onnx_sha256: sha256_hex(onnx),
             created_ms: 1,
             metrics: Value::Null,
+            serving: None,
         }
     }
 

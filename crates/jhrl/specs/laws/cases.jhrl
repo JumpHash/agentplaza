@@ -1,16 +1,19 @@
 fixture "town" "One town with agents of several roles, tools of each risk class, hosts in each group" {
-  Town("t1")
-  Town("t2")
-  Agent("builder") { role: "builder", town: Town("t1") }
-  Agent("other") { role: "builder", town: Town("t2") }
-  Agent("reviewer") { role: "reviewer", town: Town("t1") }
-  Agent("mayor") { role: "mayor", town: Town("t1") }
-  Agent("researcher") { role: "researcher", town: Town("t1") }
-  Agent("finance") { role: "finance", town: Town("t1") }
-  Agent("librarian") { role: "librarian", town: Town("t1") }
-  Agent("auditor") { role: "auditor", town: Town("t1") }
-  Agent("edge") { role: "edge-operator", town: Town("t1") }
-  Agent("release") { role: "release", town: Town("t1") }
+  Town("t1") { name: "t1" }
+  Town("t2") { name: "t2" }
+  Agent("builder") { kind: "llm", role: "builder", town: Town("t1") }
+  Agent("planner") { kind: "llm", role: "planner", town: Town("t1") }
+  Agent("architect") { kind: "llm", role: "architect", town: Town("t1") }
+  Agent("qa") { kind: "llm", role: "qa", town: Town("t1") }
+  Agent("other") { kind: "llm", role: "builder", town: Town("t2") }
+  Agent("reviewer") { kind: "llm", role: "reviewer", town: Town("t1") }
+  Agent("mayor") { kind: "llm", role: "mayor", town: Town("t1") }
+  Agent("researcher") { kind: "llm", role: "researcher", town: Town("t1") }
+  Agent("finance") { kind: "llm", role: "finance", town: Town("t1") }
+  Agent("librarian") { kind: "llm", role: "librarian", town: Town("t1") }
+  Agent("auditor") { kind: "llm", role: "auditor", town: Town("t1") }
+  Agent("edge") { kind: "llm", role: "edge-operator", town: Town("t1") }
+  Agent("release") { kind: "llm", role: "release", town: Town("t1") }
   Sandbox("sb-builder") { agent: Agent("builder") }
   Sandbox("sb-reviewer") { agent: Agent("reviewer") }
   Tool("read-file") { risk_class: "read", group: "files" }
@@ -89,6 +92,16 @@ authz "statutes" using "town" {
   deny "builder reaches a blocked host" Agent("builder") egress.connect Host("evil") {flags: {}}
   deny "builder messages an agent in another town" Agent("other") message.send Agent("builder") {flags: {}}
   deny "builder calls a write tool" Agent("builder") tool.call Tool("edit-code") {flags: {}}
+  allow "planner submits a plan for its own town" Agent("planner") plan.submit Town("t1") {}
+  deny "planner submits a plan for another town" Agent("planner") plan.submit Town("t2") {}
+  allow "mayor spawns an agent in its own town" Agent("mayor") agent.spawn Town("t1") {}
+  deny "mayor spawns an agent in another town" Agent("mayor") agent.spawn Town("t2") {}
+  allow "architect submits design notes for its own town" Agent("architect") design.submit Town("t1") {}
+  deny "architect submits design notes for another town" Agent("architect") design.submit Town("t2") {}
+  allow "qa submits a test suite for its own town" Agent("qa") testsuite.submit Town("t1") {}
+  deny "qa submits a test suite for another town" Agent("qa") testsuite.submit Town("t2") {}
+  allow "researcher submits a brief for its own town" Agent("researcher") research.submit Town("t1") {}
+  deny "researcher submits a brief for another town" Agent("researcher") research.submit Town("t2") {}
   allow "mayor approves a merge under threshold" Agent("mayor") merge.approve Task("task1") {budget: 5, threshold: 10, ambiguous: false}
   deny "mayor approves a merge over threshold" Agent("mayor") merge.approve Task("task1") {budget: 50, threshold: 10, ambiguous: false}
   deny "mayor approves an ambiguous plan" Agent("mayor") plan.approve Task("task1") {budget: 5, threshold: 10, ambiguous: true}

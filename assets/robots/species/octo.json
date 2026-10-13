@@ -1,0 +1,1896 @@
+{
+  "schema": 1,
+  "id": "octo",
+  "name": "Inky",
+  "blurb": "A dome head with four curling tentacles, two of them for arms. Floats wherever it likes and puffs an ink ring when it is pleased.",
+  "accent": "#b58cff",
+  "height": 1.0,
+  "label_top": 1.1,
+  "locomotion": "float",
+  "gait": {
+    "speed": 0.6,
+    "freq": 1.4,
+    "bob": 0.1,
+    "sway": 0.05,
+    "lean": 0.05,
+    "sideways": false
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "root",
+      "at": [
+        0,
+        0.62,
+        0
+      ]
+    },
+    "head": {
+      "parent": "body",
+      "at": [
+        0,
+        0.22,
+        0
+      ]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [
+        -0.19,
+        -0.02,
+        0.17
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        -0.2307,
+        -0.0487,
+        0.5878
+      ]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [
+        0.19,
+        -0.02,
+        0.17
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0.2307,
+        -0.0487,
+        0.5878
+      ]
+    },
+    "tentL": {
+      "parent": "body",
+      "at": [
+        -0.22,
+        -0.02,
+        -0.14
+      ]
+    },
+    "tentR": {
+      "parent": "body",
+      "at": [
+        0.22,
+        -0.02,
+        -0.14
+      ]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [
+        0,
+        0.35,
+        0.02
+      ]
+    }
+  },
+  "parts": [
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.42,
+        "seg": [
+          28,
+          16
+        ],
+        "half": "top"
+      },
+      "at": [
+        0,
+        0,
+        0
+      ],
+      "mat": "shell",
+      "scale": [
+        1,
+        0.95,
+        1
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.1035,
+        "rb": 0.11,
+        "h": 0.15,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.0191,
+        -0.0445,
+        0.0573
+      ],
+      "mat": "accent",
+      "rot": [
+        127.87,
+        0,
+        -14.74
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.097,
+        "rb": 0.1035,
+        "h": 0.14,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.056,
+        -0.1306,
+        0.1679
+      ],
+      "mat": "accent",
+      "rot": [
+        127.87,
+        0,
+        -14.74
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0905,
+        "rb": 0.097,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.0945,
+        -0.1877,
+        0.2519
+      ],
+      "mat": "accent",
+      "rot": [
+        116.88,
+        0,
+        -31.15
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.084,
+        "rb": 0.0905,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.1408,
+        -0.2062,
+        0.313
+      ],
+      "mat": "accent",
+      "rot": [
+        95.72,
+        0,
+        -39.9
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0775,
+        "rb": 0.084,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.1902,
+        -0.1991,
+        0.3741
+      ],
+      "mat": "accent",
+      "rot": [
+        71.57,
+        0,
+        -36.42
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.071,
+        "rb": 0.0775,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.2295,
+        -0.1682,
+        0.4351
+      ],
+      "mat": "accent",
+      "rot": [
+        55.88,
+        0,
+        -22.77
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0645,
+        "rb": 0.071,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.248,
+        -0.1219,
+        0.4962
+      ],
+      "mat": "accent",
+      "rot": [
+        49.96,
+        0,
+        -4.39
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.058,
+        "rb": 0.0645,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.2409,
+        -0.0725,
+        0.5573
+      ],
+      "mat": "accent",
+      "rot": [
+        52.13,
+        0,
+        14.74
+      ]
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.11,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.1035,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.0382,
+        -0.0891,
+        0.1145
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.097,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.0738,
+        -0.1722,
+        0.2214
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0905,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.1152,
+        -0.2031,
+        0.2824
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.084,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.1665,
+        -0.2093,
+        0.3435
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0775,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.214,
+        -0.1889,
+        0.4046
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.071,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.2449,
+        -0.1475,
+        0.4657
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0645,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.2511,
+        -0.0962,
+        0.5267
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.058,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.2307,
+        -0.0487,
+        0.5878
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.1035,
+        "rb": 0.11,
+        "h": 0.15,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.0191,
+        -0.0445,
+        0.0573
+      ],
+      "mat": "accent",
+      "rot": [
+        127.87,
+        0,
+        14.74
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.097,
+        "rb": 0.1035,
+        "h": 0.14,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.056,
+        -0.1306,
+        0.1679
+      ],
+      "mat": "accent",
+      "rot": [
+        127.87,
+        0,
+        14.74
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0905,
+        "rb": 0.097,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.0945,
+        -0.1877,
+        0.2519
+      ],
+      "mat": "accent",
+      "rot": [
+        116.88,
+        0,
+        31.15
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.084,
+        "rb": 0.0905,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.1408,
+        -0.2062,
+        0.313
+      ],
+      "mat": "accent",
+      "rot": [
+        95.72,
+        0,
+        39.9
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0775,
+        "rb": 0.084,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.1902,
+        -0.1991,
+        0.3741
+      ],
+      "mat": "accent",
+      "rot": [
+        71.57,
+        0,
+        36.42
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.071,
+        "rb": 0.0775,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.2295,
+        -0.1682,
+        0.4351
+      ],
+      "mat": "accent",
+      "rot": [
+        55.88,
+        0,
+        22.77
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0645,
+        "rb": 0.071,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.248,
+        -0.1219,
+        0.4962
+      ],
+      "mat": "accent",
+      "rot": [
+        49.96,
+        0,
+        4.39
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.058,
+        "rb": 0.0645,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.2409,
+        -0.0725,
+        0.5573
+      ],
+      "mat": "accent",
+      "rot": [
+        52.13,
+        0,
+        -14.74
+      ]
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.11,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.1035,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.0382,
+        -0.0891,
+        0.1145
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.097,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.0738,
+        -0.1722,
+        0.2214
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0905,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.1152,
+        -0.2031,
+        0.2824
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.084,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.1665,
+        -0.2093,
+        0.3435
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0775,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.214,
+        -0.1889,
+        0.4046
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.071,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.2449,
+        -0.1475,
+        0.4657
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0645,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.2511,
+        -0.0962,
+        0.5267
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.058,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.2307,
+        -0.0487,
+        0.5878
+      ],
+      "mat": "accent"
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.1026,
+        "rb": 0.11,
+        "h": 0.14,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.0502,
+        -0.0473,
+        -0.0118
+      ],
+      "mat": "accent",
+      "rot": [
+        -165.96,
+        0,
+        -45.87
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0951,
+        "rb": 0.1026,
+        "h": 0.13,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.1471,
+        -0.1385,
+        -0.0346
+      ],
+      "mat": "accent",
+      "rot": [
+        -165.96,
+        0,
+        -45.87
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0877,
+        "rb": 0.0951,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.2322,
+        -0.1914,
+        -0.0524
+      ],
+      "mat": "accent",
+      "rot": [
+        -143.25,
+        0,
+        -73.61
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0803,
+        "rb": 0.0877,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.3083,
+        -0.1891,
+        -0.0659
+      ],
+      "mat": "accent",
+      "rot": [
+        -30.75,
+        0,
+        -70.72
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0729,
+        "rb": 0.0803,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.3731,
+        -0.1491,
+        -0.0794
+      ],
+      "mat": "accent",
+      "rot": [
+        -13.24,
+        0,
+        -42.49
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0654,
+        "rb": 0.0729,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.4091,
+        -0.082,
+        -0.0929
+      ],
+      "mat": "accent",
+      "rot": [
+        -9.98,
+        0,
+        -13.07
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.058,
+        "rb": 0.0654,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0.4068,
+        -0.0059,
+        -0.1064
+      ],
+      "mat": "accent",
+      "rot": [
+        -10.14,
+        0,
+        16.49
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.11,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.1026,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.1005,
+        -0.0946,
+        -0.0236
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0951,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.1938,
+        -0.1824,
+        -0.0456
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0877,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.2705,
+        -0.2005,
+        -0.0591
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0803,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.346,
+        -0.1778,
+        -0.0726
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0729,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.4001,
+        -0.1204,
+        -0.0861
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0654,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.4182,
+        -0.0436,
+        -0.0996
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.058,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        0.3955,
+        0.0319,
+        -0.1131
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.1026,
+        "rb": 0.11,
+        "h": 0.14,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.0502,
+        -0.0473,
+        -0.0118
+      ],
+      "mat": "accent",
+      "rot": [
+        -165.96,
+        0,
+        45.87
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0951,
+        "rb": 0.1026,
+        "h": 0.13,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.1471,
+        -0.1385,
+        -0.0346
+      ],
+      "mat": "accent",
+      "rot": [
+        -165.96,
+        0,
+        45.87
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0877,
+        "rb": 0.0951,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.2322,
+        -0.1914,
+        -0.0524
+      ],
+      "mat": "accent",
+      "rot": [
+        -143.25,
+        0,
+        73.61
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0803,
+        "rb": 0.0877,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.3083,
+        -0.1891,
+        -0.0659
+      ],
+      "mat": "accent",
+      "rot": [
+        -30.75,
+        0,
+        70.72
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0729,
+        "rb": 0.0803,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.3731,
+        -0.1491,
+        -0.0794
+      ],
+      "mat": "accent",
+      "rot": [
+        -13.24,
+        0,
+        42.49
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.0654,
+        "rb": 0.0729,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.4091,
+        -0.082,
+        -0.0929
+      ],
+      "mat": "accent",
+      "rot": [
+        -9.98,
+        0,
+        13.07
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.058,
+        "rb": 0.0654,
+        "h": 0.08,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        -0.4068,
+        -0.0059,
+        -0.1064
+      ],
+      "mat": "accent",
+      "rot": [
+        -10.14,
+        0,
+        -16.49
+      ],
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.11,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.1026,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.1005,
+        -0.0946,
+        -0.0236
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0951,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.1938,
+        -0.1824,
+        -0.0456
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0877,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.2705,
+        -0.2005,
+        -0.0591
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0803,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.346,
+        -0.1778,
+        -0.0726
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0729,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.4001,
+        -0.1204,
+        -0.0861
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.0654,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.4182,
+        -0.0436,
+        -0.0996
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "tentL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.058,
+        "seg": [
+          10,
+          6
+        ]
+      },
+      "at": [
+        -0.3955,
+        0.0319,
+        -0.1131
+      ],
+      "mat": "accent",
+      "outline": false
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "head",
+      "at": [
+        -0.15,
+        -0.18,
+        0.43
+      ],
+      "r": 0.13,
+      "pupil": 0.12,
+      "shape": "round",
+      "glass": false
+    },
+    {
+      "bone": "head",
+      "at": [
+        0.15,
+        -0.18,
+        0.43
+      ],
+      "r": 0.13,
+      "pupil": 0.12,
+      "shape": "round",
+      "glass": false
+    }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": true,
+  "personality": {
+    "social": 7,
+    "energy": 5,
+    "focus": 6,
+    "curiosity": 8,
+    "play": 6,
+    "tidy": 4
+  },
+  "quirks": [
+    {
+      "clip": "octo.ripple",
+      "weight": 2
+    },
+    {
+      "clip": "octo.inkring",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "octo.idle": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "amp": 0.12,
+          "freq": 0.2,
+          "phase": 0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.12,
+          "freq": 0.2,
+          "phase": 3.1416
+        },
+        {
+          "bone": "tentL",
+          "prop": "rot.z",
+          "amp": 0.1,
+          "freq": 0.2,
+          "phase": 1.6
+        },
+        {
+          "bone": "tentR",
+          "prop": "rot.z",
+          "amp": 0.1,
+          "freq": 0.2,
+          "phase": 4.7
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.03,
+          "freq": 0.15
+        },
+        {
+          "bone": "head",
+          "prop": "lid",
+          "base": 1,
+          "amp": -0.9,
+          "freq": 0.2778,
+          "wave": "pulse",
+          "duty": 0.0389,
+          "snap": true
+        }
+      ]
+    },
+    "octo.float": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "amp": 0.2,
+          "freq": 0.5,
+          "phase": 0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.2,
+          "freq": 0.5,
+          "phase": 3.1416
+        },
+        {
+          "bone": "tentL",
+          "prop": "rot.z",
+          "amp": 0.26,
+          "freq": 0.5,
+          "phase": 1.6
+        },
+        {
+          "bone": "tentR",
+          "prop": "rot.z",
+          "amp": 0.26,
+          "freq": 0.5,
+          "phase": 4.7
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.04,
+          "freq": 0.4
+        },
+        {
+          "bone": "body",
+          "prop": "rot.x",
+          "base": 0.05
+        }
+      ]
+    },
+    "octo.ripple": {
+      "loop": false,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "amp": 0.32,
+          "freq": 0.9,
+          "phase": 0,
+          "env": "in-out"
+        },
+        {
+          "bone": "tentL",
+          "prop": "rot.x",
+          "amp": 0.32,
+          "freq": 0.9,
+          "phase": 1.2,
+          "env": "in-out"
+        },
+        {
+          "bone": "tentR",
+          "prop": "rot.x",
+          "amp": 0.32,
+          "freq": 0.9,
+          "phase": 2.4,
+          "env": "in-out"
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "amp": 0.32,
+          "freq": 0.9,
+          "phase": 3.6,
+          "env": "in-out"
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "amp": 0.18,
+          "freq": 0.9,
+          "phase": 0.5,
+          "env": "in-out"
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.18,
+          "freq": 0.9,
+          "phase": 4.1,
+          "env": "in-out"
+        }
+      ],
+      "dur": 2.0
+    },
+    "octo.inkring": {
+      "loop": false,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": 0.08,
+          "freq": 1.0,
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "amp": 0.05,
+          "freq": 1.0,
+          "env": "in-out"
+        }
+      ],
+      "dur": 1.8,
+      "fx": [
+        {
+          "kind": "ink",
+          "at": "body",
+          "every": 0.4
+        }
+      ]
+    },
+    "octo.type": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.5,
+          "amp": 0.22,
+          "freq": 2.2
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": -0.5,
+          "amp": 0.22,
+          "freq": 2.2,
+          "phase": 3.1416
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.01,
+          "freq": 1.1
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.05,
+          "amp": 0.03,
+          "freq": 1.1
+        }
+      ]
+    },
+    "octo.draw": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.7,
+          "amp": 0.08,
+          "freq": 1.0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.18,
+          "freq": 1.0,
+          "phase": 1.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.04,
+          "freq": 0.5
+        }
+      ]
+    },
+    "octo.write": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.7,
+          "amp": 0.05,
+          "freq": 3.0
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.03,
+          "freq": 1.5
+        }
+      ]
+    },
+    "octo.solder": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.8,
+          "amp": 0.05,
+          "freq": 2.0
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.01,
+          "freq": 0.9
+        }
+      ],
+      "fx": [
+        {
+          "kind": "sparks",
+          "at": "gripR",
+          "every": 0.6
+        }
+      ]
+    },
+    "octo.probe": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -1.0,
+          "amp": 0.1,
+          "freq": 0.7
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.12,
+          "freq": 0.35
+        }
+      ]
+    },
+    "octo.pour": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "base": -0.6,
+          "amp": 0.05,
+          "freq": 0.3
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -1.0,
+          "amp": 0.05,
+          "freq": 0.3
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "base": -0.1,
+          "amp": 0.03,
+          "freq": 0.4
+        }
+      ]
+    },
+    "octo.carry": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "base": 0.35,
+          "amp": 0.04,
+          "freq": 1.2
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "base": -0.35,
+          "amp": 0.04,
+          "freq": 1.2
+        },
+        {
+          "bone": "tentL",
+          "prop": "rot.z",
+          "base": 0.2,
+          "amp": 0.04,
+          "freq": 1.2
+        },
+        {
+          "bone": "tentR",
+          "prop": "rot.z",
+          "base": -0.2,
+          "amp": 0.04,
+          "freq": 1.2
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.03,
+          "freq": 1.2
+        }
+      ]
+    },
+    "octo.talk": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": 0.03,
+          "freq": 1.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.06,
+          "freq": 1.1
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.4,
+          "amp": 0.15,
+          "freq": 1.6
+        }
+      ],
+      "fx": [
+        {
+          "kind": "dots",
+          "at": "head",
+          "every": 1.2
+        }
+      ]
+    },
+    "octo.point": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -1.3,
+          "amp": 0.04,
+          "freq": 0.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": -0.05,
+          "amp": 0.03,
+          "freq": 0.6
+        }
+      ]
+    }
+  },
+  "overrides": {
+    "idle": "octo.idle",
+    "walk.float": "octo.float",
+    "type": "octo.type",
+    "draw": "octo.draw",
+    "write": "octo.write",
+    "solder": "octo.solder",
+    "probe": "octo.probe",
+    "pour": "octo.pour",
+    "carry": "octo.carry",
+    "talk": "octo.talk",
+    "point": "octo.point"
+  }
+}

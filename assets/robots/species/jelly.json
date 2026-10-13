@@ -1,0 +1,603 @@
+{
+  "schema": 1,
+  "id": "jelly",
+  "name": "Glim",
+  "blurb": "A translucent bell over a glowing core, with four short tendrils. Drifts about, pulses, and spins slowly.",
+  "accent": "#7fe9ff",
+  "height": 1.0,
+  "label_top": 1.1,
+  "locomotion": "float",
+  "gait": {
+    "speed": 0.5,
+    "freq": 0.5,
+    "bob": 0.06,
+    "sway": 0.02,
+    "lean": 0.02,
+    "sideways": false
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "root",
+      "at": [
+        0,
+        0.5,
+        0
+      ]
+    },
+    "head": {
+      "parent": "body",
+      "at": [
+        0,
+        0.13,
+        0
+      ]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [
+        -0.3,
+        -0.02,
+        0.06
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        0,
+        -0.32,
+        0.02
+      ]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [
+        0.3,
+        -0.02,
+        0.06
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0,
+        -0.32,
+        0.02
+      ]
+    },
+    "tenA": {
+      "parent": "body",
+      "at": [
+        -0.14,
+        -0.02,
+        -0.26
+      ]
+    },
+    "tenB": {
+      "parent": "body",
+      "at": [
+        0.14,
+        -0.02,
+        -0.26
+      ]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [
+        0,
+        -0.05,
+        0.5
+      ]
+    }
+  },
+  "parts": [
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.4,
+        "seg": [
+          28,
+          16
+        ],
+        "half": "top"
+      },
+      "at": [
+        0,
+        0,
+        0
+      ],
+      "mat": "shell",
+      "scale": [
+        1,
+        0.9,
+        1
+      ]
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "torus",
+        "r": 0.4,
+        "tube": 0.03,
+        "seg": [
+          6,
+          32
+        ]
+      },
+      "at": [
+        0,
+        0,
+        0
+      ],
+      "mat": "accent",
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.03,
+        "rb": 0.02,
+        "h": 0.32,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.16,
+        0
+      ],
+      "mat": {
+        "color": "#9ef3ff",
+        "emissive": "#5fe6ff",
+        "glow": 0.9,
+        "opacity": 0.9
+      },
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.03,
+        "rb": 0.02,
+        "h": 0.32,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.16,
+        0
+      ],
+      "mat": {
+        "color": "#9ef3ff",
+        "emissive": "#5fe6ff",
+        "glow": 0.9,
+        "opacity": 0.9
+      },
+      "outline": false
+    },
+    {
+      "bone": "tenA",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.028,
+        "rb": 0.018,
+        "h": 0.3,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.15,
+        0
+      ],
+      "mat": {
+        "color": "#9ef3ff",
+        "emissive": "#5fe6ff",
+        "glow": 0.9,
+        "opacity": 0.9
+      },
+      "outline": false
+    },
+    {
+      "bone": "tenB",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.028,
+        "rb": 0.018,
+        "h": 0.3,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.15,
+        0
+      ],
+      "mat": {
+        "color": "#9ef3ff",
+        "emissive": "#5fe6ff",
+        "glow": 0.9,
+        "opacity": 0.9
+      },
+      "outline": false
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "head",
+      "at": [
+        -0.14,
+        -0.05,
+        0.41
+      ],
+      "r": 0.13,
+      "pupil": 0.075,
+      "shape": "round",
+      "glass": false
+    },
+    {
+      "bone": "head",
+      "at": [
+        0.14,
+        -0.05,
+        0.41
+      ],
+      "r": 0.13,
+      "pupil": 0.075,
+      "shape": "round",
+      "glass": false
+    }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": true,
+  "personality": {
+    "social": 5,
+    "energy": 2,
+    "focus": 6,
+    "curiosity": 6,
+    "play": 5,
+    "tidy": 4
+  },
+  "quirks": [
+    {
+      "clip": "glim.pulse",
+      "weight": 3
+    },
+    {
+      "clip": "glim.drift",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "glim.idle": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "amp": 0.2,
+          "freq": 0.35,
+          "phase": 0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.2,
+          "freq": 0.35,
+          "phase": 3.1416
+        },
+        {
+          "bone": "tenA",
+          "prop": "rot.z",
+          "amp": 0.15,
+          "freq": 0.3,
+          "phase": 2.0
+        },
+        {
+          "bone": "tenB",
+          "prop": "rot.z",
+          "amp": 0.15,
+          "freq": 0.3,
+          "phase": 2.5
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.02,
+          "freq": 0.3
+        },
+        {
+          "bone": "head",
+          "prop": "lid",
+          "base": 1,
+          "amp": -0.9,
+          "freq": 0.2778,
+          "wave": "pulse",
+          "duty": 0.0389
+        }
+      ]
+    },
+    "glim.pulse": {
+      "loop": false,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": 0.06,
+          "freq": 1.2,
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "scale",
+          "base": 1,
+          "amp": 0.08,
+          "freq": 1.2,
+          "env": "in-out"
+        }
+      ],
+      "dur": 3.0
+    },
+    "glim.drift": {
+      "loop": false,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "rot.y",
+          "rate": 1.5708
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.07,
+          "freq": 0.25,
+          "env": "in-out"
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "amp": 0.2,
+          "freq": 0.5
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "amp": 0.2,
+          "freq": 0.5,
+          "phase": 3.1416
+        }
+      ],
+      "dur": 4.0
+    },
+    "jelly.type": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.3,
+          "amp": 0.25,
+          "freq": 2.0
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.3,
+          "amp": 0.2,
+          "freq": 2.0,
+          "phase": 3.1416
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.05,
+          "amp": 0.04,
+          "freq": 1.1
+        }
+      ]
+    },
+    "jelly.draw": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.4,
+          "amp": 0.2,
+          "freq": 1.0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.15,
+          "freq": 1.2,
+          "phase": 1.6
+        }
+      ]
+    },
+    "jelly.write": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.2,
+          "amp": 0.12,
+          "freq": 3.0
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.2,
+          "amp": 0.03,
+          "freq": 1.5
+        }
+      ]
+    },
+    "jelly.solder": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.05,
+          "freq": 2.0
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.01,
+          "freq": 0.9
+        }
+      ],
+      "fx": [
+        {
+          "kind": "sparks",
+          "at": "gripR",
+          "every": 0.6
+        }
+      ]
+    },
+    "jelly.probe": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.6,
+          "amp": 0.15,
+          "freq": 0.7
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.12,
+          "freq": 0.35
+        }
+      ]
+    },
+    "jelly.pour": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "base": -0.8,
+          "amp": 0.05,
+          "freq": 0.3
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "base": -0.1,
+          "amp": 0.03,
+          "freq": 0.4
+        }
+      ]
+    },
+    "jelly.carry": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.z",
+          "base": 0.5,
+          "amp": 0.03,
+          "freq": 1.2
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "base": -0.5,
+          "amp": 0.03,
+          "freq": 1.2
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.03,
+          "freq": 1.2
+        }
+      ]
+    },
+    "jelly.talk": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "scale",
+          "base": 1,
+          "amp": 0.03,
+          "freq": 1.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.06,
+          "freq": 1.1
+        }
+      ],
+      "fx": [
+        {
+          "kind": "dots",
+          "at": "head",
+          "every": 1.2
+        }
+      ]
+    },
+    "jelly.point": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -1.2,
+          "amp": 0.05,
+          "freq": 0.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": -0.05,
+          "amp": 0.03,
+          "freq": 0.6
+        }
+      ]
+    }
+  },
+  "overrides": {
+    "idle": "glim.idle",
+    "type": "jelly.type",
+    "draw": "jelly.draw",
+    "write": "jelly.write",
+    "solder": "jelly.solder",
+    "probe": "jelly.probe",
+    "pour": "jelly.pour",
+    "carry": "jelly.carry",
+    "talk": "jelly.talk",
+    "point": "jelly.point"
+  }
+}

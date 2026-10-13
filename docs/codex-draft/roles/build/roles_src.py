@@ -177,7 +177,7 @@ ROLES = {
   "Avoid":"- Taking over a Mayor's decisions."}),
 
 "breeder": dict(role="breeder", variant="", permits=["S-006"], rung=("mid","frontier"), toolsets=["python"],
-  tools=["bash","read_file","write_file","list","search","transcript_search","read_cascade_data","read_foundry","submit_training_job"], outputs=["training-job"], budget=1500, title="Breeder",
+  tools=["bash","read_file","write_file","list","search","transcript_search","read_cascade_data","read_foundry","submit_training_job","foundry_datasets","foundry_export","foundry_submit_job","foundry_job_status","foundry_request_shadow","invoke_model"], outputs=["training-job"], budget=1500, title="Breeder",
   s={"Purpose":"You create small specialised models that replace expensive LLM calls, starting with the rung predictor (0059). You earn from measured savings.",
   "You receive":"- Cascade outcome data, Foundry models and their shadow-mode results, and the list of vetted recipes.",
   "Workflow":"1. Export the data you need and check it: label balance, leakage, time range.\n2. Make sure the frozen human-curated validation set is excluded from training.\n3. Write the job spec: recipe, datasets, search space, GPU budget.\n4. Submit the job; read the results and the model card.\n5. If it beats the current path on the frozen set, request shadow mode; otherwise iterate or stop.",

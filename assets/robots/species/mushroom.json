@@ -1,0 +1,514 @@
+{
+  "schema": 1,
+  "id": "mushroom",
+  "name": "Morel",
+  "blurb": "A big spotted cap on a stubby stem, with little legs. It puffs glowing spores and tips its cap like a hat.",
+  "accent": "#ff5f7e",
+  "height": 1.0,
+  "label_top": 1.05,
+  "locomotion": "walk2",
+  "gait": {
+    "speed": 0.9,
+    "freq": 0.715,
+    "bob": 0.035,
+    "sway": 0.05,
+    "lean": 0.02,
+    "sideways": false
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "footL": {
+      "parent": "base",
+      "at": [
+        -0.1,
+        0,
+        0
+      ]
+    },
+    "footR": {
+      "parent": "base",
+      "at": [
+        0.1,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "root",
+      "at": [
+        0,
+        0.2,
+        0
+      ]
+    },
+    "head": {
+      "parent": "body",
+      "at": [
+        0,
+        0.38,
+        0
+      ]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [
+        -0.17,
+        0.2,
+        0
+      ]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [
+        0.17,
+        0.2,
+        0
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        -0.103,
+        -0.147,
+        0.03
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0.103,
+        -0.147,
+        0.03
+      ]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [
+        0,
+        -0.05,
+        0.42
+      ]
+    }
+  },
+  "parts": [
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.17,
+        "rb": 0.2,
+        "h": 0.38,
+        "seg": [
+          24
+        ]
+      },
+      "at": [
+        0,
+        0.19,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "torus",
+        "r": 0.19,
+        "tube": 0.03,
+        "seg": [
+          8,
+          24
+        ]
+      },
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "at": [
+        0,
+        0.36,
+        0
+      ],
+      "mat": "shell2"
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.42,
+        "seg": [
+          28,
+          16
+        ],
+        "half": "top"
+      },
+      "scale": [
+        1,
+        0.7,
+        1
+      ],
+      "mat": "shell"
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "torus",
+        "r": 0.42,
+        "tube": 0.03,
+        "seg": [
+          8,
+          32
+        ]
+      },
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "mat": "shell2"
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        0.29,
+        0
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0.269,
+        0.215,
+        0.098
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        -0.098,
+        0.215,
+        0.269
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        -0.269,
+        0.215,
+        -0.098
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.085,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0.098,
+        0.215,
+        -0.269
+      ],
+      "mat": "accent",
+      "outline": false
+    },
+    {
+      "bone": "footL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.045,
+        "rb": 0.05,
+        "h": 0.2,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.108,
+        0
+      ],
+      "mat": "paper",
+      "outline": false
+    },
+    {
+      "bone": "footL",
+      "geo": {
+        "type": "rbox",
+        "w": 0.14,
+        "h": 0.05,
+        "d": 0.18,
+        "r": 0.025,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        0.025,
+        0.03
+      ],
+      "mat": "ink"
+    },
+    {
+      "bone": "footR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.045,
+        "rb": 0.05,
+        "h": 0.2,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.108,
+        0
+      ],
+      "mat": "paper",
+      "outline": false
+    },
+    {
+      "bone": "footR",
+      "geo": {
+        "type": "rbox",
+        "w": 0.14,
+        "h": 0.05,
+        "d": 0.18,
+        "r": 0.025,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        0.025,
+        0.03
+      ],
+      "mat": "ink"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.035,
+        "rb": 0.035,
+        "h": 0.18,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        -0.09,
+        0
+      ],
+      "rot": [
+        0,
+        0,
+        -35
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        -0.103,
+        -0.147,
+        0
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.035,
+        "rb": 0.035,
+        "h": 0.18,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        -0.09,
+        0
+      ],
+      "rot": [
+        0,
+        0,
+        35
+      ],
+      "mat": "paper"
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0.103,
+        -0.147,
+        0
+      ],
+      "mat": "paper"
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "body",
+      "at": [
+        -0.08,
+        0.2,
+        0.18
+      ],
+      "r": 0.07,
+      "pupil": 0.055,
+      "shape": "round"
+    },
+    {
+      "bone": "body",
+      "at": [
+        0.08,
+        0.2,
+        0.18
+      ],
+      "r": 0.07,
+      "pupil": 0.055,
+      "shape": "round"
+    }
+  ],
+  "spin": [],
+  "feet": [
+    "footL",
+    "footR"
+  ],
+  "floats": false,
+  "personality": {
+    "social": 5,
+    "energy": 3,
+    "focus": 6,
+    "curiosity": 6,
+    "play": 5,
+    "tidy": 6
+  },
+  "quirks": [
+    {
+      "clip": "mushroom.spores",
+      "weight": 3
+    },
+    {
+      "clip": "mushroom.tip",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "mushroom.spores": {
+      "loop": false,
+      "dur": 2.2,
+      "channels": [
+        {
+          "bone": "head",
+          "prop": "scale",
+          "base": 1,
+          "amp": 0.05,
+          "freq": 1.2,
+          "wave": "abs",
+          "env": "in-out"
+        }
+      ],
+      "fx": [
+        {
+          "kind": "sparks",
+          "at": "head",
+          "every": 0.12
+        }
+      ]
+    },
+    "mushroom.tip": {
+      "loop": false,
+      "dur": 1.8,
+      "channels": [
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "base": 0,
+          "amp": -0.4,
+          "freq": 0,
+          "wave": "pulse",
+          "duty": 1,
+          "env": "in-out"
+        }
+      ]
+    }
+  },
+  "overrides": {}
+}

@@ -31,9 +31,28 @@ _NAMES = {name: i for i, name in enumerate(CLASSES)}
 _CFG = {}  # set by build_model: prices, lambda_ce (the loss and metrics read them)
 
 
+# Serving contract for the hashed categoricals: the card's "hash", "digest_size", "byte_order" fields
+# are these constants, so the Rust hub and this code cannot drift apart.
+HASH_ALGO = "blake2b"
+HASH_DIGEST_SIZE = 8
+HASH_BYTE_ORDER = "little"
+HASH_MISSING = "__missing__"
+
+
 def hash_index(key, value):
-    digest = hashlib.blake2b(f"{key}={value}".encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "little") % BUCKETS
+    digest = hashlib.new(HASH_ALGO, f"{key}={value}".encode("utf-8"), digest_size=HASH_DIGEST_SIZE).digest()
+    return int.from_bytes(digest, byteorder=HASH_BYTE_ORDER) % BUCKETS
+
+
+def numeric_feature(name):
+    """Serving spec: value = sign(x) * ln(1 + |x|), as _signed_log computes it; 0 maps to 0."""
+    return {"name": name, "kind": "numeric", "transform": "signlog"}
+
+
+def hash_feature(name):
+    """Serving spec: bucket = int.from_bytes(blake2b("key=value", digest_size=8), "little") % buckets."""
+    return {"name": name, "kind": "hash", "hash": HASH_ALGO, "digest_size": HASH_DIGEST_SIZE,
+            "buckets": BUCKETS, "input": "key=value", "byte_order": HASH_BYTE_ORDER}
 
 
 def _signed_log(x):
@@ -48,7 +67,7 @@ def encode(row):
     cat = []
     for k in CAT:
         v = row.get(k)
-        cat.append(hash_index(k, "__missing__" if v is None else v))
+        cat.append(hash_index(k, HASH_MISSING if v is None else v))
     return num, cat
 
 
@@ -181,3 +200,25 @@ def metrics(batch, out):
 
 def example_input():
     return (torch.zeros(1, len(NUM)), torch.zeros(1, len(CAT), dtype=torch.long))
+
+
+def serving_schema():
+    """The inference contract the registry imports (crates/apid/src/inference.rs). Input: the task
+    features of the dataset rows, in card order. Output: the rung label and its class probabilities
+    (the graph emits logits; the serving side applies softmax)."""
+    props = {**{k: {"type": "number"} for k in NUM}, **{k: {"type": "string"} for k in CAT}}
+    return {
+        "input": {"type": "object", "properties": props, "required": NUM + CAT},
+        "output": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "enum": list(CLASSES)},
+                "probabilities": {"type": "object"},
+            },
+            "required": ["label", "probabilities"],
+        },
+        "features": ([numeric_feature(k) for k in NUM] + [hash_feature(k) for k in CAT]),
+        "labels": list(CLASSES),
+        "output_activation": "logits",  # RungNet.forward returns logits; softmax is applied at serving
+        "allowed_roles": ["orchestrator", "builder", "plaza"],
+    }

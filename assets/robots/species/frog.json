@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "id": "frog",
+  "name": "Ribbit",
+  "blurb": "A squat frog with big eyes on top. It flicks its tongue to catch sparks and croaks with a bubbling throat.",
+  "accent": "#ff7fae",
+  "height": 1.0,
+  "label_top": 0.98,
+  "locomotion": "hop",
+  "gait": { "speed": 1, "freq": 0.9549, "bob": 0.16, "sway": 0.03, "lean": 0.1, "sideways": false },
+  "bones": {
+    "base": { "parent": "root", "at": [0, 0, 0] },
+    "body": { "parent": "root", "at": [0, 0, 0] },
+    "head": { "parent": "body", "at": [0, 0.42, 0.12] },
+    "tongue": { "parent": "head", "at": [0, -0.04, 0.26] },
+    "throat": { "parent": "head", "at": [0, -0.2, 0.16] },
+    "armL": { "parent": "body", "at": [-0.4, 0.12, 0.2] },
+    "armR": { "parent": "body", "at": [0.4, 0.12, 0.2] },
+    "gripL": { "parent": "armL", "at": [0, -0.2, 0.06] },
+    "gripR": { "parent": "armR", "at": [0, -0.2, 0.06] },
+    "carry": { "parent": "body", "at": [0, 0.0, 0.62] }
+  },
+  "parts": [
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.2, "h": 0.22, "d": 0.42, "r": 0.1, "seg": [3] }, "at": [-0.36, 0.11, -0.1], "mat": "shell2", "outline": false },
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.2, "h": 0.22, "d": 0.42, "r": 0.1, "seg": [3] }, "at": [0.36, 0.11, -0.1], "mat": "shell2", "outline": false },
+
+    { "bone": "body", "geo": { "type": "sphere", "r": 0.4 }, "at": [0, 0.25, 0], "scale": [1.15, 0.62, 1.0], "mat": "shell" },
+
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.3 }, "scale": [1.1, 0.6, 0.9], "mat": "shell" },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.17 }, "at": [-0.19, 0.2, -0.02], "mat": "paper" },
+    { "bone": "head", "geo": { "type": "sphere", "r": 0.17 }, "at": [0.19, 0.2, -0.02], "mat": "paper" },
+    { "bone": "head", "geo": { "type": "torus", "r": 0.13, "tube": 0.014, "arc": 180, "seg": [6, 12] }, "rot": [0, 0, 180], "at": [0, -0.05, 0.27], "mat": "ink" },
+
+    { "bone": "tongue", "geo": { "type": "cyl", "rt": 0.024, "rb": 0.02, "h": 0.36, "seg": [8] }, "rot": [90, 0, 0], "at": [0, 0, -0.18], "mat": "accent", "outline": false },
+    { "bone": "throat", "geo": { "type": "sphere", "r": 0.07 }, "mat": { "color": "#c9f7d6", "opacity": 0.55 } },
+
+    { "bone": "armL", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.14, "seg": [12] }, "at": [0, -0.07, 0], "mat": "shell", "outline": false },
+    { "bone": "armL", "geo": { "type": "sphere", "r": 0.06 }, "at": [0, -0.15, 0.02], "mat": "paper", "outline": false },
+    { "bone": "armR", "geo": { "type": "cyl", "rt": 0.045, "rb": 0.04, "h": 0.14, "seg": [12] }, "at": [0, -0.07, 0], "mat": "shell", "outline": false },
+    { "bone": "armR", "geo": { "type": "sphere", "r": 0.06 }, "at": [0, -0.15, 0.02], "mat": "paper", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [-0.19, 0.22, 0.155], "r": 0.11, "pupil": 0.07, "shape": "round" },
+    { "bone": "head", "at": [0.19, 0.22, 0.155], "r": 0.11, "pupil": 0.07, "shape": "round" }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 5, "energy": 8, "focus": 4, "curiosity": 7, "play": 8, "tidy": 3 },
+  "quirks": [{ "clip": "frog.tongue", "weight": 3 }, { "clip": "frog.croak", "weight": 2 }],
+  "clips": {
+    "frog.tongue": {
+      "loop": false,
+      "dur": 0.9,
+      "channels": [
+        { "bone": "tongue", "prop": "pos.z", "amp": 0.42, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" },
+        { "bone": "head", "prop": "rot.x", "amp": -0.12, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" }
+      ],
+      "fx": [{ "kind": "sparks", "at": "tongue", "every": 0.25 }]
+    },
+    "frog.croak": {
+      "loop": false,
+      "dur": 1.2,
+      "channels": [
+        { "bone": "throat", "prop": "scale", "base": 1, "amp": 1.0, "freq": 3, "wave": "abs", "env": "in-out" },
+        { "bone": "head", "prop": "rot.x", "amp": -0.15, "freq": 0, "wave": "pulse", "duty": 1, "env": "in-out" }
+      ]
+    }
+  },
+  "overrides": {}
+}

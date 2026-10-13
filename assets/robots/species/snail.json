@@ -1,0 +1,766 @@
+{
+  "schema": 1,
+  "id": "snail",
+  "name": "Shelly",
+  "blurb": "A spiral shell on a soft slug body, with eye stalks for a head and stubby arms. Hides in its shell when it is shy and leaves a glowing trail.",
+  "accent": "#7fe0b0",
+  "height": 1.0,
+  "label_top": 1.0,
+  "locomotion": "slither",
+  "gait": {
+    "speed": 0.3,
+    "freq": 1.0,
+    "bob": 0.0,
+    "sway": 0.03,
+    "lean": 0.0,
+    "sideways": false
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "root",
+      "at": [
+        0,
+        0.08,
+        0
+      ]
+    },
+    "head": {
+      "parent": "body",
+      "at": [
+        0,
+        0.14,
+        0.36
+      ]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [
+        -0.24,
+        0.05,
+        0.2
+      ]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [
+        0.24,
+        0.05,
+        0.2
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        0,
+        -0.1,
+        0.18
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0,
+        -0.1,
+        0.18
+      ]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [
+        0,
+        0.66,
+        -0.2
+      ]
+    }
+  },
+  "parts": [
+    {
+      "bone": "base",
+      "geo": {
+        "type": "rbox",
+        "w": 0.5,
+        "h": 0.05,
+        "d": 1.0,
+        "r": 0.025,
+        "seg": [
+          2
+        ]
+      },
+      "at": [
+        0,
+        0.025,
+        0
+      ],
+      "mat": "shell2"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "rbox",
+        "w": 0.44,
+        "h": 0.2,
+        "d": 0.9,
+        "r": 0.1,
+        "seg": [
+          4
+        ]
+      },
+      "at": [
+        0,
+        0.1,
+        0.04
+      ],
+      "mat": "shell"
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.3,
+        "seg": [
+          20,
+          14
+        ]
+      },
+      "at": [
+        0,
+        0.36,
+        -0.2
+      ],
+      "mat": "accent",
+      "scale": [
+        1,
+        1.0,
+        1.1
+      ]
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "torus",
+        "r": 0.16,
+        "tube": 0.03,
+        "seg": [
+          6,
+          24
+        ],
+        "arc": 290
+      },
+      "at": [
+        0.24,
+        0.37,
+        -0.2
+      ],
+      "mat": "ink",
+      "rot": [
+        0,
+        90,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "torus",
+        "r": 0.08,
+        "tube": 0.02,
+        "seg": [
+          6,
+          18
+        ],
+        "arc": 290
+      },
+      "at": [
+        0.255,
+        0.37,
+        -0.19
+      ],
+      "mat": "ink",
+      "rot": [
+        0,
+        90,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "torus",
+        "r": 0.16,
+        "tube": 0.03,
+        "seg": [
+          6,
+          24
+        ],
+        "arc": 290
+      },
+      "at": [
+        -0.24,
+        0.37,
+        -0.2
+      ],
+      "mat": "ink",
+      "rot": [
+        0,
+        -90,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "torus",
+        "r": 0.08,
+        "tube": 0.02,
+        "seg": [
+          6,
+          18
+        ],
+        "arc": 290
+      },
+      "at": [
+        -0.255,
+        0.37,
+        -0.19
+      ],
+      "mat": "ink",
+      "rot": [
+        0,
+        -90,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "sphere",
+        "r": 0.2,
+        "seg": [
+          16,
+          12
+        ]
+      },
+      "at": [
+        0,
+        0.0,
+        0.02
+      ],
+      "mat": "shell",
+      "scale": [
+        1.1,
+        0.95,
+        1.1
+      ],
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.3,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.09,
+        0.15,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "head",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.3,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.09,
+        0.15,
+        0
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.042,
+        "h": 0.2,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.05,
+        0.087
+      ],
+      "mat": "shell",
+      "rot": [
+        120,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.055,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.1,
+        0.18
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.042,
+        "h": 0.2,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.05,
+        0.087
+      ],
+      "mat": "shell",
+      "rot": [
+        120,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.055,
+        "seg": [
+          10,
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.1,
+        0.18
+      ],
+      "mat": "shell",
+      "outline": false
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "head",
+      "at": [
+        -0.1,
+        0.37,
+        0.06
+      ],
+      "r": 0.115,
+      "pupil": 0.072,
+      "shape": "round"
+    },
+    {
+      "bone": "head",
+      "at": [
+        0.1,
+        0.37,
+        0.06
+      ],
+      "r": 0.115,
+      "pupil": 0.072,
+      "shape": "round"
+    }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": false,
+  "personality": {
+    "social": 3,
+    "energy": 1,
+    "focus": 9,
+    "curiosity": 5,
+    "play": 2,
+    "tidy": 7
+  },
+  "quirks": [
+    {
+      "clip": "snail.hide",
+      "weight": 3
+    },
+    {
+      "clip": "snail.trail",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "snail.hide": {
+      "loop": false,
+      "dur": 2.6,
+      "channels": [
+        {
+          "bone": "head",
+          "prop": "pos.z",
+          "amp": -0.42,
+          "wave": "pulse",
+          "duty": 1,
+          "freq": 0,
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "pos.y",
+          "amp": -0.08,
+          "wave": "pulse",
+          "duty": 1,
+          "freq": 0,
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "scale",
+          "base": 1,
+          "amp": -0.55,
+          "wave": "pulse",
+          "duty": 1,
+          "freq": 0,
+          "env": "in-out"
+        },
+        {
+          "bone": "head",
+          "prop": "lid",
+          "base": 1,
+          "amp": -0.9,
+          "wave": "pulse",
+          "duty": 1,
+          "freq": 0,
+          "env": "in-out"
+        }
+      ]
+    },
+    "snail.trail": {
+      "loop": false,
+      "dur": 3.0,
+      "channels": [
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.15,
+          "freq": 0.5,
+          "env": "in-out"
+        },
+        {
+          "bone": "body",
+          "prop": "rot.y",
+          "amp": 0.08,
+          "freq": 0.33,
+          "env": "in-out"
+        }
+      ],
+      "fx": [
+        {
+          "kind": "trail",
+          "at": "base",
+          "every": 0.3
+        }
+      ]
+    },
+    "snail.type": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.3,
+          "freq": 2.2
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.3,
+          "freq": 2.2,
+          "phase": 3.1416
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.06,
+          "amp": 0.04,
+          "freq": 1.1
+        }
+      ]
+    },
+    "snail.draw": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.05,
+          "amp": 0.3,
+          "freq": 1.2
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.2,
+          "freq": 1.2,
+          "phase": 1.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.2,
+          "amp": 0.05,
+          "freq": 0.6
+        }
+      ]
+    },
+    "snail.write": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.05,
+          "amp": 0.14,
+          "freq": 3.0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "amp": 0.12,
+          "freq": 1.5
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.2,
+          "amp": 0.03,
+          "freq": 1.5
+        }
+      ]
+    },
+    "snail.solder": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.3,
+          "amp": 0.05,
+          "freq": 1.8
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.3,
+          "amp": 0.04,
+          "freq": 0.9
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.01,
+          "freq": 0.9
+        }
+      ],
+      "fx": [
+        {
+          "kind": "sparks",
+          "at": "gripR",
+          "every": 0.6
+        }
+      ]
+    },
+    "snail.probe": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.2,
+          "amp": 0.18,
+          "freq": 0.7
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.15,
+          "amp": 0.06,
+          "freq": 0.7
+        },
+        {
+          "bone": "head",
+          "prop": "rot.z",
+          "amp": 0.12,
+          "freq": 0.35
+        }
+      ]
+    },
+    "snail.pour": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.5,
+          "amp": 0.06,
+          "freq": 0.25
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.z",
+          "base": -0.3,
+          "amp": 0.05,
+          "freq": 0.25
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.03,
+          "freq": 0.4
+        }
+      ]
+    },
+    "snail.carry": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.03,
+          "freq": 1.2
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.03,
+          "freq": 1.2
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.4,
+          "amp": 0.05,
+          "freq": 1.2
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.4,
+          "amp": -0.05,
+          "freq": 1.2
+        }
+      ]
+    },
+    "snail.talk": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": 0.05,
+          "amp": 0.07,
+          "freq": 1.8
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": 0.2,
+          "freq": 1.5
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.1,
+          "amp": -0.2,
+          "freq": 1.5,
+          "phase": 3.1416
+        }
+      ],
+      "fx": [
+        {
+          "kind": "dots",
+          "at": "head",
+          "every": 1.2
+        }
+      ]
+    },
+    "snail.point": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.9,
+          "amp": 0.05,
+          "freq": 0.6
+        },
+        {
+          "bone": "head",
+          "prop": "rot.x",
+          "base": -0.05,
+          "amp": 0.03,
+          "freq": 0.6
+        }
+      ]
+    }
+  },
+  "overrides": {
+    "type": "snail.type",
+    "draw": "snail.draw",
+    "write": "snail.write",
+    "solder": "snail.solder",
+    "probe": "snail.probe",
+    "pour": "snail.pour",
+    "carry": "snail.carry",
+    "talk": "snail.talk",
+    "point": "snail.point"
+  }
+}

@@ -1,0 +1,852 @@
+//! The Foundry's model registry and model agents (`docs/design/foundry.md`, "The hub").
+//!
+//! A finished training job leaves `model.onnx` and `model_card.json` in its job directory. `import`
+//! (or the jobs agent's `register_from_job`) reads them, checks the inference contract and the
+//! bytes with tract (`inference::LoadedModel::load`), and records the model as `trained`. States
+//! go `trained -> shadow -> promoted -> retired`: only the owner promotes or retires. A promoted
+//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, species
+//! `oracle`, no VM, wallet, tools or chat. Retiring it removes the entry again.
+//!
+//! The job's model card has no inference contract yet, so the registry reads an object `serving`
+//! from it: `input` and `output` (schemas), `features`, optional `labels` and `allowed_roles`.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use apz_http::{Response, Router};
+use apz_proto::chat::Usage;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::agents::{Agent, Roster, Status};
+use crate::inference::{FeatureSpec, LoadedModel, ModelCard, Registry as Loaded, Schema};
+use crate::looks::{Looks, ORACLE};
+use crate::state::App;
+
+/// The reserved CID range of model agents: `MODEL_CID_BASE ..= MODEL_CID_BASE + MODEL_CID_COUNT - 1`
+/// (10000..=10999). VM guest CIDs are 20..=99 (node n0) and 200..=299 (node n0's VMs), and remote
+/// nodes take `REMOTE_CID_BASE` (1000) plus 100 per node, so the range is out of their reach until
+/// about 90 nodes have joined.
+pub const MODEL_CID_BASE: u64 = 10_000;
+pub const MODEL_CID_COUNT: u64 = 1_000;
+/// The role and kind of a model agent on the roster.
+pub const MODEL_ROLE: &str = "model";
+pub const MODEL_KIND: &str = "model";
+
+/// Whether `cid` belongs to the model range. The laws read it as a model agent's kind.
+pub fn is_model_cid(cid: u64) -> bool {
+    (MODEL_CID_BASE..MODEL_CID_BASE + MODEL_CID_COUNT).contains(&cid)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Trained,
+    Shadow,
+    Promoted,
+    Retired,
+}
+
+impl State {
+    pub fn name(self) -> &'static str {
+        match self {
+            State::Trained => "trained",
+            State::Shadow => "shadow",
+            State::Promoted => "promoted",
+            State::Retired => "retired",
+        }
+    }
+}
+
+/// How often a shadow model agreed with the path it runs beside, and what its use would have saved.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ShadowStats {
+    pub runs: u64,
+    pub agreed: u64,
+    pub cost_saved_usd: f64,
+    pub updated_ms: u64,
+}
+
+impl ShadowStats {
+    /// Agreed runs over all runs; `None` before the first run.
+    pub fn agreement_rate(&self) -> Option<f64> {
+        (self.runs > 0).then(|| self.agreed as f64 / self.runs as f64)
+    }
+}
+
+/// One registered model, stored as `<state>/foundry/models/<id>/card.json` beside `model.onnx`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRecord {
+    pub card: ModelCard,
+    pub state: State,
+    pub source_job: Option<String>,
+    /// The model agent's CID while promoted (kept after retirement for the record).
+    pub agent_cid: Option<u64>,
+    /// The data provenance per split, from the job's card.
+    #[serde(default)]
+    pub provenance: Value,
+    /// Calibration numbers, when the job's card has them.
+    #[serde(default)]
+    pub calibration: Value,
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub parameters: u64,
+    #[serde(default)]
+    pub shadow: ShadowStats,
+    pub created_ms: u64,
+    pub state_changed_ms: u64,
+}
+
+/// The inference contract a job's card carries under `serving`.
+#[derive(Debug, Deserialize)]
+struct Serving {
+    input: Schema,
+    output: Schema,
+    features: Vec<FeatureSpec>,
+    #[serde(default)]
+    labels: Option<Vec<String>>,
+    allowed_roles: Vec<String>,
+}
+
+/// The model store and the loaded models. The records live on disk; the compiled graphs in memory.
+pub struct Models {
+    dir: PathBuf,
+    records: Mutex<BTreeMap<String, ModelRecord>>,
+    loaded: Loaded,
+    /// Counts the changes to `records` (see `records_mut`).
+    generation: std::sync::atomic::AtomicU64,
+    /// What `derived_ids` built, with the generation it was built at.
+    derived: Mutex<Option<(u64, Vec<String>)>>,
+}
+
+impl Models {
+    /// Opens the store under `<state_dir>/foundry/models` and reads every record there. Records
+    /// that do not parse are reported and skipped. Graphs are compiled by [`Models::revive`].
+    pub fn open(state_dir: &Path) -> Models {
+        let dir = state_dir.join("foundry").join("models");
+        let mut records = BTreeMap::new();
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path().join("card.json");
+                match fs::read_to_string(&path).map(|text| serde_json::from_str::<ModelRecord>(&text)) {
+                    Ok(Ok(record)) => {
+                        records.insert(record.card.id.clone(), record);
+                    }
+                    Ok(Err(e)) => eprintln!("foundry: {} does not parse: {e}", path.display()),
+                    Err(_) => {}
+                }
+            }
+        }
+        Models {
+            dir,
+            records: Mutex::new(records),
+            loaded: Loaded::default(),
+            generation: std::sync::atomic::AtomicU64::new(0),
+            derived: Mutex::new(None),
+        }
+    }
+
+    fn records(&self) -> MutexGuard<'_, BTreeMap<String, ModelRecord>> {
+        self.records.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The records for a change. The generation moves while the lock is held, so a reader that sees a
+    /// new generation also sees the change.
+    fn records_mut(&self) -> MutexGuard<'_, BTreeMap<String, ModelRecord>> {
+        let guard = self.records();
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        guard
+    }
+
+    /// The number of changes to the records so far.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The ids `build` derives from the records, rebuilt only when the generation has moved (the
+    /// cascade's shadow hook reads them on every metered call).
+    pub fn derived_ids(&self, build: impl FnOnce(&[ModelRecord]) -> Vec<String>) -> Vec<String> {
+        let generation = self.generation();
+        let mut cache = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((seen, ids)) = cache.as_ref() {
+            if *seen == generation {
+                return ids.clone();
+            }
+        }
+        let records: Vec<ModelRecord> = self.list();
+        let ids = build(&records);
+        *cache = Some((generation, ids.clone()));
+        ids
+    }
+
+    fn model_dir(&self, id: &str) -> PathBuf {
+        self.dir.join(id)
+    }
+
+    /// Compiles every model that is not retired and puts the promoted ones back on the roster, with
+    /// the CIDs they had. Run once at startup.
+    pub fn revive(&self, roster: &Roster, looks: &Looks) {
+        let records: Vec<ModelRecord> = self.records().values().cloned().collect();
+        let now = apz_plaza::now_ms();
+        for record in records {
+            if record.state == State::Retired {
+                continue;
+            }
+            let compiled = match self.compile(&record) {
+                Ok(model) => model,
+                Err(e) => {
+                    eprintln!("foundry: model {} does not load: {e}", record.card.id);
+                    continue;
+                }
+            };
+            self.loaded.insert(compiled);
+            remember(&record.card);
+            if let (State::Promoted, Some(cid)) = (record.state, record.agent_cid) {
+                roster.upsert(model_agent(cid, &record.card, now));
+                looks.set(cid, ORACLE, now);
+            }
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<ModelRecord> {
+        self.records().get(id).cloned()
+    }
+
+    /// Every record, by id.
+    pub fn list(&self) -> Vec<ModelRecord> {
+        self.records().values().cloned().collect()
+    }
+
+    /// The compiled model for `id` when it is loaded (trained, shadow or promoted).
+    pub fn loaded(&self, id: &str) -> Option<std::sync::Arc<LoadedModel>> {
+        self.loaded.get(id)
+    }
+
+    /// Registers the model in a job directory (`model.onnx` and `model_card.json`) as `trained`.
+    /// The jobs agent calls this with the finished job's directory and its id.
+    pub fn register_from_job(&self, job_dir: &Path, source_job: Option<&str>) -> Result<ModelRecord, String> {
+        self.import_dir(job_dir, source_job)
+    }
+
+    /// `POST /v1/foundry/models/import`: the same registration from any directory (owner only).
+    pub fn import(&self, dir: &Path) -> Result<ModelRecord, String> {
+        self.import_dir(dir, None)
+    }
+
+    fn import_dir(&self, dir: &Path, source_job: Option<&str>) -> Result<ModelRecord, String> {
+        let text = fs::read_to_string(dir.join("model_card.json"))
+            .map_err(|e| format!("reading model_card.json: {e}"))?;
+        let trainer: Value = serde_json::from_str(&text).map_err(|e| format!("model_card.json: {e}"))?;
+        let serving_value = trainer
+            .get("serving")
+            .ok_or("the card has no serving contract (serving: input, output, features, allowed_roles)")?;
+        let serving: Serving =
+            serde_json::from_value(serving_value.clone()).map_err(|e| format!("serving: {e}"))?;
+        let onnx = fs::read(dir.join("model.onnx")).map_err(|e| format!("reading model.onnx: {e}"))?;
+        check_serving(&serving)?;
+
+        let sha = sha256_hex(&onnx);
+        let recipe = trainer.get("recipe").and_then(Value::as_str).unwrap_or("model");
+        let id = format!("{}-{}", sanitize(recipe), &sha[..8]);
+        if !valid_id(&id) {
+            return Err(format!("the model id {id:?} is not a valid name"));
+        }
+        let card = ModelCard {
+            id: id.clone(),
+            name: recipe.to_string(),
+            version: "1".into(),
+            input: serving.input,
+            output: serving.output,
+            features: serving.features,
+            labels: serving.labels,
+            allowed_roles: serving.allowed_roles,
+            onnx_sha256: sha,
+            created_ms: apz_plaza::now_ms(),
+            metrics: trainer.get("metrics").cloned().unwrap_or(Value::Null),
+            serving: Some(serving_value.clone()),
+        };
+        let record = ModelRecord {
+            card: card.clone(),
+            state: State::Trained,
+            source_job: source_job.map(str::to_string).or_else(|| trainer.get("job_id").and_then(Value::as_str).map(str::to_string)),
+            agent_cid: None,
+            provenance: trainer.get("data").cloned().unwrap_or(Value::Null),
+            calibration: trainer.get("calibration").cloned().unwrap_or_else(|| json!({})),
+            size_bytes: onnx.len() as u64,
+            parameters: trainer.get("parameters").and_then(Value::as_u64).unwrap_or(0),
+            shadow: ShadowStats::default(),
+            created_ms: card.created_ms,
+            state_changed_ms: card.created_ms,
+        };
+        let mut records = self.records_mut();
+        if records.contains_key(&id) {
+            return Err(format!("a model with id {id} is already registered"));
+        }
+        // Validate before anything is written: the bytes must compile for this card.
+        let compiled = LoadedModel::load(&onnx, card).map_err(|e| format!("validating the model: {e}"))?;
+        let target = self.model_dir(&id);
+        fs::create_dir_all(&target).map_err(|e| format!("creating {}: {e}", target.display()))?;
+        write_atomic(&target.join("model.onnx"), &onnx)?;
+        save(&target, &record)?;
+        self.loaded.insert(compiled);
+        remember(&record.card);
+        records.insert(id, record.clone());
+        Ok(record)
+    }
+
+    /// The registry's state of record for Postgres (component `models`): every record by id, with
+    /// its card, state and shadow stats. The ONNX files stay on disk.
+    pub fn snapshot(&self) -> String {
+        serde_json::to_string(&*self.records()).unwrap_or_default()
+    }
+
+    /// Replaces the records with a stored snapshot; one that does not parse changes nothing. Graphs
+    /// are not compiled here: startup calls [`Models::revive`] after the restore, as it always did.
+    pub fn restore(&self, json: &str) -> Result<(), String> {
+        let restored: BTreeMap<String, ModelRecord> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        *self.records_mut() = restored;
+        Ok(())
+    }
+
+    fn compile(&self, record: &ModelRecord) -> Result<LoadedModel, String> {
+        let onnx = fs::read(self.model_dir(&record.card.id).join("model.onnx"))
+            .map_err(|e| format!("reading model.onnx: {e}"))?;
+        LoadedModel::load(&onnx, record.card.clone())
+    }
+
+    /// `trained -> shadow`: the model runs beside the path it would replace, its decisions logged.
+    pub fn shadow(&self, id: &str) -> Result<ModelRecord, String> {
+        self.transition(id, &[State::Trained], State::Shadow)
+    }
+
+    /// `shadow -> promoted` (owner only, enforced by the route): the model agent appears on the roster.
+    pub fn promote(&self, roster: &Roster, looks: &Looks, id: &str) -> Result<ModelRecord, String> {
+        let mut records = self.records_mut();
+        let current = records.get(id).ok_or_else(|| no_model(id))?;
+        if current.state != State::Shadow {
+            return Err(format!("{id} is {}: a model is promoted from shadow", current.state.name()));
+        }
+        let cid = free_cid(roster, &records)?;
+        let now = apz_plaza::now_ms();
+        let mut record = current.clone();
+        roster.upsert(model_agent(cid, &record.card, now));
+        looks.set(cid, ORACLE, now);
+        record.state = State::Promoted;
+        record.agent_cid = Some(cid);
+        record.state_changed_ms = now;
+        save(&self.model_dir(id), &record)?;
+        records.insert(id.to_string(), record.clone());
+        Ok(record)
+    }
+
+    /// `trained | shadow | promoted -> retired` (owner only): the model agent leaves the roster.
+    pub fn retire(&self, roster: &Roster, looks: &Looks, id: &str) -> Result<ModelRecord, String> {
+        let mut records = self.records_mut();
+        let current = records.get(id).ok_or_else(|| no_model(id))?;
+        if current.state == State::Retired {
+            return Err(format!("{id} is already retired"));
+        }
+        let mut record = current.clone();
+        if let Some(cid) = record.agent_cid {
+            roster.remove(cid);
+            looks.forget(cid);
+        }
+        self.loaded.remove(id);
+        record.state = State::Retired;
+        record.state_changed_ms = apz_plaza::now_ms();
+        save(&self.model_dir(id), &record)?;
+        records.insert(id.to_string(), record.clone());
+        Ok(record)
+    }
+
+    fn transition(&self, id: &str, from: &[State], to: State) -> Result<ModelRecord, String> {
+        let mut records = self.records_mut();
+        let current = records.get(id).ok_or_else(|| no_model(id))?;
+        if !from.contains(&current.state) {
+            return Err(format!("{id} is {}: this move needs it to be {}", current.state.name(), from[0].name()));
+        }
+        let mut record = current.clone();
+        record.state = to;
+        record.state_changed_ms = apz_plaza::now_ms();
+        save(&self.model_dir(id), &record)?;
+        records.insert(id.to_string(), record.clone());
+        Ok(record)
+    }
+
+    /// Adds one shadow comparison: whether the model agreed with the real decision, and the cost
+    /// the real path had that the model would not (the model's own cost is 0).
+    pub fn record_shadow(&self, id: &str, agreed: bool, cost_saved_usd: f64) -> Result<ShadowStats, String> {
+        let mut records = self.records();
+        let record = records.get_mut(id).ok_or_else(|| no_model(id))?;
+        record.shadow.runs += 1;
+        record.shadow.agreed += u64::from(agreed);
+        record.shadow.cost_saved_usd += cost_saved_usd;
+        record.shadow.updated_ms = apz_plaza::now_ms();
+        save(&self.model_dir(id), record)?;
+        Ok(record.shadow.clone())
+    }
+}
+
+/// The roles each model's card allows, mirrored for the laws, which read them while checking a
+/// call (`model.invoke`) and hold no `App`. Filled by import and revive.
+static ALLOWED: Mutex<BTreeMap<String, Vec<String>>> = Mutex::new(BTreeMap::new());
+
+/// The roles a model's card allows; empty for an unknown model.
+pub fn allowed_roles(id: &str) -> Vec<String> {
+    ALLOWED.lock().unwrap_or_else(PoisonError::into_inner).get(id).cloned().unwrap_or_default()
+}
+
+fn remember(card: &ModelCard) {
+    ALLOWED.lock().unwrap_or_else(PoisonError::into_inner).insert(card.id.clone(), card.allowed_roles.clone());
+}
+
+fn no_model(id: &str) -> String {
+    format!("no model {id}")
+}
+
+/// The first CID of the range that neither the roster nor a record holds.
+fn free_cid(roster: &Roster, records: &BTreeMap<String, ModelRecord>) -> Result<u64, String> {
+    (MODEL_CID_BASE..MODEL_CID_BASE + MODEL_CID_COUNT)
+        .find(|cid| roster.get(*cid).is_none() && !records.values().any(|r| r.agent_cid == Some(*cid)))
+        .ok_or_else(|| format!("no free model CID left in {MODEL_CID_BASE}..{}", MODEL_CID_BASE + MODEL_CID_COUNT))
+}
+
+/// The roster entry of a promoted model: no VM, no wallet, no tools, no chat.
+pub fn model_agent(cid: u64, card: &ModelCard, now_ms: u64) -> Agent {
+    Agent {
+        cid,
+        name: card.name.clone(),
+        role: MODEL_ROLE.into(),
+        kind: MODEL_KIND.into(),
+        model_override: None,
+        status: Status::Idle,
+        connected_at_ms: now_ms,
+        last_seen_ms: now_ms,
+        run: None,
+        vm: None,
+        usage: Usage::default(),
+        species: ORACLE.into(),
+    }
+}
+
+/// The checks every registration makes beyond the card's own: a classifier or regression output
+/// that is an object, feature names that the input schema declares, and the roles allowed.
+fn check_serving(serving: &Serving) -> Result<(), String> {
+    if serving.input.kind != "object" || serving.output.kind != "object" {
+        return Err("serving: the input and output schemas must be objects".into());
+    }
+    if serving.features.is_empty() {
+        return Err("serving: no features".into());
+    }
+    for feature in &serving.features {
+        if !serving.input.properties.contains_key(&feature.name) {
+            return Err(format!("serving: feature `{}` is not an input property", feature.name));
+        }
+    }
+    if serving.allowed_roles.is_empty() {
+        return Err("serving: allowed_roles is empty, so no role could use the model".into());
+    }
+    Ok(())
+}
+
+/// Ids name a directory: letters, digits, `-`, `_`, `.`, never a leading dot.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('.')
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
+fn sanitize(text: &str) -> String {
+    text.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn save(dir: &Path, record: &ModelRecord) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let text = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
+    write_atomic(&dir.join("card.json"), text.as_bytes())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("renaming {}: {e}", path.display()))
+}
+
+/// The record as the routes show it: the card, the state, provenance, calibration, size, the shadow
+/// agreement rate, and the source job.
+pub fn view(record: &ModelRecord) -> Value {
+    let mut value = serde_json::to_value(record).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut value {
+        map.insert("agreement_rate".into(), json!(record.shadow.agreement_rate()));
+        map.insert("id".into(), json!(record.card.id));
+    }
+    value
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    path: String,
+}
+
+/// The foundry's model routes. The gate in front of the router already admits only the owner (and
+/// the machine itself) to `/v1` routes that are not public.
+pub fn routes(router: Router<App>) -> Router<App> {
+    router
+        .get("/v1/foundry/models", |app, _req, _p| {
+            Response::json(200, &json!({ "models": app.models.list().iter().map(view).collect::<Vec<_>>() }))
+        })
+        .get("/v1/foundry/models/{id}", |app, _req, p| match app.models.get(&p.get("id").to_string()) {
+            Some(record) => Response::json(200, &view(&record)),
+            None => Response::error(404, "no such model"),
+        })
+        .post("/v1/foundry/models/import", |app, req, _p| {
+            let body: ImportBody = match crate::agents::body(req) {
+                Ok(body) => body,
+                Err(resp) => return resp,
+            };
+            match app.models.import(Path::new(&body.path)) {
+                Ok(record) => Response::json(200, &view(&record)),
+                Err(e) => Response::error(400, &e),
+            }
+        })
+        .post("/v1/foundry/models/{id}/shadow", |app, _req, p| {
+            outcome(app.models.shadow(&p.get("id").to_string()))
+        })
+        .post("/v1/foundry/models/{id}/promote", |app, _req, p| {
+            outcome(app.models.promote(&app.agents, &app.looks, &p.get("id").to_string()))
+        })
+        .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
+            outcome(app.models.retire(&app.agents, &app.looks, &p.get("id").to_string()))
+        })
+}
+
+fn outcome(result: Result<ModelRecord, String>) -> Response {
+    match result {
+        Ok(record) => Response::json(200, &view(&record)),
+        Err(e) if e.starts_with("no model") => Response::error(404, &e),
+        Err(e) => Response::error(409, &e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixture graph: 3 inputs to 3 classes (`tests/fixtures/linear3.onnx`).
+    const LINEAR3: &[u8] = include_bytes!("../../tests/fixtures/linear3.onnx");
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-registry-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A job directory as the trainer leaves it, with the serving contract the registry reads.
+    fn job_dir(root: &Path, job: &str, serving: Option<Value>) -> PathBuf {
+        let dir = root.join(job);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("model.onnx"), LINEAR3).unwrap();
+        let mut card = json!({
+            "recipe": "rung_predictor",
+            "job_id": job,
+            "data": { "train": { "rows": 10 } },
+            "metrics": { "val": { "accuracy": 0.9 } },
+            "parameters": 12,
+        });
+        if let Some(serving) = serving {
+            card["serving"] = serving;
+        }
+        fs::write(dir.join("model_card.json"), card.to_string()).unwrap();
+        dir
+    }
+
+    fn serving() -> Value {
+        let numeric = |name: &str| (name.to_string(), json!({ "type": "number" }));
+        let input: BTreeMap<String, Value> = [numeric("x0"), numeric("x1"), numeric("x2")].into_iter().collect();
+        json!({
+            "input": { "type": "object", "properties": input, "required": ["x0", "x1", "x2"] },
+            "output": {
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "enum": ["cat", "dog", "bird"] },
+                    "probabilities": { "type": "object" }
+                },
+                "required": ["label", "probabilities"]
+            },
+            "features": [
+                { "name": "x0", "kind": "numeric" },
+                { "name": "x1", "kind": "numeric" },
+                { "name": "x2", "kind": "numeric" }
+            ],
+            "labels": ["cat", "dog", "bird"],
+            "allowed_roles": ["breeder"]
+        })
+    }
+
+    fn fresh_roster() -> (Roster, Looks) {
+        (Roster::default(), Looks::default())
+    }
+
+    #[test]
+    fn a_model_moves_trained_shadow_promoted_retired_and_no_other_way() {
+        let root = scratch("states");
+        let models = Models::open(&root);
+        let (roster, looks) = fresh_roster();
+        let dir = job_dir(&root, "job-1", Some(serving()));
+        let record = models.register_from_job(&dir, Some("job-1")).unwrap();
+        let id = record.card.id.clone();
+        assert_eq!(record.state, State::Trained);
+        assert_eq!(record.source_job.as_deref(), Some("job-1"));
+        assert!(models.promote(&roster, &looks, &id).is_err(), "a trained model is not promoted");
+        assert_eq!(models.shadow(&id).unwrap().state, State::Shadow);
+        assert!(models.shadow(&id).is_err(), "shadow is entered once");
+        let promoted = models.promote(&roster, &looks, &id).unwrap();
+        assert_eq!(promoted.state, State::Promoted);
+        assert!(promoted.agent_cid.is_some());
+        assert_eq!(models.retire(&roster, &looks, &id).unwrap().state, State::Retired);
+        assert!(models.retire(&roster, &looks, &id).is_err(), "retired is terminal");
+        assert!(models.shadow(&id).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_model_is_stored_and_read_back_after_a_restart() {
+        let root = scratch("restart");
+        let models = Models::open(&root);
+        let dir = job_dir(&root, "job-2", Some(serving()));
+        let id = models.register_from_job(&dir, None).unwrap().card.id;
+        let reopened = Models::open(&root);
+        let record = reopened.get(&id).expect("the record is on disk");
+        assert_eq!(record.parameters, 12);
+        assert_eq!(record.provenance["train"]["rows"], 10);
+        assert_eq!(reopened.list().len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn import_validates_the_contract_and_the_bytes() {
+        let root = scratch("import");
+        let models = Models::open(&root);
+        let no_serving = job_dir(&root, "a", None);
+        assert!(models.import(&no_serving).unwrap_err().contains("no serving contract"));
+
+        let mut bad_feature = serving();
+        bad_feature["features"][0]["name"] = json!("nope");
+        let bad = job_dir(&root, "b", Some(bad_feature));
+        assert!(models.import(&bad).unwrap_err().contains("not an input property"));
+
+        let missing = job_dir(&root, "c", Some(serving()));
+        fs::remove_file(missing.join("model.onnx")).unwrap();
+        assert!(models.import(&missing).unwrap_err().contains("model.onnx"));
+
+        let good = job_dir(&root, "d", Some(serving()));
+        let record = models.import(&good).unwrap();
+        assert_eq!(record.card.onnx_sha256, sha256_hex(LINEAR3));
+        assert!(models.import(&good).unwrap_err().contains("already registered"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_model_agent_appears_on_promote_and_leaves_on_retire() {
+        let root = scratch("agent");
+        let models = Models::open(&root);
+        let (roster, looks) = fresh_roster();
+        let id = models.register_from_job(&job_dir(&root, "job-3", Some(serving())), None).unwrap().card.id;
+        models.shadow(&id).unwrap();
+        let cid = models.promote(&roster, &looks, &id).unwrap().agent_cid.unwrap();
+        assert!(is_model_cid(cid));
+        let agent = roster.get(cid).expect("the model agent is on the roster");
+        assert_eq!(agent.kind, "model");
+        assert_eq!(agent.role, "model");
+        assert_eq!(agent.species, "oracle");
+        assert!(agent.vm.is_none() && agent.run.is_none());
+        assert_eq!(looks.all().get(&cid).map(|l| l.species.as_str()), Some("oracle"));
+        models.retire(&roster, &looks, &id).unwrap();
+        assert!(roster.get(cid).is_none(), "retiring removes the model agent");
+        assert!(looks.all().get(&cid).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_promoted_model_comes_back_on_the_roster_after_a_restart() {
+        let root = scratch("revive");
+        let models = Models::open(&root);
+        let (roster, looks) = fresh_roster();
+        let id = models.register_from_job(&job_dir(&root, "job-4", Some(serving())), None).unwrap().card.id;
+        models.shadow(&id).unwrap();
+        let cid = models.promote(&roster, &looks, &id).unwrap().agent_cid.unwrap();
+        let reopened = Models::open(&root);
+        let (roster2, looks2) = fresh_roster();
+        reopened.revive(&roster2, &looks2);
+        assert_eq!(roster2.get(cid).map(|a| a.kind), Some("model".to_string()));
+        assert!(reopened.loaded(&id).is_some());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_snapshot_restores_cards_states_and_shadow_stats() {
+        let root = scratch("snapshot");
+        let models = Models::open(&root);
+        let (roster, looks) = fresh_roster();
+        let dir = job_dir(&root, "job-s", Some(serving()));
+        let id = models.register_from_job(&dir, Some("job-s")).unwrap().card.id;
+        models.shadow(&id).unwrap();
+        models.record_shadow(&id, true, 0.5).unwrap();
+        models.record_shadow(&id, false, 0.25).unwrap();
+        models.promote(&roster, &looks, &id).unwrap();
+        let json = models.snapshot();
+
+        let other_root = scratch("snapshot-other");
+        let other = Models::open(&other_root);
+        other.restore(&json).unwrap();
+        assert_eq!(other.list(), models.list());
+        let stats = other.get(&id).unwrap().shadow;
+        assert_eq!((stats.runs, stats.agreed), (2, 1));
+        assert_eq!(other.snapshot(), json);
+        assert!(other.restore("not json").is_err());
+        assert_eq!(other.list().len(), 1, "a refused snapshot changes nothing");
+        other.restore("{}").unwrap();
+        assert!(other.list().is_empty());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other_root);
+    }
+
+    /// Runs only with APZ_TEST_DATABASE_URL set (as db.rs's round trip does). Stores under a
+    /// test-only component name, never `models`, and removes its row afterwards.
+    #[test]
+    fn models_round_trip_through_postgres() {
+        let url = match std::env::var("APZ_TEST_DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("registry: APZ_TEST_DATABASE_URL not set; skipping");
+                return;
+            }
+        };
+        let root = scratch("db");
+        let models = Models::open(&root);
+        let dir = job_dir(&root, "job-db", Some(serving()));
+        let id = models.register_from_job(&dir, Some("job-db")).unwrap().card.id;
+        models.shadow(&id).unwrap();
+        models.record_shadow(&id, true, 2.0).unwrap();
+
+        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url.clone())]);
+        let db = crate::db::Db::connect(&env);
+        assert!(db.enabled());
+        let component = "apz_test_models";
+        assert_eq!(db.store(component, &models.snapshot()), Ok(true));
+        let loaded = db.load(component).expect("stored row");
+
+        let other_root = scratch("db-other");
+        let other = Models::open(&other_root);
+        other.restore(&loaded).unwrap();
+        assert_eq!(other.list(), models.list());
+
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client.execute("DELETE FROM plaza_state WHERE component = $1", &[&component]).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&other_root);
+    }
+
+    #[test]
+    fn model_cids_are_the_reserved_range_only() {
+        assert!(!is_model_cid(9_999));
+        assert!(is_model_cid(10_000));
+        assert!(is_model_cid(10_999));
+        assert!(!is_model_cid(11_000));
+        assert!(!is_model_cid(299));
+    }
+
+    #[test]
+    fn shadow_comparisons_count_agreement_and_cost() {
+        let root = scratch("shadow");
+        let models = Models::open(&root);
+        let id = models.register_from_job(&job_dir(&root, "job-5", Some(serving())), None).unwrap().card.id;
+        models.shadow(&id).unwrap();
+        models.record_shadow(&id, true, 0.02).unwrap();
+        let stats = models.record_shadow(&id, false, 0.03).unwrap();
+        assert_eq!((stats.runs, stats.agreed), (2, 1));
+        assert_eq!(stats.agreement_rate(), Some(0.5));
+        assert!((stats.cost_saved_usd - 0.05).abs() < 1e-9);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_id_cannot_leave_the_store_directory() {
+        assert!(!valid_id("../etc"));
+        assert!(!valid_id(".hidden"));
+        assert!(valid_id("rung_predictor-1a2b3c4d"));
+    }
+
+    /// The laws refuse what the brief names: the breeder's permit and cap, the card's roles, and the
+    /// model agents' no-task and no-message rules.
+    fn serving_for(roles: &[&str]) -> Value {
+        let mut value = serving();
+        value["allowed_roles"] = json!(roles);
+        value
+    }
+
+    fn law_refusal(root: &Path, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String> {
+        crate::laws::Laws::load(root).refusal(cid, role, tool, input)
+    }
+
+    #[test]
+    fn invoke_model_runs_only_for_a_breeder_and_only_where_the_card_allows() {
+        let root = scratch("laws-invoke");
+        let models = Models::open(&root);
+        // The bytes differ from the other tests' models: the id is the ONNX digest, and the roles
+        // mirror is keyed by it, so a shared id would let parallel tests overwrite each other.
+        let reviewers = job_dir(&root, "job-reviewers", Some(serving_for(&["reviewer"])));
+        fs::write(reviewers.join("model.onnx"), include_bytes!("../../tests/fixtures/linear3_logits.onnx")).unwrap();
+        let only_reviewers = models.register_from_job(&reviewers, None).unwrap().card.id;
+        let for_breeders = models
+            .register_from_job(&job_dir(&root, "job-breeders", Some(serving_for(&["breeder"]))), None)
+            .unwrap()
+            .card
+            .id;
+        let input = |id: &str| json!({ "model": id, "input": { "x0": 1.0, "x1": 0.0, "x2": 0.0 } });
+        let refused = law_refusal(&root, 7, "builder", "invoke_model", &input(&for_breeders)).expect("no permit");
+        assert!(refused.contains("S-006h") || refused.contains("no law permits"), "{refused}");
+        let card_refused = law_refusal(&root, 7, "breeder", "invoke_model", &input(&only_reviewers)).expect("the card");
+        assert!(card_refused.contains("S-006h"), "{card_refused}");
+        assert_eq!(law_refusal(&root, 7, "breeder", "invoke_model", &input(&for_breeders)), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_breeder_job_over_eight_gpu_hours_is_refused_and_eight_is_not() {
+        let root = scratch("laws-gpu");
+        let big = json!({ "job": { "budget_gpu_hours": 9.0 } });
+        let refused = law_refusal(&root, 8, "breeder", "foundry_submit_job", &big).expect("over 8 hours");
+        assert!(refused.contains("S-006d"), "{refused}");
+        let eight = json!({ "job": { "budget_gpu_hours": 8.0 } });
+        assert_eq!(law_refusal(&root, 8, "breeder", "foundry_submit_job", &eight), None);
+        let missing = json!({ "job": {} });
+        assert!(law_refusal(&root, 8, "breeder", "foundry_submit_job", &missing).is_some(), "no budget: refused");
+        let other = law_refusal(&root, 9, "mayor", "foundry_submit_job", &eight).expect("only breeders submit");
+        assert!(other.contains("no law permits"), "{other}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_model_agent_cannot_be_tasked_or_messaged() {
+        let root = scratch("laws-model-agent");
+        let assign = law_refusal(&root, 3, "mayor", "plaza_assign", &json!({ "task": "t1", "agent": 10_000 }))
+            .expect("a model agent is not tasked");
+        assert!(assign.contains("S-006f"), "{assign}");
+        let message = law_refusal(&root, 3, "mayor", "plaza_send_message", &json!({ "to_cid": 10_500, "text": "hi" }))
+            .expect("a model agent is not messaged");
+        assert!(message.contains("S-006g"), "{message}");
+        let plain = law_refusal(&root, 3, "mayor", "plaza_assign", &json!({ "task": "t1", "agent": 42 }));
+        assert!(plain.map_or(true, |r| !r.contains("S-006f")), "an ordinary agent is not caught by S-006f");
+        let _ = fs::remove_dir_all(&root);
+    }
+}

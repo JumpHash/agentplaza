@@ -306,6 +306,11 @@ impl Eval<'_> {
 
 /// Decides one request. See the module docs for the three-valued rules.
 pub fn authorize(program: &Program, entities: &EntityStore, req: &Request) -> Outcome {
+    authorize_except(program, entities, req, &HashSet::new())
+}
+
+/// [`authorize`] with the laws whose ids are in `off` left out: a law that is off applies to nothing.
+pub fn authorize_except(program: &Program, entities: &EntityStore, req: &Request, off: &HashSet<String>) -> Outcome {
     let ev = Eval { store: entities, principal: &req.principal, resource: &req.resource, context: &req.context };
     let mut allow_by = Vec::new();
     let mut deny_by = Vec::new();
@@ -313,7 +318,7 @@ pub fn authorize(program: &Program, entities: &EntityStore, req: &Request) -> Ou
     let mut violations = Vec::new();
     for (_, _, item) in program.items() {
         let Item::Law(law) = item else { continue };
-        if !law.ops.iter().any(|o| o == "any" || *o == req.operation) {
+        if off.contains(&law.id) || !law.ops.iter().any(|o| o == "any" || *o == req.operation) {
             continue;
         }
         let judgment = matches!(law.enforcement.as_deref(), Some("detective") | Some("judgment"));

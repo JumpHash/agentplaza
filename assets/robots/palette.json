@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "ink": "#262c3a",
+  "sheet": "#ffffff",
+  "paper": "#eef1f6",
+  "rule": "#9aa5b8",
+  "signal": "#ff7a2e",
+  "ok": "#3ee08f",
+  "info": "#4cc9ff",
+  "inkMuted": "#5b6475"
+}

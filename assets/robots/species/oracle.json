@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "id": "oracle",
+  "name": "Oracle",
+  "blurb": "A faceted crystal on a plinth, with a glowing core and data rings that orbit slowly. The plaza's model agents; never dealt to a person's agent.",
+  "accent": "#8fd8ff",
+  "height": 1.0,
+  "label_top": 1.2,
+  "locomotion": "float",
+  "gait": { "speed": 0.4, "freq": 0.8, "bob": 0.02, "sway": 0.0, "lean": 0.0, "sideways": false },
+  "bones": {
+    "base":  { "parent": "root", "at": [0, 0, 0] },
+    "body":  { "parent": "base", "at": [0, 0.14, 0] },
+    "head":  { "parent": "body", "at": [0, 0.5, 0] },
+    "armL":  { "parent": "body", "at": [-0.22, 0.3, 0] },
+    "armR":  { "parent": "body", "at": [0.22, 0.3, 0] },
+    "gripL": { "parent": "base", "at": [-0.3, 0.14, 0.12] },
+    "gripR": { "parent": "base", "at": [0.3, 0.14, 0.12] },
+    "carry": { "parent": "base", "at": [0, 0.14, 0.34] },
+    "rings": { "parent": "body", "at": [0, 0.64, 0] }
+  },
+  "parts": [
+    { "bone": "base", "geo": { "type": "rbox", "w": 0.46, "h": 0.12, "d": 0.46, "r": 0.03, "seg": [2] }, "at": [0, 0.06, 0], "mat": "trim" },
+    { "bone": "base", "geo": { "type": "cyl", "rt": 0.22, "rb": 0.22, "h": 0.02, "seg": [24] }, "at": [0, 0.125, 0], "mat": "ink", "outline": false },
+
+    { "bone": "body", "geo": { "type": "cone", "r": 0.22, "h": 0.5, "seg": [6] }, "at": [0, 0.645, 0], "mat": "accent" },
+    { "bone": "body", "geo": { "type": "cone", "r": 0.22, "h": 0.3, "seg": [6] }, "at": [0, 0.24, 0], "rot": [180, 0, 0], "mat": "eye", "outline": false },
+
+    { "bone": "rings", "geo": { "type": "torus", "r": 0.34, "tube": 0.016, "seg": [6, 40] }, "rot": [65, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "rings", "geo": { "type": "torus", "r": 0.34, "tube": 0.016, "seg": [6, 40] }, "rot": [65, 90, 0], "mat": "trim", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [0, 0.14, 0.11], "pupil": 0.07, "shape": "ring", "glass": false }
+  ],
+  "spin": [{ "bone": "rings", "axis": "y", "walk": 0.9, "idle": 0.3, "offline": 0.05 }],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 0, "energy": 0, "focus": 0, "curiosity": 0, "play": 0, "tidy": 0 },
+  "quirks": [{ "clip": "oracle.pulse", "weight": 1 }],
+  "clips": {
+    "oracle.pulse": {
+      "loop": false,
+      "dur": 1.8,
+      "channels": [
+        { "bone": "body", "prop": "scale", "base": 1, "amp": 0.08, "freq": 0.5556, "wave": "halfsin", "env": "in-out" },
+        { "bone": "rings", "prop": "rot.y", "rate": 6 }
+      ]
+    }
+  },
+  "overrides": {}
+}

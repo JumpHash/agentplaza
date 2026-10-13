@@ -59,6 +59,14 @@ pub struct Call {
     pub task: Option<String>,
     /// "harness" (the agent's own loop) or "gateway" (the proxy agents' tools call through).
     pub via: String,
+    /// The rung of the model that served the call ("cheap", "mid" or "frontier"), from its output
+    /// price; absent when no price is known and on records saved before rungs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rung: Option<String>,
+    /// Whether the call escalated its task: an earlier call of the same task ran on a lower rung.
+    /// Set when the call is filed.
+    #[serde(default)]
+    pub escalated: bool,
 }
 
 /// Totals over some calls.
@@ -184,6 +192,7 @@ impl Ledger {
     /// The storing half of [`Ledger::record`]: no bus, so tests can file calls without an app.
     fn file(&self, mut call: Call) -> Call {
         let mut state = self.lock();
+        call.escalated = escalates(&state.calls, &call);
         state.next_id += 1;
         call.id = state.next_id;
         let hour_ms = call.at_ms - call.at_ms % HOUR_MS;
@@ -334,6 +343,79 @@ impl Totals {
     }
 }
 
+/// The order of the rungs: cheap < mid < frontier. `None` for no rung or an unknown one.
+fn rung_rank(rung: Option<&str>) -> Option<u8> {
+    match rung? {
+        "cheap" => Some(0),
+        "mid" => Some(1),
+        "frontier" => Some(2),
+        _ => None,
+    }
+}
+
+/// Whether `call` escalates its task: an earlier call of the same task ran on a lower rung.
+fn escalates(earlier: &VecDeque<Call>, call: &Call) -> bool {
+    let (Some(task), Some(rung)) = (call.task.as_deref(), rung_rank(call.rung.as_deref())) else {
+        return false;
+    };
+    earlier.iter().rev().any(|c| {
+        c.task.as_deref() == Some(task) && rung_rank(c.rung.as_deref()).is_some_and(|lower| lower < rung)
+    })
+}
+
+/// The shadow models that run on the cascade: those whose card id starts with `rung` and that are
+/// in state shadow.
+pub fn shadow_rung_ids(models: impl IntoIterator<Item = (String, crate::foundry::registry::State)>) -> Vec<String> {
+    use crate::foundry::registry::State;
+    models
+        .into_iter()
+        .filter(|(id, state)| id.starts_with("rung") && *state == State::Shadow)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The log line for one shadow run on a call: whether the shadow agreed with the real rung.
+fn comparison_line(id: &str, model: &str, rung: &str, result: &Result<bool, String>) -> String {
+    match result {
+        Ok(true) => format!("apid: shadow {id} agreed with the real rung {rung} on {model}"),
+        Ok(false) => format!("apid: shadow {id} differed from the real rung {rung} on {model}"),
+        Err(e) => format!("apid: shadow {id} did not run on {model}: {e}"),
+    }
+}
+
+/// The shadow hook on the cascade: each shadow rung model runs on the call's features beside the
+/// real rung decision. It runs on its own thread, so the call never waits for it, and it only reads
+/// the call: the real rung stays as it was filed.
+fn shadow_on_cascade(app: &App, call: &Call) {
+    let Some(rung) = call.rung.clone() else { return };
+    let ids = app.models.derived_ids(|records| {
+        shadow_rung_ids(records.iter().map(|record| (record.card.id.clone(), record.state)))
+    });
+    if ids.is_empty() {
+        return;
+    }
+    let Some(handle) = app.handle().upgrade() else { return };
+    let features = serde_json::json!({
+        "model": call.model,
+        "task": call.task,
+        "via": call.via,
+        "input_tokens": call.tokens.input,
+        "output_tokens": call.tokens.output,
+        "cache_read_tokens": call.tokens.cache_read,
+        "cache_write_tokens": call.tokens.cache_write,
+        "est_usd": call.est_usd,
+    });
+    let real = serde_json::json!({ "label": rung });
+    let cost = call.cost_usd.unwrap_or(call.est_usd);
+    let model = call.model.clone();
+    std::thread::spawn(move || {
+        for id in ids {
+            let result = crate::foundry::breeder::shadow_run(&handle, &id, &features, &real, cost);
+            eprintln!("{}", comparison_line(&id, &model, &rung, &result));
+        }
+    });
+}
+
 fn hit_rate(tokens: &Tokens) -> f64 {
     let seen = tokens.input + tokens.cache_read + tokens.cache_write;
     if seen == 0 {
@@ -374,6 +456,7 @@ fn groups(by_key: BTreeMap<String, Totals>) -> Vec<Group> {
 pub fn meter(app: &App, cid: u64, model: &str, tokens: Tokens, cost_usd: Option<f64>, task: Option<String>, via: &str) {
     let settings = app.settings.get();
     let priced = app.prices.lookup(model, &settings.prices);
+    let rung = crate::foundry::datasets::rung_for_price(priced.as_ref().map(|p| p.price.output)).map(str::to_string);
     let call = Call {
         id: 0,
         at_ms: apz_plaza::now_ms(),
@@ -386,7 +469,10 @@ pub fn meter(app: &App, cid: u64, model: &str, tokens: Tokens, cost_usd: Option<
         est_usd: priced.map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens)),
         task,
         via: via.to_string(),
+        rung,
+        escalated: false,
     };
+    shadow_on_cascade(app, &call);
     app.usage.record(app, call);
 }
 
@@ -491,6 +577,8 @@ mod tests {
             est_usd,
             task: None,
             via: "harness".into(),
+            rung: None,
+            escalated: false,
         }
     }
 
@@ -614,5 +702,54 @@ mod tests {
         let next = restored.file(call(H + 3, 1, "a/x", tok(1, 0, 0, 0), None, 0.0));
         assert_eq!(next.id, 3);
         assert_eq!(restored.summary(H, H + HOUR_MS).totals.calls, 2);
+    }
+
+    fn rung_call(task: Option<&str>, rung: Option<&str>) -> Call {
+        Call { task: task.map(str::to_string), rung: rung.map(str::to_string), ..call(H, 1, "a/x", tok(1, 0, 0, 0), None, 0.0) }
+    }
+
+    #[test]
+    fn a_call_records_its_rung_and_a_later_higher_rung_call_of_its_task_escalates() {
+        let ledger = Ledger::default();
+        let first = ledger.file(rung_call(Some("t1"), Some("cheap")));
+        assert_eq!((first.rung.as_deref(), first.escalated), (Some("cheap"), false));
+        let second = ledger.file(rung_call(Some("t1"), Some("frontier")));
+        assert_eq!((second.rung.as_deref(), second.escalated), (Some("frontier"), true));
+        // The task already had a cheaper call, so a later call on the frontier is still an escalation.
+        assert!(ledger.file(rung_call(Some("t1"), Some("frontier"))).escalated);
+        // Another task, no task, and a same-rung repeat with no lower call before are not.
+        assert!(!ledger.file(rung_call(Some("t2"), Some("frontier"))).escalated);
+        assert!(!ledger.file(rung_call(None, Some("mid"))).escalated);
+        assert!(!ledger.file(rung_call(Some("t3"), Some("mid"))).escalated);
+        assert!(!ledger.file(rung_call(Some("t3"), Some("mid"))).escalated);
+        // A lower rung after a higher one is not an escalation.
+        ledger.file(rung_call(Some("t4"), Some("frontier")));
+        assert!(!ledger.file(rung_call(Some("t4"), Some("cheap"))).escalated);
+
+        let page = ledger.calls(None, 50, None, None);
+        assert_eq!(page.calls.iter().find(|c| c.id == second.id).and_then(|c| c.rung.clone()).as_deref(), Some("frontier"));
+
+        // A record saved before rungs still loads, with no rung and no escalation.
+        let old = r#"{"id":1,"at_ms":5,"cid":1,"role":"worker","model":"a/x","provider":"a","input":1,"output":0,"cache_read":0,"cache_write":0,"est_usd":0.0,"via":"harness"}"#;
+        let old: Call = serde_json::from_str(old).unwrap();
+        assert_eq!((old.rung, old.escalated), (None, false));
+    }
+
+    #[test]
+    fn the_shadow_hook_picks_only_shadow_rung_models_and_logs_each_comparison() {
+        use crate::foundry::registry::State;
+        let picked = shadow_rung_ids(vec![
+            ("rung-a".to_string(), State::Shadow),
+            ("rung-b".to_string(), State::Promoted),
+            ("other".to_string(), State::Shadow),
+        ]);
+        assert_eq!(picked, ["rung-a"]);
+
+        let agreed = comparison_line("rung-a", "a/x", "mid", &Ok(true));
+        assert_eq!(agreed, "apid: shadow rung-a agreed with the real rung mid on a/x");
+        let differed = comparison_line("rung-a", "a/x", "mid", &Ok(false));
+        assert!(differed.contains("differed from the real rung mid"), "{differed}");
+        let failed = comparison_line("rung-a", "a/x", "mid", &Err("no model".into()));
+        assert!(failed.contains("did not run on a/x: no model"), "{failed}");
     }
 }

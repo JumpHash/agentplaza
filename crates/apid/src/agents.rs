@@ -41,6 +41,10 @@ pub struct Agent {
     pub run: Option<String>,
     pub vm: Option<u32>,
     pub usage: Usage,
+    /// The robot species the hub dealt this agent (or the owner set); see `looks`.
+    pub species: String,
+    /// "llm" for a VM agent, "model" for a promoted model (see foundry/registry.rs).
+    pub kind: String,
 }
 
 #[derive(Default)]
@@ -414,10 +418,13 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);
     let registered = app.spawned.hello(cid, role);
+    let role = role_on_hello(app.spawned.role_of(cid));
+    // The first hello of an agent deals its species (its look is kept after that).
+    let species = app.looks.ensure(cid, &role, now, || app.agents.list());
     let agent = Agent {
         cid,
         name: app.names.get(cid).unwrap_or_default(),
-        role: role_on_hello(app.spawned.role_of(cid)),
+        role,
         model_override: previous.as_ref().and_then(|old| old.model_override.clone()).or(registered),
         status: Status::Idle,
         connected_at_ms: now,
@@ -425,6 +432,8 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
         run: previous.as_ref().and_then(|old| old.run.clone()),
         vm: Some(vm),
         usage: previous.as_ref().map(|old| old.usage.clone()).unwrap_or_default(),
+        species,
+        kind: "llm".into(),
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
@@ -509,11 +518,19 @@ fn reconcile_once(app: &App) {
         // The trusted role (an operator spawn's, else the one noded booted the guest with) wins: an agent that said
         // hello before noded's runs were read, or before a noded restart, follows it.
         let role = app.spawned.role_of(agent.cid).unwrap_or_else(|| agent.role.clone());
+        // The orchestrator is always the rover, also when its role arrived after its look was dealt.
+        let species = if role != agent.role && role == crate::settings::ORCHESTRATOR_ROLE && agent.species != crate::looks::ROVER {
+            app.looks.set(agent.cid, crate::looks::ROVER, apz_plaza::now_ms());
+            crate::looks::ROVER.to_owned()
+        } else {
+            agent.species.clone()
+        };
         if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role {
             let updated = app.agents.update(agent.cid, |slot| {
                 slot.run = Some(run);
                 slot.vm = Some(vm);
                 slot.role = role;
+                slot.species = species;
             });
             if updated {
                 if let Some(fresh) = app.agents.get(agent.cid) {
@@ -572,7 +589,7 @@ pub fn check_chat_text(text: &str) -> Result<(), String> {
 }
 
 /// The API view of an agent: its fields, resolved model, tier, work, queue.
-fn view(app: &App, agent: &Agent) -> Value {
+pub(crate) fn view(app: &App, agent: &Agent) -> Value {
     let has_role_model = app.settings.get().role_models.contains_key(&agent.role);
     let mut v = serde_json::to_value(agent).unwrap_or(Value::Null);
     if let Some(obj) = v.as_object_mut() {
@@ -590,7 +607,7 @@ fn view(app: &App, agent: &Agent) -> Value {
 }
 
 /// The agent named by `{cid}`, or the 400/404 response.
-fn agent_at(app: &App, params: &Params<'_>) -> Result<Agent, Response> {
+pub(crate) fn agent_at(app: &App, params: &Params<'_>) -> Result<Agent, Response> {
     let cid = params
         .get("cid")
         .parse::<u64>()
@@ -599,7 +616,7 @@ fn agent_at(app: &App, params: &Params<'_>) -> Result<Agent, Response> {
 }
 
 /// The request body as `T`, or a 400 response.
-fn body<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
+pub(crate) fn body<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
     req.json::<T>().map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
@@ -761,6 +778,9 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
+    if agent.kind == "model" {
+        return Response::error(409, "a model agent has no chat");
+    }
     if agent.status == Status::Offline {
         return Response::error(409, "agent is offline");
     }
@@ -782,6 +802,9 @@ fn assign(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
+    if agent.kind == "model" {
+        return Response::error(409, "a model agent cannot be assigned tasks");
+    }
     if agent.status == Status::Offline {
         return Response::error(409, "agent is offline");
     }
@@ -923,6 +946,8 @@ mod route_tests {
             run: None,
             vm: None,
             usage: Usage::default(),
+            species: String::new(),
+            kind: "llm".into(),
         }
     }
 

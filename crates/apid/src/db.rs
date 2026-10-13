@@ -28,8 +28,9 @@ use crate::state::App;
 pub const COMPONENTS: &[&str] = &[
     "treasury", "tasks", "agora", "social", "council", "bonds",
     "projects", "toolbox", "harness", "approvals", "library", "deliverables", "connectors",
-    "names", "settings", "providers", "spawned", "laws", "society", "work",
-    "control", "custom_roles", "agent_proposals", "nodes", "prices", "usage",
+    "names", "settings", "providers", "spawned", "laws", "rules", "society", "work",
+    "control", "custom_roles", "agent_proposals", "nodes", "prices", "usage", "looks", "foundry",
+    "models",
 ];
 
 const SCHEMA: &str = "
@@ -87,6 +88,7 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "providers" => app.providers.snapshot(),
         "spawned" => app.spawned.snapshot(),
         "laws" => app.laws.snapshot(),
+        "rules" => app.laws.rules_snapshot(),
         "society" => app.society.snapshot(),
         "work" => app.work.snapshot(),
         "control" => app.control.snapshot(),
@@ -95,6 +97,9 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "nodes" => app.nodes.snapshot(),
         "prices" => app.prices.snapshot(),
         "usage" => app.usage.snapshot(),
+        "looks" => app.looks.snapshot(),
+        "foundry" => app.foundry.snapshot(),
+        "models" => app.models.snapshot(),
         _ => String::new(),
     }
 }
@@ -120,6 +125,7 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "providers" => app.providers.restore(json),
         "spawned" => app.spawned.restore(json),
         "laws" => app.laws.restore(json),
+        "rules" => app.laws.rules_restore(json),
         "society" => app.society.restore(json),
         "work" => app.work.restore(json),
         "control" => app.control.restore(json),
@@ -128,6 +134,9 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "nodes" => app.nodes.restore(json),
         "prices" => app.prices.restore(json),
         "usage" => app.usage.restore(json),
+        "looks" => app.looks.restore(json),
+        "foundry" => app.foundry.restore(json),
+        "models" => app.models.restore(json),
         other => Err(format!("unknown component {other}")),
     }
 }
@@ -498,6 +507,12 @@ pub fn spawn_writer(app: Arc<App>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The registry is a snapshotted component: restored at start and written by the writer.
+    #[test]
+    fn models_is_a_component() {
+        assert!(COMPONENTS.contains(&"models"));
+    }
 
     /// Runs only with APZ_TEST_DATABASE_URL set; uses a test-only component and a unique cid.
     #[test]

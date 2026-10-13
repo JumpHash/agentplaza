@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "id": "lifty",
+  "name": "Forky",
+  "blurb": "A little forklift with a glass cab face and a mast. Its forks are its arms; it lifts crates on them and beeps when it backs up.",
+  "accent": "#ffc233",
+  "height": 1.0,
+  "label_top": 1.25,
+  "locomotion": "wheels",
+  "gait": { "speed": 0.8, "freq": 1.2, "bob": 0.01, "sway": 0.05, "lean": 0.0, "sideways": false },
+  "bones": {
+    "base":   { "parent": "root", "at": [0, 0, 0] },
+    "axleF":  { "parent": "base", "at": [0, 0.12, 0.24] },
+    "axleR":  { "parent": "base", "at": [0, 0.12, -0.2] },
+    "body":   { "parent": "base", "at": [0, 0.12, 0] },
+    "head":   { "parent": "body", "at": [0, 0.28, -0.12] },
+    "beacon": { "parent": "head", "at": [0, 0.5, 0] },
+    "armL":   { "parent": "body", "at": [-0.14, 0.1, 0.24] },
+    "armR":   { "parent": "body", "at": [0.14, 0.1, 0.24] },
+    "gripL":  { "parent": "armL", "at": [0, 0.02, 0.45] },
+    "gripR":  { "parent": "armR", "at": [0, 0.02, 0.45] },
+    "carry":  { "parent": "body", "at": [0, 0.12, 0.4] }
+  },
+  "parts": [
+    { "bone": "axleF", "geo": { "type": "cyl", "rt": 0.12, "rb": 0.12, "h": 0.1, "seg": [16] }, "at": [-0.26, 0, 0], "rot": [0, 0, 90], "mat": "ink", "outline": false },
+    { "bone": "axleF", "geo": { "type": "cyl", "rt": 0.12, "rb": 0.12, "h": 0.1, "seg": [16] }, "at": [0.26, 0, 0], "rot": [0, 0, 90], "mat": "ink", "outline": false },
+    { "bone": "axleF", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.11, "seg": [12] }, "at": [-0.26, 0, 0], "rot": [0, 0, 90], "mat": "trim", "outline": false },
+    { "bone": "axleF", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.11, "seg": [12] }, "at": [0.26, 0, 0], "rot": [0, 0, 90], "mat": "trim", "outline": false },
+    { "bone": "axleF", "geo": { "type": "box", "w": 0.012, "h": 0.2, "d": 0.03 }, "at": [-0.32, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "axleF", "geo": { "type": "box", "w": 0.012, "h": 0.03, "d": 0.2 }, "at": [-0.326, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "axleF", "geo": { "type": "box", "w": 0.012, "h": 0.2, "d": 0.03 }, "at": [0.32, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "axleF", "geo": { "type": "box", "w": 0.012, "h": 0.03, "d": 0.2 }, "at": [0.326, 0, 0], "mat": "trim", "outline": false },
+
+    { "bone": "axleR", "geo": { "type": "cyl", "rt": 0.12, "rb": 0.12, "h": 0.1, "seg": [16] }, "at": [-0.26, 0, 0], "rot": [0, 0, 90], "mat": "ink", "outline": false },
+    { "bone": "axleR", "geo": { "type": "cyl", "rt": 0.12, "rb": 0.12, "h": 0.1, "seg": [16] }, "at": [0.26, 0, 0], "rot": [0, 0, 90], "mat": "ink", "outline": false },
+    { "bone": "axleR", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.11, "seg": [12] }, "at": [-0.26, 0, 0], "rot": [0, 0, 90], "mat": "trim", "outline": false },
+    { "bone": "axleR", "geo": { "type": "cyl", "rt": 0.05, "rb": 0.05, "h": 0.11, "seg": [12] }, "at": [0.26, 0, 0], "rot": [0, 0, 90], "mat": "trim", "outline": false },
+    { "bone": "axleR", "geo": { "type": "box", "w": 0.012, "h": 0.2, "d": 0.03 }, "at": [-0.32, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "axleR", "geo": { "type": "box", "w": 0.012, "h": 0.03, "d": 0.2 }, "at": [-0.326, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "axleR", "geo": { "type": "box", "w": 0.012, "h": 0.2, "d": 0.03 }, "at": [0.32, 0, 0], "mat": "trim", "outline": false },
+    { "bone": "axleR", "geo": { "type": "box", "w": 0.012, "h": 0.03, "d": 0.2 }, "at": [0.326, 0, 0], "mat": "trim", "outline": false },
+
+    { "bone": "body", "geo": { "type": "rbox", "w": 0.5, "h": 0.2, "d": 0.6, "r": 0.05, "seg": [2] }, "mat": "shell" },
+    { "bone": "body", "geo": { "type": "rbox", "w": 0.04, "h": 0.9, "d": 0.04, "r": 0.01, "seg": [2] }, "at": [-0.17, 0.544, 0.126], "mat": "trim", "outline": false },
+    { "bone": "body", "geo": { "type": "rbox", "w": 0.04, "h": 0.9, "d": 0.04, "r": 0.01, "seg": [2] }, "at": [0.17, 0.544, 0.126], "mat": "trim", "outline": false },
+    { "bone": "body", "geo": { "type": "rbox", "w": 0.4, "h": 0.03, "d": 0.04, "r": 0.01, "seg": [2] }, "at": [0, 1.0, 0.12], "mat": "trim", "outline": false },
+
+    { "bone": "head", "geo": { "type": "rbox", "w": 0.46, "h": 0.42, "d": 0.42, "r": 0.08, "seg": [3] }, "at": [0, 0.21, 0], "mat": "shell" },
+    { "bone": "head", "geo": { "type": "rbox", "w": 0.34, "h": 0.22, "d": 0.02, "r": 0.03, "seg": [2] }, "at": [0, 0.25, 0.21], "mat": "glass", "outline": false },
+    { "bone": "head", "geo": { "type": "rbox", "w": 0.5, "h": 0.05, "d": 0.46, "r": 0.02, "seg": [2] }, "at": [0, 0.44, 0], "mat": "signal", "outline": false },
+
+    { "bone": "beacon", "geo": { "type": "sphere", "r": 0.06, "seg": [10, 8] }, "mat": "light", "outline": false },
+
+    { "bone": "armL", "geo": { "type": "rbox", "w": 0.05, "h": 0.03, "d": 0.5, "r": 0.01, "seg": [2] }, "at": [0, 0, 0.25], "mat": "trim", "outline": false },
+    { "bone": "armL", "geo": { "type": "rbox", "w": 0.05, "h": 0.14, "d": 0.03, "r": 0.01, "seg": [2] }, "at": [0.006, 0.06, 0], "mat": "trim", "outline": false },
+    { "bone": "armR", "geo": { "type": "rbox", "w": 0.05, "h": 0.03, "d": 0.5, "r": 0.01, "seg": [2] }, "at": [0, 0, 0.25], "mat": "trim", "outline": false },
+    { "bone": "armR", "geo": { "type": "rbox", "w": 0.05, "h": 0.14, "d": 0.03, "r": 0.01, "seg": [2] }, "at": [0.006, 0.06, 0], "mat": "trim", "outline": false }
+  ],
+  "eyes": [
+    { "bone": "head", "at": [-0.09, 0.26, 0.225], "r": 0.07, "pupil": 0.05, "shape": "round" },
+    { "bone": "head", "at": [0.09, 0.26, 0.225], "r": 0.07, "pupil": 0.05, "shape": "round" }
+  ],
+  "spin": [
+    { "bone": "axleF", "axis": "x", "walk": 8, "idle": 0, "offline": 0 },
+    { "bone": "axleR", "axis": "x", "walk": 8, "idle": 0, "offline": 0 }
+  ],
+  "feet": [],
+  "floats": false,
+  "personality": { "social": 5, "energy": 6, "focus": 8, "curiosity": 3, "play": 3, "tidy": 9 },
+  "quirks": [{ "clip": "forky.lift", "weight": 4 }, { "clip": "forky.reverse", "weight": 3 }],
+  "clips": {
+    "forky.walk": {
+      "loop": true,
+      "channels": [
+        { "bone": "body", "prop": "pos.y", "amp": "gait.bob", "freq": "gait.freq", "wave": "abs" },
+        { "bone": "body", "prop": "rot.z", "amp": "gait.sway", "freq": "gait.freq" },
+        { "bone": "head", "prop": "rot.z", "amp": 0.04, "freq": "gait.freq" }
+      ]
+    },
+    "forky.lift": {
+      "loop": false,
+      "dur": 3.0,
+      "channels": [
+        { "bone": "armL", "prop": "pos.y", "amp": 0.14, "freq": 0.3333, "wave": "abs", "env": "in-out" },
+        { "bone": "armR", "prop": "pos.y", "amp": 0.14, "freq": 0.3333, "wave": "abs", "env": "in-out" },
+        { "bone": "carry", "prop": "pos.y", "amp": 0.14, "freq": 0.3333, "wave": "abs", "env": "in-out" }
+      ]
+    },
+    "forky.reverse": {
+      "loop": false,
+      "dur": 2.4,
+      "channels": [
+        { "bone": "beacon", "prop": "scale", "base": 0.05, "amp": 0.95, "freq": 1.25, "wave": "pulse", "duty": 0.5 },
+        { "bone": "head", "prop": "rot.y", "amp": 2.4, "freq": 0.2083, "wave": "halfsin", "env": "in-out" }
+      ]
+    }
+  },
+  "overrides": { "walk.wheels": "forky.walk" }
+}

@@ -102,7 +102,7 @@ pub struct App {
     /// Contacts and opinions between agents (AP-071/AP-072), at `<state-dir>/bonds.json`.
     pub bonds: apz_plaza::bonds::Bonds,
     /// The plaza's laws (JHRL), enforced on every tool call, and the violations on record.
-    pub laws: crate::laws::Laws,
+    pub laws: &'static crate::laws::Laws,
     /// External-tool connectors (AP-063): settings and vaulted keys.
     pub connectors: crate::connectors::Store,
     pub approvals: crate::approvals::Store,
@@ -134,12 +134,18 @@ pub struct App {
     pub prices: crate::prices::Catalog,
     /// Every model call's tokens, cache hits and cost.
     pub usage: crate::usage::Ledger,
+    /// Each agent's robot species (dealt on its first hello, or set by the owner).
+    pub looks: crate::looks::Looks,
+    /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
+    pub foundry: crate::foundry::store::Foundry,
     /// The hub's identity and the owner's access (see hub_auth).
     pub hub_auth: crate::hub_auth::Hub,
     pub settings: settings::Store,
     pub providers: providers::Store,
     pub roles: agents::Roles,
     pub agents: agents::Roster,
+    /// The model registry: the records on disk and the compiled models in memory.
+    pub models: crate::foundry::registry::Models,
     /// Agent names by CID, persisted at `<state-dir>/names.json`.
     pub names: agents::Names,
     /// Operator-spawned agents and model overrides, at `<state-dir>/spawned.json`.
@@ -158,18 +164,21 @@ pub struct App {
 impl App {
     /// Loads the state, starts the background threads and serves.
     pub fn start(config: Config) -> std::io::Result<apz_http::Handle> {
+        // Parse the species index now: a broken index stops the hub here, not at the first hello.
+        crate::looks::catalog();
         let env = config.env_file.as_deref().map(read_env_file).unwrap_or_default();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
         let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
         let hub_auth = crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let foundry_dir = config.state_dir.join("foundry");
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
             memory: crate::memory::Memory::new(config.state_dir.join("memory")),
             bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
-            laws: crate::laws::Laws::load(&config.state_dir),
+            laws: attached_laws(&config.state_dir),
             connectors: crate::connectors::Store::load(&config.state_dir, env.clone())?,
             approvals: crate::approvals::Store::load(&config.state_dir),
             library: crate::library::Store::load(&config.state_dir),
@@ -186,6 +195,8 @@ impl App {
             nodes: crate::nodes::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::default(),
+            looks: crate::looks::Looks::default(),
+            foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
             hub_auth,
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
@@ -193,6 +204,7 @@ impl App {
             names: agents::Names::load(config.state_dir.join("names.json")),
             spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
             agents: agents::Roster::default(),
+            models: crate::foundry::registry::Models::open(&config.state_dir),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
             plaza: plaza::Plaza::new(snapshot.as_deref()),
@@ -206,6 +218,7 @@ impl App {
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
+        crate::foundry::routes::spawn_tracker(Arc::clone(&app));
         // Model prices: refreshed when stale (at start, then hourly; the catalog decides).
         let prices_app = Arc::clone(&app);
         std::thread::spawn(move || loop {
@@ -227,6 +240,8 @@ impl App {
         }
         // Postgres is the state of record: restore from it, then keep it current.
         crate::db::restore_all(&app);
+        // Promoted models come back on the roster with their CIDs.
+        app.models.revive(&app.agents, &app.looks);
         crate::db::spawn_writer(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
@@ -263,6 +278,13 @@ impl App {
 /// Reads `KEY=VALUE` lines (blank lines and `#` comments skipped; an
 /// `export ` prefix and surrounding quotes allowed). The values are provider
 /// credentials: they are handed to the gateway, never logged.
+/// The plaza's one law set (`laws::global`), made to read and write the state directory.
+fn attached_laws(state_dir: &Path) -> &'static crate::laws::Laws {
+    let laws = crate::laws::global();
+    laws.attach(state_dir);
+    laws
+}
+
 fn read_env_file(path: &Path) -> BTreeMap<String, String> {
     let Ok(text) = std::fs::read_to_string(path) else { return BTreeMap::new() };
     text.lines()

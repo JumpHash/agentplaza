@@ -522,10 +522,10 @@ mod tests {
     #[test]
     fn the_shipped_manifest_pins_each_role_to_its_slot() {
         let fleet = Fleet::load(&shipped_manifest(), 100, 128, 1).expect("the shipped manifest");
-        // Slot order: the CIDs the sixteen roles have always had (alphabetical
-        // over those sixteen). A role added later takes the next slot, so no
-        // existing role's CID moves.
-        let pinned: [(&str, u64); 16] = [
+        // Slot order. The sixteen roles that existed before `breeder` keep the
+        // CIDs they had (alphabetical over those sixteen); `breeder` takes the
+        // next slot, so no existing role's CID moves.
+        let pinned: [(&str, u64); 17] = [
             ("architect", 0),
             ("auditor", 1),
             ("builder", 2),
@@ -542,6 +542,7 @@ mod tests {
             ("researcher", 13),
             ("reviewer", 14),
             ("security-reviewer", 15),
+            ("breeder", 16),
         ];
         let booted: Vec<(String, u64)> = fleet
             .vms()

@@ -53,8 +53,14 @@ pub fn router() -> Router<App> {
     let router = crate::node_link::routes(router);
     let router = crate::hub_auth::routes(router);
     let router = memory::routes(router);
+    let router = crate::foundry::routes::routes(router);
+    let router = crate::foundry::registry::routes(router);
+    // The species dealt to agents (`looks`): the list with counts, and the owner's choice of one.
+    let router = router
+        .get("/v1/robots/species", |app, _, _| crate::looks::species_list(app))
+        .route("PUT", "/v1/agents/{cid}/species", |app, req, p| crate::looks::set_species(app, req, p));
     router
-        .get("/", |app, _, _| static_file(&app.config.console, "index.html"))
+        .get("/",|app, _, _| static_file(&app.config.console, "index.html"))
         .get("/{file}", |app, _, p| static_file(&app.config.console, p.get("file")))
         .get("/assets/{file}", |app, _, p| static_file(&app.config.console, &format!("assets/{}", p.get("file"))))
 }

@@ -1,0 +1,1328 @@
+{
+  "schema": 1,
+  "id": "crab",
+  "name": "Pinch",
+  "blurb": "Wide and low on six scuttling legs, with two big claws that double as grips. Clacks when pleased and shuffles sideways to dance.",
+  "accent": "#ff6f61",
+  "height": 1.0,
+  "label_top": 0.98,
+  "locomotion": "scuttle",
+  "gait": {
+    "speed": 0.6,
+    "freq": 2.8,
+    "bob": 0.02,
+    "sway": 0.03,
+    "lean": 0,
+    "sideways": true
+  },
+  "bones": {
+    "base": {
+      "parent": "root",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "body": {
+      "parent": "root",
+      "at": [
+        0,
+        0.38,
+        0
+      ]
+    },
+    "head": {
+      "parent": "body",
+      "at": [
+        0,
+        0,
+        0
+      ]
+    },
+    "armL": {
+      "parent": "body",
+      "at": [
+        -0.36,
+        -0.02,
+        0.22
+      ]
+    },
+    "gripL": {
+      "parent": "armL",
+      "at": [
+        0,
+        0.05,
+        0.44
+      ]
+    },
+    "armR": {
+      "parent": "body",
+      "at": [
+        0.36,
+        -0.02,
+        0.22
+      ]
+    },
+    "gripR": {
+      "parent": "armR",
+      "at": [
+        0,
+        0.05,
+        0.44
+      ]
+    },
+    "carry": {
+      "parent": "body",
+      "at": [
+        0,
+        0.3,
+        -0.06
+      ]
+    },
+    "legL1": {
+      "parent": "body",
+      "at": [
+        -0.26,
+        -0.04,
+        0.16
+      ]
+    },
+    "legL2": {
+      "parent": "body",
+      "at": [
+        -0.3,
+        -0.04,
+        0
+      ]
+    },
+    "legL3": {
+      "parent": "body",
+      "at": [
+        -0.26,
+        -0.04,
+        -0.16
+      ]
+    },
+    "legR1": {
+      "parent": "body",
+      "at": [
+        0.26,
+        -0.04,
+        0.16
+      ]
+    },
+    "legR2": {
+      "parent": "body",
+      "at": [
+        0.3,
+        -0.04,
+        0
+      ]
+    },
+    "legR3": {
+      "parent": "body",
+      "at": [
+        0.26,
+        -0.04,
+        -0.16
+      ]
+    }
+  },
+  "parts": [
+    {
+      "bone": "body",
+      "geo": {
+        "type": "sphere",
+        "r": 0.36,
+        "seg": [
+          24,
+          12
+        ],
+        "half": "top"
+      },
+      "at": [
+        0,
+        0,
+        0
+      ],
+      "mat": "shell",
+      "scale": [
+        1.2,
+        0.95,
+        1.05
+      ]
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.035,
+        "rb": 0.04,
+        "h": 0.36,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.15,
+        0.2,
+        0.06
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "body",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.035,
+        "rb": 0.04,
+        "h": 0.36,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.15,
+        0.2,
+        0.06
+      ],
+      "mat": "shell",
+      "outline": false
+    },
+    {
+      "bone": "legL1",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.2683,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.12,
+        0.06,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        63.43
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legL1",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.036,
+        "rb": 0.026,
+        "h": 0.4754,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.3,
+        -0.11,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        165.38
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legL1",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        -0.24,
+        0.12,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legL2",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.2683,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.12,
+        0.06,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        63.43
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legL2",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.036,
+        "rb": 0.026,
+        "h": 0.4754,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.3,
+        -0.11,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        165.38
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legL2",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        -0.24,
+        0.12,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legL3",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.2683,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.12,
+        0.06,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        63.43
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legL3",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.036,
+        "rb": 0.026,
+        "h": 0.4754,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        -0.3,
+        -0.11,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        165.38
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legL3",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        -0.24,
+        0.12,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legR1",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.2683,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.12,
+        0.06,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        -63.43
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legR1",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.036,
+        "rb": 0.026,
+        "h": 0.4754,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.3,
+        -0.11,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        -165.38
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legR1",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0.24,
+        0.12,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legR2",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.2683,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.12,
+        0.06,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        -63.43
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legR2",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.036,
+        "rb": 0.026,
+        "h": 0.4754,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.3,
+        -0.11,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        -165.38
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legR2",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0.24,
+        0.12,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "legR3",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.042,
+        "rb": 0.036,
+        "h": 0.2683,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.12,
+        0.06,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        -63.43
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legR3",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.036,
+        "rb": 0.026,
+        "h": 0.4754,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0.3,
+        -0.11,
+        0
+      ],
+      "mat": "shell2",
+      "rot": [
+        0,
+        0,
+        -165.38
+      ],
+      "outline": false
+    },
+    {
+      "bone": "legR3",
+      "geo": {
+        "type": "sphere",
+        "r": 0.05,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0.24,
+        0.12,
+        0
+      ],
+      "mat": "shell2",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.05,
+        "h": 0.204,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.02,
+        0.1
+      ],
+      "mat": "shell",
+      "rot": [
+        79,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.16,
+        "seg": [
+          14,
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.05,
+        0.36
+      ],
+      "mat": "accent",
+      "scale": [
+        1.0,
+        0.95,
+        1.2
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cone",
+        "r": 0.065,
+        "h": 0.24,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0.54
+      ],
+      "mat": "accent",
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "cone",
+        "r": 0.06,
+        "h": 0.22,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.04,
+        0.52
+      ],
+      "mat": "accent",
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.03,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0.65
+      ],
+      "mat": "ink",
+      "outline": false
+    },
+    {
+      "bone": "armL",
+      "geo": {
+        "type": "sphere",
+        "r": 0.03,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0,
+        -0.04,
+        0.62
+      ],
+      "mat": "ink",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cyl",
+        "rt": 0.05,
+        "rb": 0.05,
+        "h": 0.204,
+        "seg": [
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.02,
+        0.1
+      ],
+      "mat": "shell",
+      "rot": [
+        79,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.16,
+        "seg": [
+          14,
+          10
+        ]
+      },
+      "at": [
+        0,
+        0.05,
+        0.36
+      ],
+      "mat": "accent",
+      "scale": [
+        1.0,
+        0.95,
+        1.2
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cone",
+        "r": 0.065,
+        "h": 0.24,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0.54
+      ],
+      "mat": "accent",
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "cone",
+        "r": 0.06,
+        "h": 0.22,
+        "seg": [
+          8
+        ]
+      },
+      "at": [
+        0,
+        -0.04,
+        0.52
+      ],
+      "mat": "accent",
+      "rot": [
+        90,
+        0,
+        0
+      ],
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.03,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0,
+        0.15,
+        0.65
+      ],
+      "mat": "ink",
+      "outline": false
+    },
+    {
+      "bone": "armR",
+      "geo": {
+        "type": "sphere",
+        "r": 0.03,
+        "seg": [
+          8,
+          6
+        ]
+      },
+      "at": [
+        0,
+        -0.04,
+        0.62
+      ],
+      "mat": "ink",
+      "outline": false
+    }
+  ],
+  "eyes": [
+    {
+      "bone": "body",
+      "at": [
+        -0.15,
+        0.4,
+        0.06
+      ],
+      "r": 0.13,
+      "pupil": 0.075,
+      "shape": "round"
+    },
+    {
+      "bone": "body",
+      "at": [
+        0.15,
+        0.4,
+        0.06
+      ],
+      "r": 0.13,
+      "pupil": 0.075,
+      "shape": "round"
+    }
+  ],
+  "spin": [],
+  "feet": [],
+  "floats": false,
+  "personality": {
+    "social": 6,
+    "energy": 8,
+    "focus": 5,
+    "curiosity": 5,
+    "play": 7,
+    "tidy": 5
+  },
+  "quirks": [
+    {
+      "clip": "crab.clack",
+      "weight": 3
+    },
+    {
+      "clip": "crab.dance",
+      "weight": 2
+    }
+  ],
+  "clips": {
+    "crab.clack": {
+      "loop": false,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.y",
+          "base": 0,
+          "amp": 0.35,
+          "freq": 4,
+          "wave": "square"
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.y",
+          "base": 0,
+          "amp": -0.35,
+          "freq": 4,
+          "wave": "square"
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.012,
+          "freq": 4
+        }
+      ],
+      "dur": 1.4
+    },
+    "crab.dance": {
+      "loop": false,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "pos.x",
+          "amp": 0.08,
+          "freq": 0.8,
+          "env": "in-out"
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.1,
+          "freq": 0.8,
+          "env": "in-out"
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": -0.4,
+          "amp": 0.2,
+          "freq": 1.6,
+          "env": "in-out"
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.4,
+          "amp": -0.2,
+          "freq": 1.6,
+          "env": "in-out"
+        },
+        {
+          "bone": "legL1",
+          "prop": "rot.y",
+          "amp": 0.3,
+          "freq": 1.6,
+          "env": "in-out"
+        },
+        {
+          "bone": "legL3",
+          "prop": "rot.y",
+          "amp": 0.3,
+          "freq": 1.6,
+          "env": "in-out"
+        },
+        {
+          "bone": "legR2",
+          "prop": "rot.y",
+          "amp": 0.3,
+          "freq": 1.6,
+          "env": "in-out"
+        },
+        {
+          "bone": "legL2",
+          "prop": "rot.y",
+          "amp": 0.3,
+          "freq": 1.6,
+          "phase": 3.1416,
+          "env": "in-out"
+        },
+        {
+          "bone": "legR1",
+          "prop": "rot.y",
+          "amp": 0.3,
+          "freq": 1.6,
+          "phase": 3.1416,
+          "env": "in-out"
+        },
+        {
+          "bone": "legR3",
+          "prop": "rot.y",
+          "amp": 0.3,
+          "freq": 1.6,
+          "phase": 3.1416,
+          "env": "in-out"
+        }
+      ],
+      "dur": 2.6
+    },
+    "crab.type": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.3,
+          "amp": 0.1,
+          "freq": 2.4
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.3,
+          "amp": 0.1,
+          "freq": 2.4,
+          "phase": 3.1416
+        },
+        {
+          "bone": "body",
+          "prop": "rot.x",
+          "base": 0.03,
+          "amp": 0.02,
+          "freq": 1.2
+        }
+      ]
+    },
+    "crab.draw": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.35,
+          "amp": 0.06,
+          "freq": 0.9
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.y",
+          "amp": 0.12,
+          "freq": 0.9,
+          "phase": 1.5708
+        },
+        {
+          "bone": "body",
+          "prop": "rot.x",
+          "base": 0.04,
+          "amp": 0.015,
+          "freq": 0.9
+        }
+      ]
+    },
+    "crab.write": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.3,
+          "amp": 0.05,
+          "freq": 3.0
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.y",
+          "amp": 0.07,
+          "freq": 3.0,
+          "phase": 1.5708
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.2,
+          "amp": 0.05,
+          "freq": 3.0,
+          "phase": 3.1416
+        },
+        {
+          "bone": "body",
+          "prop": "rot.x",
+          "base": 0.05,
+          "amp": 0.015,
+          "freq": 1.5
+        }
+      ]
+    },
+    "crab.solder": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.25,
+          "amp": 0.02,
+          "freq": 2.0
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": -0.2,
+          "amp": 0.02,
+          "freq": 2.0
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.03,
+          "freq": 1.0
+        }
+      ],
+      "fx": [
+        {
+          "kind": "sparks",
+          "at": "gripR",
+          "every": 0.6
+        }
+      ]
+    },
+    "crab.probe": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.45,
+          "amp": 0.05,
+          "freq": 0.7
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.y",
+          "base": -0.1,
+          "amp": 0.08,
+          "freq": 0.35
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.06,
+          "freq": 0.35
+        }
+      ]
+    },
+    "crab.pour": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.6,
+          "amp": 0.05,
+          "freq": 0.5
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.4,
+          "amp": 0.03,
+          "freq": 0.5
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "base": -0.05,
+          "amp": 0.03,
+          "freq": 0.4
+        }
+      ]
+    },
+    "crab.carry": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": -0.25,
+          "amp": 0.03,
+          "freq": 1.2
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.25,
+          "amp": 0.03,
+          "freq": 1.2,
+          "phase": 3.1416
+        },
+        {
+          "bone": "body",
+          "prop": "pos.y",
+          "amp": 0.015,
+          "freq": 1.2
+        }
+      ]
+    },
+    "crab.talk": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": 0.0,
+          "amp": 0.2,
+          "freq": 1.5
+        },
+        {
+          "bone": "armL",
+          "prop": "rot.x",
+          "base": 0.0,
+          "amp": 0.2,
+          "freq": 1.5,
+          "phase": 3.1416
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.04,
+          "freq": 1.1
+        }
+      ],
+      "fx": [
+        {
+          "kind": "dots",
+          "at": "carry",
+          "every": 1.2
+        }
+      ]
+    },
+    "crab.point": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "armR",
+          "prop": "rot.y",
+          "base": 0.2,
+          "amp": 0.03,
+          "freq": 0.6
+        },
+        {
+          "bone": "armR",
+          "prop": "rot.x",
+          "base": -0.1,
+          "amp": 0.03,
+          "freq": 0.6
+        },
+        {
+          "bone": "body",
+          "prop": "rot.y",
+          "base": 0.1,
+          "amp": 0.02,
+          "freq": 0.6
+        }
+      ]
+    },
+    "crab.scuttle": {
+      "loop": true,
+      "channels": [
+        {
+          "bone": "body",
+          "prop": "pos.x",
+          "amp": 0.03,
+          "freq": 1.4
+        },
+        {
+          "bone": "body",
+          "prop": "rot.z",
+          "amp": 0.04,
+          "freq": 1.4
+        },
+        {
+          "bone": "legL1",
+          "prop": "rot.y",
+          "amp": 0.35,
+          "freq": 1.4
+        },
+        {
+          "bone": "legL3",
+          "prop": "rot.y",
+          "amp": 0.35,
+          "freq": 1.4
+        },
+        {
+          "bone": "legR2",
+          "prop": "rot.y",
+          "amp": 0.35,
+          "freq": 1.4
+        },
+        {
+          "bone": "legL2",
+          "prop": "rot.y",
+          "amp": 0.35,
+          "freq": 1.4,
+          "phase": 3.1416
+        },
+        {
+          "bone": "legR1",
+          "prop": "rot.y",
+          "amp": 0.35,
+          "freq": 1.4,
+          "phase": 3.1416
+        },
+        {
+          "bone": "legR3",
+          "prop": "rot.y",
+          "amp": 0.35,
+          "freq": 1.4,
+          "phase": 3.1416
+        }
+      ]
+    }
+  },
+  "overrides": {
+    "type": "crab.type",
+    "draw": "crab.draw",
+    "write": "crab.write",
+    "solder": "crab.solder",
+    "probe": "crab.probe",
+    "pour": "crab.pour",
+    "carry": "crab.carry",
+    "talk": "crab.talk",
+    "point": "crab.point",
+    "walk.scuttle": "crab.scuttle"
+  }
+}

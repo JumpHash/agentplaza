@@ -43,6 +43,27 @@
     "submit_audit_report"
    ]
   },
+  "breeder": {
+   "role": "breeder",
+   "slot": 16,
+   "title": "Breeder",
+   "permits": [
+    "statutes/S-006"
+   ],
+   "toolsets": [
+    "python"
+   ],
+   "budget": 1500,
+   "variant": null,
+   "tools": [
+    "foundry_datasets",
+    "foundry_export",
+    "foundry_submit_job",
+    "foundry_job_status",
+    "foundry_request_shadow",
+    "invoke_model"
+   ]
+  },
   "builder": {
    "role": "builder",
    "slot": 2,

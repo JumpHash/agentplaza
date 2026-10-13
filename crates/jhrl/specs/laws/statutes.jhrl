@@ -165,11 +165,11 @@ law "S-003c" "Planners may create tasks in their town" {
   tier statute
   enforcement preventive
   severity info
-  statement "A planner may create tasks in its own town. Tasks still need plan approval before work starts."
+  statement "A planner or the orchestrator may create tasks in its own town. Tasks still need plan approval before work starts."
   permit task.create
   principal is Agent
   resource is Town
-  when principal.role == "planner" and resource == principal.town
+  when (principal.role == "planner" or principal.role == "orchestrator") and resource.name == principal.town.name
 }
 
 law "S-003d" "Planners may submit plans for their town" {
@@ -180,7 +180,7 @@ law "S-003d" "Planners may submit plans for their town" {
   permit plan.submit
   principal is Agent
   resource is Town
-  when principal.role == "planner" and resource == principal.town
+  when principal.role == "planner" and resource.name == principal.town.name
 }
 
 law "S-004a" "Mayors assign work within their town" {
@@ -202,7 +202,7 @@ law "S-004b" "Mayors manage their town's population" {
   permit agent.spawn, agent.hibernate
   principal is Agent
   resource is Town
-  when principal.role == "mayor" and resource == principal.town
+  when principal.role == "mayor" and resource.name == principal.town.name
 }
 
 law "S-004c" "Mayors approve plans and merges below threshold" {
@@ -312,7 +312,7 @@ law "S-009b" "Architects submit designs for their town" {
   permit design.submit
   principal is Agent
   resource is Town
-  when principal.role == "architect" and resource == principal.town
+  when principal.role == "architect" and resource.name == principal.town.name
 }
 
 law "S-010a" "QA may reach package registries and hub git" {
@@ -334,7 +334,7 @@ law "S-010b" "QA submits test suites for its town" {
   permit testsuite.submit
   principal is Agent
   resource is Town
-  when principal.role == "qa" and resource == principal.town
+  when principal.role == "qa" and resource.name == principal.town.name
 }
 
 law "S-010d" "Hidden test suites stay hidden" {
@@ -422,7 +422,7 @@ law "S-013c" "Researchers submit research briefs" {
   permit research.submit
   principal is Agent
   resource is Town
-  when principal.role == "researcher" and resource == principal.town
+  when principal.role == "researcher" and resource.name == principal.town.name
 }
 
 law "S-013d" "Researchers never write to repositories" {
@@ -532,4 +532,99 @@ law "S-016d" "Edge operators submit device reports" {
   principal is Agent
   resource is Report
   when principal.role == "edge-operator" and context.kind == "device"
+}
+
+// S-006: the breeder bundle, moved here from docs/codex-draft/statutes/S-006-breeder-bundle.cedar.
+// Breeders may submit jobs up to 8 GPU-hours (S-006c) and are forbidden above that (S-006d).
+// Model agents take no tasks and no messages (S-006f, S-006g). invoke_model runs a model only where
+// its card allows the role (S-006e).
+
+law "S-006a" "Breeders work in their own sandbox" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A breeder may run commands in its own microVM to prepare data and job specs."
+  permit tool.exec
+  principal is Agent
+  resource is Sandbox
+  when resource.agent == principal and principal.role == "breeder"
+}
+
+law "S-006b" "Breeders use the Foundry tools" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A breeder may call the Foundry's dataset, export, job and shadow tools, and invoke_model."
+  rationale "invoke_model still runs a model only where the model card allows the caller's role (S-006e)."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when principal.role == "breeder" and resource.name in ["foundry_datasets", "foundry_export", "foundry_submit_job", "foundry_job_status", "foundry_request_shadow", "invoke_model"]
+}
+
+law "S-006c" "Breeders may submit training jobs up to 8 GPU-hours" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A breeder may submit a training job that runs a vetted recipe for at most 8 GPU-hours."
+  permit training.submit
+  principal is Agent
+  resource is Town
+  when principal.role == "breeder" and context.gpu_hours <= 8
+}
+
+law "S-006d" "Breeders may not submit jobs over 8 GPU-hours" {
+  tier statute
+  enforcement preventive
+  severity major
+  statement "A breeder's training job above 8 GPU-hours is refused; a larger job needs a per-case grant."
+  forbid training.submit
+  principal is Agent
+  resource is Town
+  when principal.role == "breeder" and context.gpu_hours > 8
+}
+
+law "S-006e" "A model runs only where its card allows the role" {
+  tier statute
+  enforcement preventive
+  severity major
+  statement "invoke_model runs a model only for a role its model card lists in allowed_roles."
+  permit model.invoke
+  principal is Agent
+  resource is Model
+  when context.role_allowed
+}
+
+law "S-006f" "Model agents are never tasked" {
+  tier statute
+  enforcement preventive
+  severity major
+  statement "A model agent takes no tasks: it runs only when a caller invokes it."
+  rationale "A model agent has no VM, no tools and no chat, so a task assigned to it could never be done."
+  forbid task.assign
+  principal is Agent
+  resource is Task
+  when context.assignee.kind == "model"
+}
+
+law "S-006g" "Model agents are never messaged" {
+  tier statute
+  enforcement preventive
+  severity major
+  statement "No agent may send a message to a model agent: a model agent has no chat."
+  forbid message.send
+  principal is Agent
+  resource is Agent
+  when resource.kind == "model"
+}
+
+law "S-006h" "A model is never run for a role its card does not list" {
+  tier statute
+  enforcement preventive
+  severity major
+  statement "invoke_model refuses a model for a role outside the model card allowed_roles, and the attempt is recorded."
+  forbid model.invoke
+  principal is Agent
+  resource is Model
+  when not context.role_allowed
 }

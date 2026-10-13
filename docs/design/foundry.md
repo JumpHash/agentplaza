@@ -149,3 +149,19 @@ Uses the shared chart modules.
 - On this box: a real CUDA job in `apz-trainer:cuda` (native Docker with the NVIDIA runtime), single GPU;
   plus 2 tight processes sharing the GPU via gloo and a loose 2-island run (GPU island + CPU island).
 - Multi-machine tight/loose on real hardware needs more machines; CI covers the protocol with processes.
+
+## Shadow runs on the cascade
+
+Every model call metered by `usage::meter` (gateway and harness) carries a rung record in its `usage::Call`:
+- `rung`: `cheap`, `mid` or `frontier`, from the served model's output price (`datasets::rung_for_price`, the
+  cut points the dataset export uses). Absent when no price is known, and on records saved before rungs.
+- `escalated`: true when the call's task already had a call on a lower rung. It is set when the call is filed
+  (`Ledger::file`), from the retained call rows, so pruned calls no longer count. Untasked calls never escalate.
+The routing itself has no escalation yet; these fields record what the cascade did, to score the predictor against.
+
+The shadow hook is `usage::shadow_on_cascade`, called in `meter` after the real rung is set and before the record
+is filed. Each registry model in state `shadow` whose card id starts with `rung` runs through
+`breeder::shadow_run`, with the call's features (model, task, via, token counts, estimated cost) as input and
+`{"label": rung}` as the real decision. The runs happen on a thread from the app's weak handle, so the call never
+waits for them, and they only read the call: the real rung stays as filed. Each run logs one stderr line (agreed,
+differed or did not run); agreement and cost saved go to the model's shadow stats.
