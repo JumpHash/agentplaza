@@ -31,6 +31,7 @@ Audited on 2026-10-13 against the code (each row checked by the hub endpoints bo
 | 15 | Agent profile | 3D portrait (engine) | done |
 | 16 | Shell | Toasts, a theme switch, conversation search and pagination, task withdraw, connector secret clear | done |
 | 17 | Prompts | The prompt library: list, editor, versions, compare, publish, history, rules | done in both apps (e91d418); the desktop checks locally with the same `apz-prompt` crate |
+| 18 | Skills | The skill library: list, New, Import (zip, .skill; a folder on the desktop), From GitHub, Export, the editor (file tree, preview, findings, versions, compare, history, rules, bindings, publish, GitHub update) | done in both apps (8fb8bab); the desktop checks locally with `apz-skill` |
 
 ## Web gaps (desktop has it)
 
