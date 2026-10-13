@@ -87,6 +87,8 @@ pub struct Stage {
     pub reduced_motion: bool,
     /// The capture hooks' key presses (`APZ_AUTO_ENTER`, `APZ_AUTO_BACK`), when either is set.
     pub auto: Option<Auto>,
+    /// One machine on the studio stage (`Cmd::ShowMachine`), when it is shown; it takes over the view.
+    pub machine: Option<crate::machine_stage::MachineStage>,
 }
 
 /// The capture hooks' key presses: ENTER at `enter` seconds and Back at `back` seconds, counted from the screen's start.
@@ -153,6 +155,7 @@ impl Default for Stage {
             moved: lab_mode,
             entry: None,
             direct_waved: false,
+            machine: None,
             reduced_motion: false,
             auto: Auto::from_env(),
         }
@@ -496,6 +499,10 @@ pub fn resize(&mut self, w: f32, h: f32) {
 
 /// Orbits the shown view by a drag.
 pub fn rotate(&mut self, dx: f32, dy: f32, height: f32) {
+    if let Some(m) = self.machine.as_mut() {
+        m.rotate(dx, dy, height);
+        return;
+    }
     self.moved = true;
     self.machines.orbit.stop_drift(); // input stops the idle sway
     self.active().orbit.rotate(dx, dy, height);
@@ -510,6 +517,10 @@ pub fn pan(&mut self, dx: f32, dy: f32, height: f32) {
 
 /// Zooms the shown view by a wheel step count.
 pub fn dolly(&mut self, steps: f32) {
+    if let Some(m) = self.machine.as_mut() {
+        m.dolly(steps);
+        return;
+    }
     self.moved = true;
     self.machines.orbit.stop_drift(); // input stops the idle sway
     self.active().orbit.dolly(steps);
@@ -569,6 +580,9 @@ pub fn select(&mut self, at: Option<(f32, f32)>) {
 /// moves after this tick: `Active` while damping, tweens, walking robots, the ENTER flight or board work run,
 /// `Ambient` while only the clock-driven decoration turns, `Rest` when nothing animates.
 pub fn tick(&mut self, now: Instant) -> Motion {
+    if self.machine.is_some() {
+        return self.tick_machine(now);
+    }
     let elapsed = self.last.map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
     let dt = elapsed.min(0.05);
     self.last = Some(now);

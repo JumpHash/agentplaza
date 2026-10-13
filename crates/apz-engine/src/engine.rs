@@ -43,6 +43,10 @@ pub enum Cmd {
     ResetView,
     /// Open the popup of a machine (Machines view), or close it with None.
     OpenPopup(Option<String>),
+    /// Show one machine of the feed on the studio stage (its orbit view), by its id.
+    ShowMachine { id: String },
+    /// Leave the machine stage for the view underneath.
+    LeaveMachine,
 }
 
 /// What is under a point: a machine in the Machines view, or a robot in a machine's view.
@@ -210,6 +214,9 @@ impl Engine {
 
     /// Runs a host command on the stage.
     pub fn command(&mut self, cmd: Cmd) {
+        if !matches!(cmd, Cmd::ShowMachine { .. }) {
+            self.stage.machine = None;
+        }
         match cmd {
             Cmd::ShowMachines => self.stage.set_view(View::Machines),
             Cmd::SelectMachine(id) => self.stage.set_view(View::Machine(id)),
@@ -217,6 +224,10 @@ impl Engine {
             Cmd::Back => self.stage.leave(),
             Cmd::ResetView => self.stage.reset_view(),
             Cmd::OpenPopup(id) => self.stage.open_popup(id),
+            Cmd::ShowMachine { id } => {
+                self.stage.show_machine(&id);
+            }
+            Cmd::LeaveMachine => self.stage.leave_machine(),
         }
         self.dirty = true;
     }
@@ -248,6 +259,9 @@ impl Engine {
         self.dirty = false;
         self.busy = motion != Motion::Rest;
 
+        if let Some(machine) = self.stage.machine.as_ref() {
+            return FrameOut { motion, labels: Vec::new(), camera: machine.camera() };
+        }
         let floor = match self.stage.view {
             View::Machines => &self.stage.machines,
             _ => &self.stage.floor,

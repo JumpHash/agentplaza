@@ -202,6 +202,8 @@ impl WebEngine {
             ("back", _) => Cmd::Back,
             ("reset", _) => Cmd::ResetView,
             ("popup", arg) => Cmd::OpenPopup(arg.filter(|id| !id.is_empty())),
+            ("show_machine", Some(id)) => Cmd::ShowMachine { id },
+            ("leave_machine", _) => Cmd::LeaveMachine,
             _ => return,
         };
         self.shared.borrow_mut().engine.command(cmd);
