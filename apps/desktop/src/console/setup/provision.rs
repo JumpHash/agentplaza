@@ -5,14 +5,12 @@
 //! the containers' own settings. They never reach the log: every command line shown to the user
 //! has its secrets replaced by `***` ([`redact`]), and failures are reported redacted too.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const POSTGRES: &str = "agentplaza-postgres";
 const FORGEJO: &str = "agentplaza-forgejo";
@@ -36,7 +34,7 @@ pub fn postgres(log: &mut dyn FnMut(String)) -> Result<(), String> {
             }
         }
         None => {
-            let pw = get_key("APZ_POSTGRES_PASSWORD").unwrap_or_else(secret);
+            let pw = match get_key("APZ_POSTGRES_PASSWORD") { Some(pw) => pw, None => secret()? };
             run_docker(log, &["volume", "create", "agentplaza-postgres"], &[])?;
             let password = format!("POSTGRES_PASSWORD={pw}");
             run_docker(
@@ -131,7 +129,7 @@ pub fn forgejo(log: &mut dyn FnMut(String)) -> Result<(), String> {
         Duration::from_secs(2),
     )?;
     if existed.is_none() {
-        let pw = secret();
+        let pw = secret()?;
         let created = run_docker(
             log,
             &[
@@ -154,14 +152,17 @@ pub fn forgejo(log: &mut dyn FnMut(String)) -> Result<(), String> {
             ],
             &[pw.as_str()],
         );
-        match created {
-            Ok(_) => {}
+        // The admin's password is recorded only when this run created the admin: an existing one
+        // keeps its own (the token below is what apid uses).
+        let created = match created {
+            Ok(_) => true,
             Err(e) if e.to_lowercase().contains("already exists") => {
                 log("the admin user plaza already exists: continuing".to_string());
+                false
             }
             Err(e) => return Err(e),
-        }
-        let token_name = format!("apid-{}", &secret()[..8]);
+        };
+        let token_name = format!("apid-{}", &secret()?[..8]);
         let token = run_docker(
             log,
             &[
@@ -186,11 +187,11 @@ pub fn forgejo(log: &mut dyn FnMut(String)) -> Result<(), String> {
         if token.is_empty() {
             return Err("Forgejo did not return an access token".to_string());
         }
-        set_keys(&[
-            ("FORGEJO_URL", "http://127.0.0.1:3300"),
-            ("FORGEJO_TOKEN", token.as_str()),
-            ("FORGEJO_ADMIN_PASSWORD", pw.as_str()),
-        ])?;
+        let mut keys = vec![("FORGEJO_URL", "http://127.0.0.1:3300"), ("FORGEJO_TOKEN", token.as_str())];
+        if created {
+            keys.push(("FORGEJO_ADMIN_PASSWORD", pw.as_str()));
+        }
+        set_keys(&keys)?;
     }
     log("Forgejo is ready on http://127.0.0.1:3300 (admin: plaza)".to_string());
     Ok(())
@@ -265,16 +266,9 @@ fn redact(text: &str, secrets: &[&str]) -> String {
 }
 
 /// A random secret: 32 hex characters (16 bytes from the OS random source).
-fn secret() -> String {
-    apz_os::random::hex(16).unwrap_or_else(|_| {
-        // Only when the OS random source fails: a hash of the time and the process id.
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let mut hasher = DefaultHasher::new();
-        (nanos, std::process::id()).hash(&mut hasher);
-        let first = hasher.finish();
-        first.hash(&mut hasher);
-        format!("{first:016x}{:016x}", hasher.finish())
-    })
+fn secret() -> Result<String, String> {
+    // No fallback: a password or token from a guessable source is worse than none.
+    apz_os::random::hex(16).map_err(|e| format!("the system's random source failed: {e}"))
 }
 
 /// The file apid reads its settings from: `<home>/.config/agentplaza/keys.env`.
@@ -420,7 +414,7 @@ mod tests {
 
     #[test]
     fn secret_is_32_hex_characters() {
-        let s = secret();
+        let s = secret().unwrap();
         assert_eq!(s.len(), 32);
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
     }
