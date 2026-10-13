@@ -13,10 +13,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::mcp_hub;
+use super::mcp_wizard;
 use super::Id;
 use crate::console::{client, ui, Ctx};
 
-const ADD_NOTICE: &str = "Adding and editing servers is in the next update; use the web console meanwhile.";
 const LOG_LINES: usize = 100;
 
 // ---- The hub's shapes (as apps/web/src/api.ts types them) -----------------------------------
@@ -62,9 +62,16 @@ pub struct LogLine {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Preset {
+    pub id: String,
     pub name: String,
     pub description: String,
     pub transport: String,
+    pub image: Option<String>,
+    pub command: Vec<String>,
+    pub url: Option<String>,
+    pub env: Vec<mcp_wizard::Spec>,
+    pub headers: Vec<mcp_wizard::Spec>,
+    pub status: String,
     pub note: String,
 }
 
@@ -167,6 +174,8 @@ pub struct State {
     /// The tab open: the servers, or this hub as a server.
     pub tab: Tab,
     pub hub: mcp_hub::State,
+    /// The add or edit wizard, open over the screen.
+    pub wizard: Option<mcp_wizard::State>,
 }
 
 /// The tabs of the screen.
@@ -195,7 +204,10 @@ pub enum Msg {
     AskRemove(String),
     CancelRemove,
     Remove(String),
-    AddNotice,
+    OpenAdd(Option<String>),
+    OpenEdit(String),
+    Edited(Result<Value, String>),
+    Wiz(mcp_wizard::Msg),
     Tab(Tab),
     Hub(mcp_hub::Msg),
 }
@@ -366,9 +378,34 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let done = format!("Removed {id}.");
             act(ctx, done, move |c| c.delete(&format!("/v1/mcp/servers/{id}")).map(|_| ()))
         }
-        Msg::AddNotice => {
-            state.notice = Some((ADD_NOTICE.to_string(), false));
+        Msg::OpenAdd(preset) => {
+            state.wizard = Some(mcp_wizard::State::new(None, preset.as_deref(), &state.catalogue));
+            mcp_wizard::start(ctx).map(Msg::Wiz)
+        }
+        Msg::OpenEdit(id) => {
+            let client = ctx.client.clone();
+            client::task(move || client.get::<Value>(&format!("/v1/mcp/servers/{id}")), Msg::Edited)
+        }
+        Msg::Edited(Ok(view)) => {
+            state.wizard = Some(mcp_wizard::State::new(Some(&view), None, &state.catalogue));
+            mcp_wizard::start(ctx).map(Msg::Wiz)
+        }
+        Msg::Edited(Err(e)) => {
+            state.notice = Some((e, true));
             Task::none()
+        }
+        Msg::Wiz(m) => {
+            let Some(wiz) = state.wizard.as_mut() else { return Task::none() };
+            match mcp_wizard::update(wiz, m, ctx) {
+                mcp_wizard::Outcome::Stay(task) => task.map(Msg::Wiz),
+                mcp_wizard::Outcome::Closed(label) => {
+                    state.wizard = None;
+                    if !label.is_empty() {
+                        state.notice = Some((label, false));
+                    }
+                    servers_task(ctx)
+                }
+            }
         }
         Msg::Tab(tab) => {
             mcp_hub::leave(&mut state.hub);
@@ -394,7 +431,10 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Tab::Servers => servers_view(state),
         Tab::Hub => mcp_hub::view(&state.hub).map(Msg::Hub),
     };
-    let body: Element<'a, Msg> = column![tab_bar(state.tab), content].spacing(22).width(Length::Fill).into();
+    let body: Element<'a, Msg> = match &state.wizard {
+        Some(wiz) => mcp_wizard::view(wiz).map(Msg::Wiz),
+        None => column![tab_bar(state.tab), content].spacing(22).width(Length::Fill).into(),
+    };
     // The page scrolls as the web does: a tall list is not squeezed into the window.
     scrollable(ui::sheet(ui::view_head("MCP", vec![]), body)).height(Length::Fill).into()
 }
@@ -484,6 +524,7 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     parts.push(scrollable(logs).height(Length::Fixed(240.0)).into());
     let actions: Vec<Element<'a, Msg>> = vec![
         ui::btn_sm("Refresh", None, ui::Kind::Secondary, gate(state.busy, Msg::Refresh)),
+        ui::btn_sm("Edit", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenEdit(id.to_string()))),
         ui::btn_sm("Remove", None, ui::Kind::Danger, gate(state.busy, Msg::AskRemove(id.to_string()))),
         ui::link("Close", Msg::Close, false),
     ];
@@ -510,7 +551,8 @@ fn catalogue_section<'a>(state: &'a State) -> Element<'a, Msg> {
     } else {
         column(state.catalogue.iter().map(preset_row).collect::<Vec<Element<'a, Msg>>>()).spacing(14).into()
     };
-    ui::card("Catalogue", body)
+    let custom: Element<'a, Msg> = ui::btn_sm("Custom server", None, ui::Kind::Secondary, Some(Msg::OpenAdd(None)));
+    ui::card("Catalogue", column(vec![custom, body]).spacing(14).into())
 }
 
 fn preset_row<'a>(preset: &Preset) -> Element<'a, Msg> {
@@ -522,7 +564,7 @@ fn preset_row<'a>(preset: &Preset) -> Element<'a, Msg> {
     ];
     let items: Vec<Element<'a, Msg>> = vec![
         column(info).spacing(4).width(Length::Fill).into(),
-        ui::btn_sm("Add", None, ui::Kind::Secondary, Some(Msg::AddNotice)),
+        ui::btn_sm("Add", None, ui::Kind::Secondary, Some(Msg::OpenAdd(Some(preset.id.clone())))),
     ];
     row(items).spacing(12).align_y(Alignment::Center).into()
 }

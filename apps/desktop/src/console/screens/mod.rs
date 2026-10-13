@@ -23,6 +23,7 @@ pub mod usage;
 pub mod tools;
 pub mod mcp;
 pub mod mcp_hub;
+pub mod mcp_wizard;
 pub mod vault;
 pub mod machines;
 pub mod nodes;
