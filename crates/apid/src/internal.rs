@@ -242,6 +242,15 @@ fn model_call(
         Ok(resp) => {
             let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
             app.transcripts.record(&app.bus, cid, work, "model_response", full);
+            let usage = &resp.usage;
+            let task = app.work.current(cid).and_then(|item| item.origin.task);
+            let tokens = crate::prices::Tokens {
+                input: usage.input_tokens,
+                output: usage.output_tokens,
+                cache_read: usage.cache_read_tokens,
+                cache_write: usage.cache_write_tokens,
+            };
+            crate::usage::meter(app, cid, &model, tokens, None, task, "harness");
             let tokens = settings
                 .prices
                 .get(&model)

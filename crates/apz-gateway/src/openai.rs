@@ -244,8 +244,17 @@ fn read_stream(
         }
         if v["usage"].is_object() {
             let u = &v["usage"];
-            let cached = u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
-            usage.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(cached);
+            // OpenAI's `prompt_tokens` includes its cache hits; DeepSeek's splits the prompt into
+            // hits and misses, and its miss count is the input outside the cache.
+            let cached = u["prompt_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .or_else(|| u["prompt_cache_hit_tokens"].as_u64())
+                .unwrap_or(0);
+            let prompt = u["prompt_tokens"].as_u64().unwrap_or(0);
+            usage.input_tokens = match u["prompt_cache_miss_tokens"].as_u64() {
+                Some(miss) => miss,
+                None => prompt.saturating_sub(cached),
+            };
             usage.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
             usage.cache_read_tokens = cached;
         }
@@ -427,6 +436,28 @@ mod tests {
         ]);
         assert_eq!(deltas[0], Delta::Thinking { text: "think".into() });
         assert_eq!(deltas.iter().filter(|d| matches!(d, Delta::ToolUse { .. })).count(), 2);
+    }
+
+    /// The usage a streamed answer ends with, read through `read_stream`.
+    fn usage_of(usage: &str) -> Usage {
+        let sse = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"hi\"}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n");
+        read_stream(sse.as_bytes(), &mut |_| {}, 0, false).unwrap().usage
+    }
+
+    #[test]
+    fn deepseek_usage_bills_its_misses_as_input_and_meters_its_hits_as_cache_reads() {
+        let with_miss = usage_of(r#"{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":30}"#);
+        assert_eq!(with_miss, Usage { input_tokens: 30, output_tokens: 5, cache_read_tokens: 70, cache_write_tokens: 0 });
+        let hit_only = usage_of(r#"{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70}"#);
+        assert_eq!(hit_only, Usage { input_tokens: 30, output_tokens: 5, cache_read_tokens: 70, cache_write_tokens: 0 });
+    }
+
+    #[test]
+    fn openai_cached_prompt_tokens_leave_the_input_and_never_underflow_it() {
+        let cached = usage_of(r#"{"prompt_tokens":2000,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":1920}}"#);
+        assert_eq!(cached, Usage { input_tokens: 80, output_tokens: 9, cache_read_tokens: 1920, cache_write_tokens: 0 });
+        let over = usage_of(r#"{"prompt_tokens":5,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":9}}"#);
+        assert_eq!(over, Usage { input_tokens: 0, output_tokens: 1, cache_read_tokens: 9, cache_write_tokens: 0 });
     }
 
     #[test]

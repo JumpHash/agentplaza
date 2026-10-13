@@ -607,7 +607,7 @@ fn conversation_query(app: &App, req: &Request) -> Result<social::ConversationQu
 
 /// A query-string value, percent-decoded (`+` is a space). A malformed escape
 /// is kept as it is.
-fn percent_decode(raw: &str) -> String {
+pub(crate) fn percent_decode(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;

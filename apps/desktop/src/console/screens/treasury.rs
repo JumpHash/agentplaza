@@ -5,13 +5,18 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, pick_list, row, text_input};
-use iced::{Alignment, Element, Length, Task, Theme};
+use iced::font::{self, Font};
+use iced::widget::canvas::{self, Path, Stroke};
+use iced::widget::{button, column, container, pick_list, row, text_input, Space};
+use iced::{mouse, Alignment, Border, Element, Length, Padding, Pixels, Point, Rectangle, Size, Task, Theme};
 use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme;
+use crate::theme::{self, INK, INK_2, INK_3, MONO, SHEET};
+
+const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
+const AMOUNT: Font = Font { weight: font::Weight::Semibold, ..theme::MONO };
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -235,7 +240,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.extend(sections(data, state));
         }
     }
-    ui::sheet(head, column(parts).spacing(22).into())
+    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
 }
 
 /// The read-only body: tallies, the flow, the wallets and the ledger.
@@ -262,36 +267,95 @@ fn sections<'a>(d: &Data, state: &State) -> Vec<Element<'a, Msg>> {
     out
 }
 
+/// A tally tile (the web's `.stat`): the figure, its label, then an italic note when there is one.
 fn tile<'a>(title: &str, value: String, note: &str) -> Element<'a, Msg> {
-    container(column![ui::label(title), ui::mono(value, 22.0, ui::INK), ui::faint(note.to_string())].spacing(6))
-        .padding(12)
+    let italic = Font { style: font::Style::Italic, ..theme::SERIF };
+    let mut stack = column![iced::widget::text(value).font(VALUE).size(30.0).color(theme::INK), ui::label(title)].spacing(4);
+    if !note.is_empty() {
+        stack = stack.push(iced::widget::text(note.to_string()).font(italic).size(13.0).color(theme::INK_2));
+    }
+    container(stack)
+        .padding(Padding { top: 14.0, right: 16.0, bottom: 16.0, left: 16.0 })
         .width(Length::FillPortion(1))
-        .style(theme::boxed)
+        .height(Length::Fixed(100.0))
+        .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .into()
 }
 
-/// The budget's path: budget, escrow, then spend (providers, compute) or payment (agents), then wallets.
+/// The budget's path (the web's `flow`): budget, escrow, then spend (providers, compute) or payment
+/// (agents), then wallets. Drawn on an 830 x 180 grid, scaled to the width and centred.
 fn flow<'a>(budget: f64, escrow: f64, spent: f64, paid: f64, wallets: f64) -> Element<'a, Msg> {
-    row![
-        flow_box("Budget", budget),
-        ui::mono("→", 16.0, ui::INK_3),
-        flow_box("Escrow", escrow),
-        ui::mono("→", 16.0, ui::INK_3),
-        column![flow_box("Spend", spent), flow_box("Payment", paid)].spacing(12),
-        ui::mono("→", 16.0, ui::INK_3),
-        flow_box("Wallets", wallets),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
-    .into()
+    iced::widget::canvas(FlowChart { budget, escrow, spent, paid, wallets }).width(Length::Fill).height(Length::Fixed(200.0)).into()
 }
 
-fn flow_box<'a>(label: &str, value: f64) -> Element<'a, Msg> {
-    container(column![ui::label(label), ui::mono(money(value), 18.0, ui::INK)].spacing(6))
-        .padding(12)
-        .width(Length::Fixed(170.0))
-        .style(theme::boxed)
-        .into()
+struct FlowChart {
+    budget: f64,
+    escrow: f64,
+    spent: f64,
+    paid: f64,
+    wallets: f64,
+}
+
+impl canvas::Program<Msg> for FlowChart {
+    type State = ();
+
+    fn draw(&self, _state: &(), renderer: &iced::Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+        let scale = (bounds.width / 830.0).min(bounds.height / 180.0).max(0.1);
+        let ox = (bounds.width - 830.0 * scale) / 2.0;
+        let oy = (bounds.height - 180.0 * scale) / 2.0;
+        let at = |x: f32, y: f32| Point::new(ox + x * scale, oy + y * scale);
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+
+        let boxed = |frame: &mut canvas::Frame, x: f32, y: f32, label: &str, value: f64| {
+            let (tl, size) = (at(x, y), Size::new(170.0 * scale, 70.0 * scale));
+            frame.fill_rectangle(tl, size, SHEET);
+            frame.stroke(&Path::rectangle(tl, size), Stroke::default().with_color(INK).with_width(1.0));
+            frame.fill_text(canvas::Text {
+                content: label.to_uppercase(),
+                position: at(x + 12.0, y + 12.0),
+                color: INK_3,
+                size: Pixels(10.5 * scale),
+                font: MONO,
+                ..canvas::Text::default()
+            });
+            frame.fill_text(canvas::Text {
+                content: money(value),
+                position: at(x + 12.0, y + 33.0),
+                color: INK,
+                size: Pixels(24.0 * scale),
+                font: VALUE,
+                ..canvas::Text::default()
+            });
+        };
+        let arrow = |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32)| {
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let (ux, uy) = (dx / len, dy / len);
+            let head = 8.75;
+            let base = (to.0 - ux * head, to.1 - uy * head);
+            frame.stroke(&Path::line(at(from.0, from.1), at(base.0, base.1)), Stroke::default().with_color(INK_2).with_width(1.25 * scale));
+            let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
+            let (wing_a, wing_b, tip) = (at(base.0 + px, base.1 + py), at(base.0 - px, base.1 - py), at(to.0, to.1));
+            let head_path = Path::new(|b| {
+                b.move_to(tip);
+                b.line_to(wing_a);
+                b.line_to(wing_b);
+                b.close();
+            });
+            frame.fill(&head_path, INK_2);
+        };
+
+        boxed(&mut frame, 0.0, 55.0, "Budget", self.budget);
+        boxed(&mut frame, 220.0, 55.0, "Escrow", self.escrow);
+        boxed(&mut frame, 440.0, 10.0, "Spend", self.spent);
+        boxed(&mut frame, 440.0, 100.0, "Payment", self.paid);
+        boxed(&mut frame, 660.0, 55.0, "Wallets", self.wallets);
+        arrow(&mut frame, (170.0, 90.0), (220.0, 90.0));
+        arrow(&mut frame, (390.0, 90.0), (440.0, 45.0));
+        arrow(&mut frame, (390.0, 90.0), (440.0, 135.0));
+        arrow(&mut frame, (610.0, 135.0), (660.0, 90.0));
+        vec![frame.into_geometry()]
+    }
 }
 
 fn wallets_card<'a>(d: &Data) -> Element<'a, Msg> {
@@ -311,15 +375,15 @@ fn wallets_card<'a>(d: &Data) -> Element<'a, Msg> {
             .find(|m| m.cid == w.cid)
             .map_or_else(|| "—".to_string(), |m| m.role_label.clone());
         lines.push(ui::hairline());
-        let name = button(ui::mono(w.name.clone(), 12.5, ui::INK))
+        let name = button(iced::widget::text(w.name.clone()).font(theme::SERIF).size(14.0).color(theme::INK))
             .padding(0.0)
             .style(link)
             .on_press(Msg::Go(Id::Agent(w.cid)));
         lines.push(
             row![
                 cell(3, false, name),
-                cell(2, false, ui::mono(role, 12.0, ui::INK_2)),
-                cell(2, true, ui::mono(money(w.balance), 12.0, ui::INK)),
+                cell(2, false, iced::widget::text(role).font(theme::SERIF).size(14.0).color(theme::INK_2)),
+                cell(2, true, ui::mono(money(w.balance), 12.5, theme::INK)),
             ]
             .align_y(Alignment::Center)
             .into(),
@@ -346,9 +410,31 @@ fn ledger_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = if shown.is_empty() {
         ui::empty::<Msg>("clock", "No entries.", "")
     } else {
-        column(shown.into_iter().map(entry_row).collect::<Vec<_>>()).spacing(8).into()
+        let rows: Vec<Element<'a, Msg>> = shown.into_iter().map(entry_row).collect();
+        let last = rows.len().saturating_sub(1);
+        let mut ledger = column![].width(Length::Fill);
+        for (i, r) in rows.into_iter().enumerate() {
+            ledger = ledger.push(r);
+            if i < last {
+                ledger = ledger.push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
+                    background: Some(theme::RULE_FAINT.into()),
+                    ..Default::default()
+                }));
+            }
+        }
+        ledger.into()
     };
-    ui::card("Journal", column![filter, body].spacing(12).into())
+    let head = container(
+        row![ui::label("Journal"), Space::new().width(Length::Fill), filter].spacing(12).align_y(Alignment::Center),
+    )
+    .padding(Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 })
+    .width(Length::Fill)
+    .style(|_: &Theme| container::Style { border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() });
+    let frame = container(body).width(Length::Fill).style(|_: &Theme| container::Style {
+        border: Border { color: theme::RULE, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    });
+    column![head, frame].into()
 }
 
 fn entry_row<'a>(e: &Entry) -> Element<'a, Msg> {
@@ -361,13 +447,14 @@ fn entry_row<'a>(e: &Entry) -> Element<'a, Msg> {
         e.memo.clone()
     };
     row![
-        cell(1, false, ui::mono(format!("#{}", e.id), 11.5, ui::INK_3)),
-        cell(2, false, ui::mono(ago(e.at), 11.5, ui::INK_3)),
-        cell(2, false, ui::badge::<Msg>(&e.kind, kind_tone(&e.kind))),
-        cell(6, false, ui::mono(memo, 12.0, ui::INK)),
-        cell(2, true, ui::mono(money(e.amount()), 12.0, ui::INK)),
+        container(ui::mono(format!("#{}", e.id), 11.5, theme::INK_3)).width(Length::Fixed(56.0)),
+        container(ui::mono(ago(e.at), 11.5, theme::INK_3)).width(Length::Fixed(92.0)),
+        container(ui::badge::<Msg>(&e.kind, kind_tone(&e.kind))).width(Length::Fixed(110.0)),
+        container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(theme::INK)).width(Length::Fill),
+        iced::widget::text(money(e.amount())).font(AMOUNT).size(14.0).color(theme::INK),
     ]
-    .spacing(12)
+    .spacing(14)
+    .padding(Padding { top: 9.0, right: 14.0, bottom: 9.0, left: 14.0 })
     .align_y(Alignment::Center)
     .into()
 }

@@ -6,12 +6,22 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{column, container, row, text_input, Space};
-use iced::{Alignment, Border, Element, Length, Task, Theme};
+use iced::font::{self, Font};
+use iced::widget::{column, container, row, text, text_input, Space};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
+use crate::theme::{INK, MONO, SERIF};
+
+const SUBHEAD: Font = Font { weight: font::Weight::Bold, ..MONO };
+const STRONG: Font = Font { weight: font::Weight::Semibold, ..SERIF };
+
+/// A section heading (the web's `.approvals-subhead`: mono semibold caps).
+fn subhead<'a>(title: &str) -> Element<'a, Msg> {
+    text(title.to_uppercase()).font(SUBHEAD).size(16.0).color(INK).into()
+}
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -261,9 +271,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(proposals_view(state));
     }
     parts.push(pending_view(state));
-    parts.push(ui::mono("Decided", 13.0, ui::INK).into());
+    parts.push(subhead("Decided"));
     parts.push(history_view(state));
-    ui::sheet(ui::view_head("Approvals", vec![]), column(parts).spacing(22).into())
+    ui::sheet(ui::view_head("Approvals", vec![]), column(parts).spacing(22).width(Length::Fill).into())
 }
 
 /// The waiting approvals, longest wait first, each a card with the owner's call.
@@ -300,6 +310,7 @@ fn entry<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     let head = row![
         ui::btn(&name_of(&state.agents, a.cid), None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(a.cid)))),
         ui::mono(a.tool.clone(), 12.0, ui::INK),
+        Space::new().width(Length::Fill),
         ui::faint(ago(a.created_ms)),
     ]
     .spacing(10)
@@ -324,17 +335,16 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
         "used" => ("Used", ui::Tone::Info),
         _ => ("Waiting", ui::Tone::Warn),
     };
-    let mut line = row![
+    let line = row![
         ui::badge(label, tone),
         ui::mono(a.tool.clone(), 12.0, ui::INK),
-        ui::faint(name_of(&state.agents, a.cid)),
+        ui::prose(name_of(&state.agents, a.cid)),
+        reason_or_gap(&a.reason),
+        ui::faint(ago(a.created_ms)),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
-    if !a.reason.is_empty() {
-        line = line.push(ui::faint(a.reason.clone()));
-    }
-    line.push(ui::faint(ago(a.created_ms))).into()
+    line.into()
 }
 
 fn history_view<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -353,7 +363,7 @@ fn proposals_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut past: Vec<&Proposal> = state.proposals.iter().filter(|p| p.state != "pending").collect();
     past.sort_by_key(|p| std::cmp::Reverse(p.created_ms));
 
-    let mut items: Vec<Element<'a, Msg>> = vec![ui::mono("New agents proposed by the orchestrator", 13.0, ui::INK).into()];
+    let mut items: Vec<Element<'a, Msg>> = vec![subhead("New agents proposed by the orchestrator")];
     if waiting.is_empty() {
         items.push(ui::faint("No proposals waiting.").into());
     } else {
@@ -370,11 +380,12 @@ fn proposals_view<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// One proposed agent, waiting: what it is for, why the orchestrator wants it, and the owner's call.
 fn proposal_card<'a>(state: &'a State, p: &'a Proposal) -> Element<'a, Msg> {
-    let mut head = row![ui::mono(p.title.clone(), 13.0, ui::INK)].spacing(10).align_y(Alignment::Center);
+    let mut head = row![text(p.title.clone()).font(STRONG).size(15.0).color(INK)].spacing(10).align_y(Alignment::Center);
     if p.new_role {
         head = head.push(ui::badge("new role", ui::Tone::Signal));
     }
     head = head.push(ui::badge(&format!("{} {}", p.count, if p.count == 1 { "agent" } else { "agents" }), ui::Tone::Info));
+    head = head.push(Space::new().width(Length::Fill));
     head = head.push(ui::faint(ago(p.created_ms)));
 
     let mut body = column![head, ui::prose(p.reason.clone())].spacing(8);
@@ -419,14 +430,24 @@ fn proposal_row<'a>(p: &'a Proposal) -> Element<'a, Msg> {
         "rejected" => ("Rejected", ui::Tone::Danger),
         _ => ("Waiting", ui::Tone::Warn),
     };
-    let mut line = row![ui::badge(label, tone), ui::mono(p.title.clone(), 12.0, ui::INK)]
-        .spacing(12)
-        .align_y(Alignment::Center);
-    if !p.note.is_empty() {
-        line = line.push(ui::faint(p.note.clone()));
+    let line = row![
+        ui::badge(label, tone),
+        text(p.title.clone()).font(STRONG).size(14.0).color(INK),
+        reason_or_gap(&p.note),
+        ui::faint(ago(if p.decided_ms != 0 { p.decided_ms } else { p.created_ms })),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    line.into()
+}
+
+/// The reason, filling the line so the time sits at its right end (the web's `.approval-row-reason`).
+fn reason_or_gap<'a>(reason: &str) -> Element<'a, Msg> {
+    if reason.is_empty() {
+        Space::new().width(Length::Fill).into()
+    } else {
+        container(ui::faint(reason.to_string())).width(Length::Fill).into()
     }
-    let when = if p.decided_ms != 0 { p.decided_ms } else { p.created_ms };
-    line.push(ui::faint(ago(when))).into()
 }
 
 /// A card's frame: a 1px rule around its body.
@@ -443,11 +464,11 @@ fn frame<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
 
 /// The tool input, as pretty JSON on paper.
 fn code_box<'a>(source: String) -> Element<'a, Msg> {
-    container(ui::mono(source, 12.0, ui::INK_2))
-        .padding(10)
+    container(ui::mono(source, 13.0, ui::INK_2))
+        .padding(Padding { top: 10.0, right: 12.0, bottom: 10.0, left: 12.0 })
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(ui::PAPER.into()),
+            background: Some(Color::from_rgb8(0x1e, 0x23, 0x32).into()),
             border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         })

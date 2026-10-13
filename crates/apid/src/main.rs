@@ -23,6 +23,7 @@ mod library;
 mod memory;
 mod decisions;
 mod plaza;
+mod prices;
 mod providers;
 mod role;
 mod scheduler;
@@ -48,6 +49,7 @@ mod node_link;
 mod hub_auth;
 mod transcript;
 mod upstream;
+mod usage;
 
 use std::process::ExitCode;
 

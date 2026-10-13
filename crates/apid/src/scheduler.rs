@@ -475,6 +475,7 @@ pub fn spawn(app: Arc<App>) {
             }
             crate::llm_proxy::drain_usage(&app);
             crate::plaza::retain(&app);
+            crate::usage::retain(&app);
             thread::sleep(Duration::from_secs(2));
         }
     });

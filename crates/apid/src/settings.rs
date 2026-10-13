@@ -133,6 +133,10 @@ pub struct Retention {
     pub posts_max: u32,
     /// Posts older than this many days go; `0` keeps them whatever their age.
     pub posts_days: u32,
+    /// The most model calls the usage ledger keeps one row each for (`RETENTION_MIN..=RETENTION_MAX`).
+    pub usage_calls_max: u32,
+    /// Hourly usage totals older than this many days go; `0` keeps them whatever their age.
+    pub usage_days: u32,
 }
 
 impl Default for Retention {
@@ -142,6 +146,8 @@ impl Default for Retention {
             conversations_days: 30,
             posts_max: 1024,
             posts_days: 0,
+            usage_calls_max: 20_000,
+            usage_days: 365,
         }
     }
 }
@@ -276,6 +282,7 @@ impl Store {
         for (name, max) in [
             ("conversations_max", retention.conversations_max),
             ("posts_max", retention.posts_max),
+            ("usage_calls_max", retention.usage_calls_max),
         ] {
             if !(RETENTION_MIN..=RETENTION_MAX).contains(&max) {
                 return Err(format!(
@@ -286,6 +293,7 @@ impl Store {
         for (name, days) in [
             ("conversations_days", retention.conversations_days),
             ("posts_days", retention.posts_days),
+            ("usage_days", retention.usage_days),
         ] {
             if days > RETENTION_DAYS_MAX {
                 return Err(format!(
@@ -502,6 +510,8 @@ mod tests {
             conversations_days: 0,
             posts_max: RETENTION_MAX,
             posts_days: RETENTION_DAYS_MAX,
+            usage_calls_max: RETENTION_MIN,
+            usage_days: 0,
         };
         assert_eq!(store.put(ok.clone()).unwrap(), ok);
 

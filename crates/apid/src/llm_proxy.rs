@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 
 use crate::agents::Agent;
 use crate::internal::authorized;
+use crate::prices::Tokens;
 use crate::settings::{tier_of, Tier};
 use crate::state::App;
 
@@ -140,14 +141,34 @@ fn ws_base(base: &str) -> String {
     base.strip_suffix("/v1").unwrap_or(base).to_string()
 }
 
-/// Input and output tokens of one response or stream.
+/// One call's metered usage: its tokens, and the cost in USD the provider reported for it
+/// (OpenRouter's `usage.cost`), `None` when the provider does not say.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Tokens {
-    pub input: u64,
-    pub output: u64,
+pub struct Metered {
+    pub tokens: Tokens,
+    pub cost_usd: Option<f64>,
 }
 
-type Counts = (Option<u64>, Option<u64>);
+/// The counts read from a response's usage objects. A later count replaces an earlier one.
+#[derive(Default, Clone, Copy)]
+struct Counts {
+    /// `input_tokens` (Anthropic, Responses) or `prompt_tokens` (chat, DeepSeek), as sent.
+    input: Option<u64>,
+    output: Option<u64>,
+    /// Cache hits that the provider's input count already includes (OpenAI, DeepSeek).
+    cached_in_input: Option<u64>,
+    /// DeepSeek's cache misses: its input outside the cache.
+    cache_miss: Option<u64>,
+    /// Anthropic's cache reads: outside its input count.
+    cache_read: Option<u64>,
+    /// Anthropic's cache writes.
+    cache_write: Option<u64>,
+    cost: Option<f64>,
+}
+
+fn count(usage: &Value, path: &str) -> Option<u64> {
+    usage.pointer(path).and_then(Value::as_u64)
+}
 
 /// Folds the usage objects of one JSON event (top level, `message` or `response`) into `acc`;
 /// a later count replaces an earlier one.
@@ -156,31 +177,53 @@ fn merge(acc: &mut Counts, event: &Value) {
         .into_iter()
         .flatten()
     {
-        let input = usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).and_then(Value::as_u64);
-        let output = usage.get("output_tokens").or_else(|| usage.get("completion_tokens")).and_then(Value::as_u64);
-        acc.0 = input.or(acc.0);
-        acc.1 = output.or(acc.1);
+        let input = count(usage, "/input_tokens").or_else(|| count(usage, "/prompt_tokens"));
+        let output = count(usage, "/output_tokens").or_else(|| count(usage, "/completion_tokens"));
+        let cached = count(usage, "/prompt_tokens_details/cached_tokens")
+            .or_else(|| count(usage, "/input_tokens_details/cached_tokens"))
+            .or_else(|| count(usage, "/prompt_cache_hit_tokens"));
+        acc.input = input.or(acc.input);
+        acc.output = output.or(acc.output);
+        acc.cached_in_input = cached.or(acc.cached_in_input);
+        acc.cache_miss = count(usage, "/prompt_cache_miss_tokens").or(acc.cache_miss);
+        acc.cache_read = count(usage, "/cache_read_input_tokens").or(acc.cache_read);
+        acc.cache_write = count(usage, "/cache_creation_input_tokens").or(acc.cache_write);
+        acc.cost = usage.get("cost").and_then(Value::as_f64).or(acc.cost);
     }
 }
 
-fn finish(acc: Counts) -> Option<Tokens> {
-    if acc.0.is_none() && acc.1.is_none() {
+/// Normalizes the counts: OpenAI-style input includes its cache hits and Anthropic's does not,
+/// so the input here is the tokens billed at the full input price (DeepSeek's miss count when sent).
+fn finish(acc: Counts) -> Option<Metered> {
+    if acc.input.is_none() && acc.output.is_none() && acc.cost.is_none() {
         return None;
     }
-    Some(Tokens { input: acc.0.unwrap_or(0), output: acc.1.unwrap_or(0) })
+    let cached = acc.cached_in_input.unwrap_or(0);
+    let input = match (acc.cache_miss, acc.input) {
+        (Some(miss), _) => miss,
+        (None, Some(input)) => input.saturating_sub(cached),
+        (None, None) => 0,
+    };
+    let tokens = Tokens {
+        input,
+        output: acc.output.unwrap_or(0),
+        cache_read: cached + acc.cache_read.unwrap_or(0),
+        cache_write: acc.cache_write.unwrap_or(0),
+    };
+    Some(Metered { tokens, cost_usd: acc.cost })
 }
 
 /// The usage of a buffered Anthropic or OpenAI response body.
-pub fn tokens_in(body: &Value) -> Option<Tokens> {
-    let mut acc = (None, None);
+pub fn tokens_in(body: &Value) -> Option<Metered> {
+    let mut acc = Counts::default();
     merge(&mut acc, body);
     finish(acc)
 }
 
 /// The usage of a whole stream from its SSE text. Anthropic's `message_start` gives the
 /// input and its `message_delta` the final output, so the last count of each wins.
-pub fn tokens_in_sse(text: &str) -> Option<Tokens> {
-    let mut acc = (None, None);
+pub fn tokens_in_sse(text: &str) -> Option<Metered> {
+    let mut acc = Counts::default();
     for data in text.lines().filter_map(|line| line.strip_prefix("data:")) {
         if let Ok(event) = serde_json::from_str::<Value>(data.trim()) {
             merge(&mut acc, &event);
@@ -191,27 +234,34 @@ pub fn tokens_in_sse(text: &str) -> Option<Tokens> {
 
 /// Usage read from streams and sockets, waiting to be recorded: the stream writer has no
 /// `App`, so the scheduler's loop drains this every couple of seconds ([`drain_usage`]).
-fn pending_usage() -> &'static std::sync::Mutex<Vec<(u64, String, Tokens)>> {
-    static PENDING: std::sync::OnceLock<std::sync::Mutex<Vec<(u64, String, Tokens)>>> = std::sync::OnceLock::new();
+fn pending_usage() -> &'static std::sync::Mutex<Vec<(u64, String, Metered)>> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<Vec<(u64, String, Metered)>>> = std::sync::OnceLock::new();
     PENDING.get_or_init(Default::default)
 }
 
-fn defer_usage(cid: u64, model: String, tokens: Tokens) {
-    pending_usage().lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((cid, model, tokens));
+fn defer_usage(cid: u64, model: String, metered: Metered) {
+    pending_usage().lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((cid, model, metered));
 }
 
 /// Records the usage of streams that have ended.
 pub fn drain_usage(app: &App) {
     let done: Vec<_> = std::mem::take(&mut *pending_usage().lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-    for (cid, model, tokens) in done {
-        record_usage(app, cid, &model, tokens);
+    for (cid, model, metered) in done {
+        record_usage(app, cid, &model, metered);
     }
 }
 
-/// Adds one call's tokens to the agent's usage and records it in the transcript.
-fn record_usage(app: &App, cid: u64, model: &str, tokens: Tokens) {
-    let usage = serde_json::from_value(json!({ "input_tokens": tokens.input, "output_tokens": tokens.output }))
-        .unwrap_or_default();
+/// Adds one call's usage to the agent's usage, records it in the transcript and meters it into
+/// the usage ledger, under the task the agent is working on (if any).
+fn record_usage(app: &App, cid: u64, model: &str, metered: Metered) {
+    let t = metered.tokens;
+    let usage = serde_json::from_value(json!({
+        "input_tokens": t.input,
+        "output_tokens": t.output,
+        "cache_read_tokens": t.cache_read,
+        "cache_write_tokens": t.cache_write,
+    }))
+    .unwrap_or_default();
     app.agents.update(cid, |a| a.usage.add(&usage));
     app.transcripts.record(
         &app.bus,
@@ -221,9 +271,17 @@ fn record_usage(app: &App, cid: u64, model: &str, tokens: Tokens) {
         json!({
             "via": "gateway",
             "model": model,
-            "usage": { "input_tokens": tokens.input, "output_tokens": tokens.output },
+            "usage": {
+                "input_tokens": t.input,
+                "output_tokens": t.output,
+                "cache_read_tokens": t.cache_read,
+                "cache_write_tokens": t.cache_write,
+            },
+            "cost_usd": metered.cost_usd,
         }),
     );
+    let task = app.work.current(cid).and_then(|item| item.origin.task);
+    crate::usage::meter(app, cid, model, t, metered.cost_usd, task, "gateway");
 }
 
 /// An upstream client that returns error statuses as responses, so their bodies pass through.
@@ -693,16 +751,85 @@ event: message_delta\n\
 data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n\
 event: message_stop\n\
 data: {\"type\":\"message_stop\"}\n\n";
-        assert_eq!(tokens_in_sse(tail), Some(Tokens { input: 25, output: 15 }));
+        assert_eq!(tokens_in_sse(tail), Some(metered(25, 15, 0, 0, None)));
+    }
+
+    fn metered(input: u64, output: u64, cache_read: u64, cache_write: u64, cost_usd: Option<f64>) -> Metered {
+        Metered { tokens: Tokens { input, output, cache_read, cache_write }, cost_usd }
     }
 
     #[test]
     fn buffered_bodies_carry_usage_at_the_top_level() {
         let openai = json!({ "id": "c", "choices": [], "usage": { "prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19 } });
-        assert_eq!(tokens_in(&openai), Some(Tokens { input: 12, output: 7 }));
+        assert_eq!(tokens_in(&openai), Some(metered(12, 7, 0, 0, None)));
         let anthropic = json!({ "type": "message", "usage": { "input_tokens": 30, "output_tokens": 4 } });
-        assert_eq!(tokens_in(&anthropic), Some(Tokens { input: 30, output: 4 }));
+        assert_eq!(tokens_in(&anthropic), Some(metered(30, 4, 0, 0, None)));
         assert_eq!(tokens_in(&json!({ "id": "x" })), None);
+    }
+
+    #[test]
+    fn an_anthropic_stream_meters_its_cache_reads_and_writes_outside_its_input() {
+        let tail = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_read_input_tokens\":300,\"cache_creation_input_tokens\":40,\"output_tokens\":1}}}\n\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n";
+        // Anthropic's input_tokens already excludes its cache reads and writes.
+        assert_eq!(tokens_in_sse(tail), Some(metered(25, 15, 300, 40, None)));
+    }
+
+    #[test]
+    fn openai_chat_input_excludes_the_cached_prompt_tokens() {
+        let body = json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 7,
+                "prompt_tokens_details": { "cached_tokens": 80 },
+            },
+        });
+        assert_eq!(tokens_in(&body), Some(metered(20, 7, 80, 0, None)));
+    }
+
+    #[test]
+    fn openai_chat_stream_usage_chunk_meters_cached_tokens() {
+        let tail = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2000,\"completion_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":1920}}}\n\n\
+data: [DONE]\n\n";
+        assert_eq!(tokens_in_sse(tail), Some(metered(80, 9, 1920, 0, None)));
+    }
+
+    #[test]
+    fn responses_input_tokens_details_are_excluded_from_input() {
+        let completed = json!({
+            "type": "response.completed",
+            "response": { "usage": { "input_tokens": 500, "input_tokens_details": { "cached_tokens": 420 }, "output_tokens": 9 } },
+        });
+        assert_eq!(tokens_in(&completed), Some(metered(80, 9, 420, 0, None)));
+    }
+
+    #[test]
+    fn deepseek_meters_its_cache_hits_and_bills_the_misses_as_input() {
+        let with_miss = json!({
+            "usage": { "prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 70, "prompt_cache_miss_tokens": 30 },
+        });
+        assert_eq!(tokens_in(&with_miss), Some(metered(30, 5, 70, 0, None)));
+        // Without a miss count, the input is the prompt less its cache hits.
+        let hit_only = json!({ "usage": { "prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 70 } });
+        assert_eq!(tokens_in(&hit_only), Some(metered(30, 5, 70, 0, None)));
+    }
+
+    #[test]
+    fn cached_tokens_above_the_prompt_do_not_underflow_the_input() {
+        let body = json!({ "usage": { "prompt_tokens": 5, "prompt_tokens_details": { "cached_tokens": 9 } } });
+        assert_eq!(tokens_in(&body), Some(metered(0, 0, 9, 0, None)));
+    }
+
+    #[test]
+    fn openrouter_reports_the_cost_of_a_call_in_usd() {
+        let body = json!({ "usage": { "prompt_tokens": 10, "completion_tokens": 2, "cost": 0.00042 } });
+        assert_eq!(tokens_in(&body), Some(metered(10, 2, 0, 0, Some(0.00042))));
+        let tail = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"cost\":0.5}}\n\n";
+        assert_eq!(tokens_in_sse(tail), Some(metered(10, 2, 0, 0, Some(0.5))));
     }
 
     #[test]

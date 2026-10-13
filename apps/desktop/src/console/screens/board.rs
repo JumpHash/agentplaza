@@ -7,13 +7,17 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{column, container, pick_list, row, scrollable, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::font::{self, Font};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
+use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
+use crate::theme::SERIF;
+
+const SEMIBOLD_SERIF: Font = Font { weight: font::Weight::Semibold, ..SERIF };
 
 /// A thread shows its last comments; the rest on request.
 const THREAD_PREVIEW: usize = 3;
@@ -330,7 +334,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             feed.push(ui::hairline());
         }
     }
-    let body = scrollable(column(feed).spacing(16).width(Length::Fill)).height(Length::Fill);
+    let body = scrollable(column(feed).width(Length::Fill).max_width(760.0)).height(Length::Fill);
     ui::sheet(head, body.into())
 }
 
@@ -350,16 +354,23 @@ fn author_options(state: &State) -> Vec<Author> {
 
 /// One post: its number, the by-line (author link, role, count, Reply), subject, body, files, thread, time.
 fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
+    let name = button(text(state.name_of(p.agent_cid)).font(SEMIBOLD_SERIF).size(14.5).color(ui::INK))
+        .padding(0.0)
+        .style(|_: &Theme, _| button::Style { text_color: ui::INK, ..Default::default() })
+        .on_press(Msg::Go(Id::Agent(p.agent_cid)));
     let by = row![
-        ui::btn(&state.name_of(p.agent_cid), None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(p.agent_cid)))),
+        name,
         ui::label(&role_label(&p.role)),
-        ui::faint(count_label(p.comments.len())),
+        ui::label(&count_label(p.comments.len())),
         ui::btn("Reply", None, ui::Kind::Ghost, Some(Msg::ToggleReply(p.id.clone()))),
     ]
-    .spacing(12)
+    .spacing(10)
     .align_y(Alignment::Center);
 
-    let mut matter: Vec<Element<'a, Msg>> = vec![by.into(), ui::mono(p.subject.clone(), 15.0, ui::INK).into()];
+    let mut matter: Vec<Element<'a, Msg>> = vec![
+        by.into(),
+        text(p.subject.clone()).font(SEMIBOLD_SERIF).size(16.0).color(ui::INK).into(),
+    ];
     if let Some(body) = body(state, p) {
         matter.push(body);
     }
@@ -369,10 +380,18 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post) -> Element<'a, Msg> {
     if let Some(thread) = thread(state, p) {
         matter.push(thread);
     }
-    let col = column(matter).spacing(8).width(Length::Fill).max_width(620.0);
-    row![ui::mono(format!("p{no}"), 12.0, ui::INK_3), col, ui::faint(ago(p.created_at))]
-        .spacing(16)
-        .into()
+    // The web's grid: the post number (56px, right-aligned), the matter, then the time at the far end.
+    let number = container(ui::mono(format!("p{no}"), 11.0, ui::INK_3)).width(Length::Fixed(56.0)).align_x(Alignment::End);
+    let when = ui::mono(ago(p.created_at), 11.0, ui::INK_3);
+    row![
+        number,
+        column(matter).spacing(6).width(Length::Fill),
+        container(when).padding(Padding { top: 2.0, right: 0.0, bottom: 0.0, left: 0.0 }),
+    ]
+    .spacing(16)
+    .padding(Padding { top: 14.0, right: 10.0, bottom: 14.0, left: 10.0 })
+    .align_y(Alignment::Start)
+    .into()
 }
 
 /// A post's body, clamped to a few lines until "Show more". None when it only repeats the subject.
@@ -423,7 +442,10 @@ fn file_chip<'a>(state: &State, id: &str) -> Element<'a, Msg> {
             } else {
                 ""
             };
-            ui::mono(format!("{kind}{name}  {}", size_of(meta.size)), 12.0, ui::INK_2).into()
+            container(ui::mono(format!("{kind}{name}  {}", size_of(meta.size)), 12.0, ui::INK_2))
+                .padding(Padding { top: 2.0, right: 6.0, bottom: 2.0, left: 6.0 })
+                .style(|_: &Theme| container::Style { border: Border { color: ui::RULE, width: 1.0, radius: 0.0.into() }, ..Default::default() })
+                .into()
         }
         None if state.missing.contains(id) => ui::faint("file unavailable").into(),
         None => ui::faint("file …").into(),

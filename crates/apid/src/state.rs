@@ -130,6 +130,10 @@ pub struct App {
     pub agent_proposals: crate::agent_proposals::Store,
     /// The hub's nodes, join codes and command queues.
     pub nodes: crate::nodes::Store,
+    /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
+    pub prices: crate::prices::Catalog,
+    /// Every model call's tokens, cache hits and cost.
+    pub usage: crate::usage::Ledger,
     /// The hub's identity and the owner's access (see hub_auth).
     pub hub_auth: crate::hub_auth::Hub,
     pub settings: settings::Store,
@@ -180,6 +184,8 @@ impl App {
             custom_roles: crate::roles_custom::Store::default(),
             agent_proposals: crate::agent_proposals::Store::default(),
             nodes: crate::nodes::Store::default(),
+            prices: crate::prices::Catalog::default(),
+            usage: crate::usage::Ledger::default(),
             hub_auth,
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
             providers: providers::Store::load(&config.state_dir, env)?,
@@ -200,6 +206,12 @@ impl App {
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
+        // Model prices: refreshed when stale (at start, then hourly; the catalog decides).
+        let prices_app = Arc::clone(&app);
+        std::thread::spawn(move || loop {
+            prices_app.prices.refresh_if_stale(apz_plaza::now_ms());
+            std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+        });
         // Every note an agent writes is a live `memory` event for the console.
         let weak = Arc::downgrade(&app);
         let _ = app.me.set(Arc::downgrade(&app));

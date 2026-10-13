@@ -5,13 +5,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{column, container, row, text_input, Space};
-use iced::{Alignment, Border, Element, Length, Task, Theme};
+use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme::{self, CRIT, OK};
+use crate::theme::{self, CRIT, INK_3, OK};
 
 /// A motion as the hub reports it (`GET /v1/motions`).
 #[derive(Debug, Clone, Deserialize)]
@@ -298,7 +298,7 @@ fn boxed(_: &Theme) -> container::Style {
 fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
     let rest = t.seats.saturating_sub(t.yes + t.no + t.abstain);
     let mut bar = row![].width(Length::Fill).height(Length::Fixed(8.0));
-    for (n, colour) in [(t.yes, OK), (t.no, CRIT), (t.abstain, ui::RULE), (rest, ui::RULE_FAINT)] {
+    for (n, colour) in [(t.yes, OK), (t.no, CRIT), (t.abstain, INK_3), (rest, ui::RULE_FAINT)] {
         if n > 0 {
             bar = bar.push(
                 container(Space::new())
@@ -313,9 +313,9 @@ fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
 
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
     row![
-        container(ui::faint(role_label(&v.role))).width(Length::FillPortion(2)),
+        ui::faint(role_label(&v.role)),
         ui::badge(&v.vote, vote_tone(&v.vote)),
-        container(ui::faint(v.reason.clone())).width(Length::FillPortion(5)),
+        container(ui::faint(v.reason.clone())).width(Length::Fill),
     ]
     .spacing(12)
     .width(Length::Fill)
@@ -328,6 +328,7 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
     let head = row![
         ui::badge(&m.kind, ui::Tone::Signal),
         ui::badge(&m.state, state_tone(&m.state)),
+        Space::new().width(Length::Fill),
         ui::faint(ago(m.created_at)),
     ]
     .spacing(10)
@@ -348,10 +349,12 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
     if needs_owner(&m.state) {
         stack = stack.push(
             row![
+                Space::new().width(Length::Fill),
                 ui::btn("Reject", Some("x"), ui::Kind::Danger, Some(Msg::Open(m.id.clone(), Verdict::Reject))),
                 ui::btn("Approve", Some("check"), ui::Kind::Primary, Some(Msg::Open(m.id.clone(), Verdict::Approve))),
             ]
-            .spacing(8),
+            .spacing(8)
+            .align_y(Alignment::Center),
         );
         if let Some(pending) = state.pending.as_ref().filter(|p| p.id == m.id) {
             let input = text_input("Reason", &state.reason)
@@ -362,7 +365,9 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
             let mut form = column![
                 ui::label(&format!("{} motion", pending.verdict.verb())),
                 input,
-                row![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)), submit].spacing(8),
+                row![Space::new().width(Length::Fill), ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)), submit]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
             ]
             .spacing(10)
             .width(Length::Fill);
@@ -374,9 +379,9 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
     }
 
     container(column![
-        container(head).padding([8, 12]).width(Length::Fill),
+        container(head).padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 }).width(Length::Fill),
         ui::hairline(),
-        container(stack).padding(12).width(Length::Fill),
+        container(stack).padding(16).width(Length::Fill),
     ])
     .width(Length::Fill)
     .style(boxed)
