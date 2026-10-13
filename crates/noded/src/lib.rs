@@ -407,8 +407,9 @@ const DEVICE_TREE_MODEL: &str = "/proc/device-tree/model";
 const WINDOWS_CPU_KEY: &str = r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0";
 /// `Win32_Processor`: the physical cores and the logical processors, summed over the sockets.
 const WINDOWS_CORES: &str = "$p = Get-CimInstance Win32_Processor; '{0}|{1}' -f ($p | Measure-Object -Property NumberOfCores -Sum).Sum, ($p | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum";
-/// `Win32_ComputerSystem`: the manufacturer and the model.
-const WINDOWS_SYSTEM: &str = "$c = Get-CimInstance Win32_ComputerSystem; '{0}|{1}' -f $c.Manufacturer, $c.Model";
+/// `Win32_ComputerSystem`, `Win32_SystemEnclosure` and `Win32_Battery` in one call: the memory in
+/// bytes, the first chassis type, the battery count, then the manufacturer and the model.
+const WINDOWS_SYSTEM: &str = "$c = Get-CimInstance Win32_ComputerSystem; $e = Get-CimInstance Win32_SystemEnclosure; $b = @(Get-CimInstance Win32_Battery); '{0}|{1}|{2}|{3}|{4}' -f $c.TotalPhysicalMemory, @($e.ChassisTypes)[0], $b.Count, $c.Manufacturer, $c.Model";
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
@@ -428,16 +429,29 @@ fn probe_host(state_dir: &Path) -> Probed {
             storage_gib: storage_gib(state_dir),
         };
     }
+    // Windows reads its system, enclosure and battery facts in one PowerShell call.
+    let windows = cfg!(target_os = "windows").then(|| parse_windows_system(&powershell(WINDOWS_SYSTEM).unwrap_or_default()));
     let sbc = matches!(machine_class(), "pi4" | "pi5") || tree.as_deref().is_some_and(|model| model.contains("Raspberry Pi"));
-    let kind = kind_of(cfg!(target_os = "android"), sbc, chassis_type(), has_battery(Path::new(POWER_SUPPLY_DIR)));
-    let (vendor, model) = host_maker(tree.as_deref());
+    let chassis = match &windows {
+        Some(system) => system.chassis,
+        None => chassis_type(),
+    };
+    let battery = windows.as_ref().is_some_and(|system| system.battery) || has_battery(Path::new(POWER_SUPPLY_DIR));
+    let kind = kind_of(cfg!(target_os = "android"), sbc, chassis, battery);
+    let (vendor, model, memory_mib) = match windows {
+        Some(system) => (system.vendor, system.model, system.memory_mib),
+        None => {
+            let (vendor, model) = host_maker(tree.as_deref());
+            (vendor, model, host_memory_mib())
+        }
+    };
     Probed {
         kind,
         vendor,
         model,
         apple: None,
         cpu: probe_cpu(tree.as_deref()),
-        memory_mib: host_memory_mib(),
+        memory_mib,
         storage_gib: storage_gib(state_dir),
     }
 }
@@ -465,16 +479,13 @@ fn probe_mac() -> (&'static str, Option<String>, Option<String>, Option<Apple>) 
     (kind, Some("apple".to_string()), model, apple)
 }
 
-/// The maker and model of a machine that is not a Mac: an Android device's properties, a Windows
-/// computer's system, an arm board's device-tree model, or a PC's DMI strings.
+/// The maker and model of a machine that is neither a Mac nor a Windows computer: an Android
+/// device's properties, an arm board's device-tree model, or a PC's DMI strings.
 fn host_maker(tree: Option<&str>) -> (Option<String>, Option<String>) {
     if cfg!(target_os = "android") {
         let manufacturer = command_stdout("getprop", &["ro.product.manufacturer"]).unwrap_or_default();
         let model = command_stdout("getprop", &["ro.product.model"]).unwrap_or_default();
         return maker_pair(&manufacturer, &model);
-    }
-    if cfg!(target_os = "windows") {
-        return parse_maker_line(&powershell(WINDOWS_SYSTEM).unwrap_or_default());
     }
     if let Some(model) = tree {
         return (normalize_vendor(model), clean_model(model));
@@ -490,10 +501,26 @@ fn maker_pair(vendor: &str, model: &str) -> (Option<String>, Option<String>) {
     (normalize_vendor(vendor), clean_model(model))
 }
 
-/// The maker and model from a `manufacturer|model` line (the Windows probe's output).
-fn parse_maker_line(text: &str) -> (Option<String>, Option<String>) {
-    let (vendor, model) = text.trim().split_once('|').unwrap_or((text, ""));
-    maker_pair(vendor, model)
+/// What the Windows probe reports about the computer.
+#[derive(Debug, PartialEq)]
+struct WindowsSystem {
+    vendor: Option<String>,
+    model: Option<String>,
+    memory_mib: u64,
+    chassis: Option<u32>,
+    battery: bool,
+}
+
+/// The Windows probe's `memory|chassis|batteries|manufacturer|model` line. The numbers come first
+/// and the model last, so a model with a `|` of its own stays whole. Missing fields read as absent.
+fn parse_windows_system(text: &str) -> WindowsSystem {
+    let mut fields = text.trim().splitn(5, '|');
+    let mut next = || fields.next().unwrap_or("");
+    let memory = parse_bytes(next()).map_or(0, |bytes| bytes / MIB);
+    let chassis = parse_chassis(next());
+    let battery = parse_count(next()).is_some_and(|batteries| batteries > 0);
+    let (vendor, model) = maker_pair(next(), next());
+    WindowsSystem { vendor, model, memory_mib: memory, chassis, battery }
 }
 
 /// The model of a PC from its DMI strings. Lenovo's `product_name` is a machine code and its
@@ -611,13 +638,16 @@ fn powershell(script: &str) -> Option<String> {
 fn kind_of(android: bool, sbc: bool, chassis: Option<u32>, battery: bool) -> &'static str {
     const LAPTOP: [u32; 6] = [8, 9, 10, 14, 31, 32];
     const SERVER: [u32; 4] = [17, 23, 25, 28];
+    // The chassis decides when it says something (types 1 and 2 are "Other" and "Unknown"); a
+    // battery only when it does not, since a desktop on a UPS reports one too.
+    let known = chassis.filter(|c| *c > 2);
     if android {
         "phone"
     } else if sbc {
         "edge"
-    } else if battery || chassis.is_some_and(|c| LAPTOP.contains(&c)) {
+    } else if known.is_some_and(|c| LAPTOP.contains(&c)) || (known.is_none() && battery) {
         "laptop"
-    } else if chassis.is_some_and(|c| SERVER.contains(&c)) {
+    } else if known.is_some_and(|c| SERVER.contains(&c)) {
         "server"
     } else {
         "workstation"
@@ -841,7 +871,10 @@ mod tests {
             assert_eq!(kind_of(false, false, Some(chassis), false), "workstation", "chassis {chassis}");
         }
         assert_eq!(kind_of(false, false, None, false), "workstation");
-        assert_eq!(kind_of(false, false, Some(17), true), "laptop", "a battery wins over the chassis");
+        assert_eq!(kind_of(false, false, Some(17), true), "server", "the chassis wins over a battery (a UPS)");
+        assert_eq!(kind_of(false, false, Some(3), true), "workstation", "a desktop on a UPS");
+        assert_eq!(kind_of(false, false, None, true), "laptop", "a battery when the chassis says nothing");
+        assert_eq!(kind_of(false, false, Some(2), true), "laptop", "chassis 2 is Unknown");
     }
 
     #[test]
@@ -1163,11 +1196,56 @@ mod identity_tests {
     }
 
     #[test]
-    fn windows_system_line_gives_maker_and_model() {
-        assert_eq!(parse_maker_line("Dell Inc.|XPS 13 9310\r\n"), (Some("dell".into()), Some("XPS 13 9310".into())));
-        assert_eq!(parse_maker_line("LENOVO|21HM001QUS"), (Some("lenovo".into()), Some("21HM001QUS".into())));
-        assert_eq!(parse_maker_line("System manufacturer|System Product Name"), (None, None));
-        assert_eq!(parse_maker_line(""), (None, None));
+    fn windows_desktop_gives_memory_chassis_and_maker() {
+        // 16 GiB, a desktop chassis (3), no battery.
+        let desktop = parse_windows_system("17179869184|3|0|Dell Inc.|XPS 8950\r\n");
+        assert_eq!(
+            desktop,
+            WindowsSystem { vendor: Some("dell".into()), model: Some("XPS 8950".into()), memory_mib: 16384, chassis: Some(3), battery: false }
+        );
+        assert_eq!(kind_of(false, false, desktop.chassis, desktop.battery), "workstation");
+    }
+
+    #[test]
+    fn windows_laptop_with_a_battery_is_a_laptop() {
+        // 32 GiB, a notebook chassis (10), one battery.
+        let laptop = parse_windows_system("34359738368|10|1|Dell Inc.|XPS 13 9310\r\n");
+        assert_eq!(
+            laptop,
+            WindowsSystem { vendor: Some("dell".into()), model: Some("XPS 13 9310".into()), memory_mib: 32768, chassis: Some(10), battery: true }
+        );
+        assert_eq!(kind_of(false, false, laptop.chassis, laptop.battery), "laptop");
+        // A convertible (31) is a laptop too.
+        let convertible = parse_windows_system("34359738368|31|1|LENOVO|21HM001QUS");
+        assert_eq!(kind_of(false, false, convertible.chassis, convertible.battery), "laptop");
+    }
+
+    #[test]
+    fn windows_server_chassis_is_a_server() {
+        // 128 GiB, a rack mount chassis (23), no battery.
+        let server = parse_windows_system("137438953472|23|0|Dell Inc.|PowerEdge R740\r\n");
+        assert_eq!(server.memory_mib, 131072);
+        assert_eq!(server.chassis, Some(23));
+        assert_eq!(kind_of(false, false, server.chassis, server.battery), "server");
+    }
+
+    #[test]
+    fn windows_placeholders_and_missing_fields_read_as_absent() {
+        let placeholders = parse_windows_system("17179869184|3|0|System manufacturer|System Product Name");
+        assert_eq!(placeholders, WindowsSystem { vendor: None, model: None, memory_mib: 16384, chassis: Some(3), battery: false });
+        // An enclosure that reports no chassis, no memory figure and no probe output at all.
+        assert_eq!(parse_windows_system("||0|Dell Inc.|XPS 13 9310").chassis, None);
+        assert_eq!(parse_windows_system("|||Dell Inc.|XPS 13 9310").memory_mib, 0);
+        assert_eq!(
+            parse_windows_system(""),
+            WindowsSystem { vendor: None, model: None, memory_mib: 0, chassis: None, battery: false }
+        );
+    }
+
+    #[test]
+    fn a_windows_model_keeps_its_own_pipes() {
+        let system = parse_windows_system("17179869184|3|0|Acme|Model A|B");
+        assert_eq!(system.model.as_deref(), Some("Model A|B"));
     }
 
     #[test]
