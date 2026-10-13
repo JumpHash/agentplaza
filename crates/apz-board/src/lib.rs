@@ -31,6 +31,7 @@ pub mod layout;
 pub mod mesh;
 pub mod plan;
 pub mod walk;
+pub mod zfight;
 
 mod geom;
 mod hardware;
@@ -98,6 +99,9 @@ pub struct Board {
     support: Support,
     part_count: usize,
     bounds: Aabb,
+    /// The board's model key ("board/<kind>") and the params it was built with (the model's own, overridden).
+    pub(crate) model: String,
+    pub(crate) params: BTreeMap<String, f64>,
 }
 
 impl Board {
@@ -120,7 +124,9 @@ impl Board {
         if bounds.is_empty() {
             bounds = Aabb { min: [0.0; 3], max: [0.0; 3] };
         }
-        Board { items: scene.items, support: scene.support, part_count: scene.part_count, bounds }
+        let mut merged = model.params.clone().unwrap_or_default();
+        merged.extend(params.iter().map(|(k, v)| (k.clone(), *v)));
+        Board { items: scene.items, support: scene.support, part_count: scene.part_count, bounds, model: name, params: merged }
     }
 
     /// The resting items, in the web's traversal order.

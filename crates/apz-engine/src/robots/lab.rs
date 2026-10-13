@@ -107,6 +107,14 @@ pub fn background_of(v: Option<&str>) -> Option<Color> {
     }
 }
 
+/// The web lab's default scene background (`DEFAULT_BG` in `robot-lab.ts`): the pale blue.
+pub const DEFAULT_BACKGROUND: u32 = 0xe9edf3;
+
+/// The lab's scene background: the web's `bg`, or the default pale blue when `bg` is unset.
+pub fn background_or_default(v: Option<&str>) -> Color {
+    background_of(v).unwrap_or(Color::hex(DEFAULT_BACKGROUND))
+}
+
 /// The web's orchestrator rule: the rover alone, or in a line-up only the first robot, when it is the rover.
 fn is_orchestrator(orch: bool, id: &str, index: usize, lineup: bool) -> bool {
     orch && id == "rover" && (!lineup || index == 0)
@@ -139,6 +147,26 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let orch = var("APZ_ROBOT_ORCH").as_deref() == Some("1");
     let frozen = frozen_of(var("APZ_ROBOT_T").as_deref());
     let cam = var("APZ_ROBOT_CAM").as_deref().and_then(Cam::parse).unwrap_or(Cam::Front);
+    // The lab's own stage, as the web's: no plaza scenery (the stars, the planet, the dust, the skyline and
+    // the machines' ground), no fog, the web's lights, and the pale blue (or `bg`) background.
+    let bg = background_or_default(var("APZ_ROBOT_BG").as_deref());
+    floor.stars.set_visible(false);
+    floor.planet.set_visible(false);
+    floor.dust.set_visible(false);
+    floor.backdrop.set_visible(false);
+    floor.ground.set_visible(false);
+    floor.statics_dirty = true;
+    let world = &mut floor.world;
+    world.background = bg;
+    world.flat_background = true;
+    world.fog_near = 1.0e6;
+    world.fog_far = 2.0e6; // past fog_near, or every fragment is fully fogged
+    world.hemi_sky = Color::hex(0xeaf4ff);
+    world.hemi_ground = Color::hex(0x8a7a5a);
+    world.hemi_intensity = 1.3;
+    world.sun_color = Color::hex(0xfff1d6);
+    world.sun_intensity = 2.6;
+    world.sun_position = [25.0, 40.0, 30.0].into();
 
     let n = ids.len();
     let mut robots = Vec::with_capacity(n);
@@ -170,7 +198,7 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         fx: var("APZ_ROBOT_FX"),
         fx_timer: 0.0,
         frozen: frozen.is_some(),
-        bg: background_of(var("APZ_ROBOT_BG").as_deref()),
+        bg: Some(bg),
     })
 }
 
@@ -197,7 +225,7 @@ impl Lab {
         }
     }
 
-    /// The scene background the lab asks for (`APZ_ROBOT_BG`), or None for the engine's own.
+    /// The scene background the lab asks for: `APZ_ROBOT_BG`, or the default pale blue.
     pub fn background(&self) -> Option<Color> {
         self.bg
     }
@@ -267,6 +295,14 @@ mod tests {
         assert_eq!(background_of(Some("light")), Some(Color::hex(0xf3efe6)));
         assert_eq!(background_of(Some("blue")), None);
         assert_eq!(background_of(None), None);
+    }
+
+    #[test]
+    fn the_default_background_is_the_webs_pale_blue() {
+        assert_eq!(background_or_default(None), Color::hex(0xe9edf3));
+        assert_eq!(background_or_default(Some("dark")), Color::hex(0x1b1a17));
+        assert_eq!(background_or_default(Some("light")), Color::hex(0xf3efe6));
+        assert_eq!(background_or_default(Some("blue")), Color::hex(0xe9edf3));
     }
 
     #[test]

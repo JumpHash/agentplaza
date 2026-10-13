@@ -73,7 +73,8 @@ impl Lattice {
             }
         }
         let single = i1 - i0 == 1 && j1 - j0 == 1;
-        if single || hi - lo <= GROUND_TOL {
+        // The tolerance has a float epsilon so a block at exactly GROUND_TOL spread is one height on both sides (the test's skip uses it too).
+        if single || hi - lo <= GROUND_TOL + 1e-9 {
             if hi < under - 1e-9 {
                 let rect = [self.x0 + i0 as f64 * self.cw, self.z0 + j0 as f64 * self.cd, (i1 - i0) as f64 * self.cw, (j1 - j0) as f64 * self.cd];
                 out.push(Leaf { rect, bottom: hi });

@@ -152,6 +152,15 @@ fn mark(piece: &mut Piece, p: [f64; 2]) {
     }
 }
 
+/// A piece thinner than this in either direction is float residue where two cut edges meet within rounding (the plan
+/// is in metres), not floor. Its signed area is below the rounding of the shoelace sum at the plan's coordinates, so
+/// its winding cannot be read; it is dropped rather than emitted.
+const SLIVER: f64 = 1e-6;
+
+fn sliver(r: &Rect) -> bool {
+    r.x1 - r.x0 < SLIVER || r.z1 - r.z0 < SLIVER
+}
+
 /// Is a flat, walkable kind joined to its neighbours by Step (at the same height)?
 fn flat_kind(k: SurfaceKind) -> bool {
     matches!(k, SurfaceKind::Board | SurfaceKind::Plate | SurfaceKind::Landing | SurfaceKind::Cab | SurfaceKind::Bridge)
@@ -174,7 +183,7 @@ pub fn assemble(a: &Assembly) -> Assembled {
             }
         }
     }
-    for rect in subtract(a.pcb, &pcb_holes) {
+    for rect in subtract(a.pcb, &pcb_holes).into_iter().filter(|r| !sliver(r)) {
         pieces.push(Piece { rect, kind: SurfaceKind::Board, plane: flat(a.pcb_top), owner: "board".to_string(), plate: None, room: None, joined: [false; 4] });
     }
 
@@ -185,7 +194,7 @@ pub fn assemble(a: &Assembly) -> Assembled {
             Mouth::Lift { top, top_kind: SurfaceKind::Landing, .. } if contains(&p.rect, [(top.x0 + top.x1) / 2.0, (top.z0 + top.z1) / 2.0]) => Some(*top),
             _ => None,
         }));
-        for rect in subtract(p.rect, &holes) {
+        for rect in subtract(p.rect, &holes).into_iter().filter(|r| !sliver(r)) {
             pieces.push(Piece { rect, kind: SurfaceKind::Plate, plane: flat(p.y), owner: format!("plate:{}", p.id), plate: Some(p.id), room: None, joined: [false; 4] });
         }
     }

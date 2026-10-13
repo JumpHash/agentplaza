@@ -830,6 +830,27 @@ pub fn spin_point_shader(pivot: Vec3, axis: Vec3, rps: f32, phase: f32, p: Vec3,
     pivot + Quat::from_axis_angle(axis, angle) * (p - pivot)
 }
 
+/// The host's clock wrap in seconds (`WRAP_PERIOD` in hw_anim.wgsl): a spin's rate is a multiple of 1 / this.
+const HW_WRAP_PERIOD: f32 = 3600.0;
+
+/// The GPU animation of a part whose pose or colour `Built::update` sets per frame, or None when it
+/// stays on the CPU. A fan spins at its online idle rate (`Built::update` runs it at 2 rps and faster
+/// as activity rises, and stops it offline; a GPU batch cannot follow either). Other spins and blinks
+/// keep their own rates. A part with a pulse, slide or swing, or a status LED, stays on the CPU.
+fn gpu_anim_of(tag: Option<Tag>, spin: Option<(Vec3, f32)>, blink: Option<(f32, f32)>, glow: f32, moves: bool) -> Option<scene::NodeAnim> {
+    if moves || tag == Some(Tag::Status) {
+        return None;
+    }
+    let quantise = |rps: f32| (rps * HW_WRAP_PERIOD).round() / HW_WRAP_PERIOD;
+    let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis, rps: quantise(rps), phase: 0.0 };
+    match (tag, spin, blink) {
+        (Some(Tag::Fan), spin, _) => Some(spin_of(spin.map_or(Vec3::Y, |s| s.0), 2.0)),
+        (_, Some((axis, rps)), _) if rps != 0.0 => Some(spin_of(axis, rps)),
+        (_, _, Some((period, phase))) => Some(scene::NodeAnim::Blink { rate: 1.0 / period, phase, lo: glow * 0.1, hi: glow }),
+        _ => None,
+    }
+}
+
 const MAX_USE_DEPTH: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1171,7 +1192,19 @@ impl Builder {
         if tag.is_some() || p.anim.is_some() {
             let anim = p.anim.as_ref();
             let spin = anim.and_then(|a| a.spin.as_ref());
-            obj.set_dynamic(true); // its pose or colour changes every frame
+            let blink = anim.and_then(|a| a.blink).map(|b| (b.period.max(0.01), b.phase));
+            let gpu = gpu_anim_of(
+                tag,
+                spin.map(|s| (axis_of(&s.axis), s.rps)),
+                blink,
+                glow_of(p.mat.as_ref()),
+                anim.is_some_and(|a| a.pulse.is_some() || a.slide.is_some() || a.swing.is_some()),
+            );
+            // Its pose or colour changes every frame, unless the GPU animates it (scene::GPU_HW_ANIM).
+            obj.set_dynamic(!(scene::GPU_HW_ANIM && gpu.is_some()));
+            if let Some(a) = gpu {
+                obj.set_anim(a);
+            }
             self.live.push(Live {
                 obj: obj.clone(),
                 mat,
@@ -1182,7 +1215,7 @@ impl Builder {
                 spin_axis: spin.map(|s| axis_of(&s.axis)).unwrap_or(Vec3::Y),
                 spin_rps: spin.map(|s| s.rps).unwrap_or(0.0),
                 pulse: anim.and_then(|a| a.pulse).map(|pu| pu.period.max(0.01)),
-                blink: anim.and_then(|a| a.blink).map(|b| (b.period.max(0.01), b.phase)),
+                blink,
                 slide: anim.and_then(|a| a.slide.as_ref()).map(|s| (Vec3::from(s.to), s.on == "enter")),
                 swing: anim
                     .and_then(|a| a.swing.as_ref())

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::geom::{Frame, Rect};
 use super::rooms::{Config, AISLE};
-use crate::grid::{build, Grid, NAV_CELL};
+use crate::grid::{build, Grid, DIRS8, NAV_CELL};
 use crate::walk::{LinkKind, Plane, Side, SurfaceKind, WalkLink, WalkSet, WalkSurface};
 
 /// How far an exit's search may walk, in grid cells (board-layout.ts LANDING_REACH).
@@ -175,12 +175,15 @@ fn reach_main(grid: &Grid, rect: [f64; 4], sources: &[(usize, usize)], main: i32
     if main < 0 {
         return None;
     }
+    // The landing search walks what the TS walks (nav-grid.ts rule 6, `open`): the cells neither blocked nor inflated, with
+    // no support test, and a diagonal only when both orthogonal cells are open. The component is read only at the hit.
+    let open = |c: usize| grid.blocked[c] == 0 && grid.inflated[c] == 0;
     let n = grid.cols * grid.rows;
     let mut dist = vec![-1i64; n];
     let mut label = vec![0usize; n];
     let mut queue: Vec<usize> = Vec::new();
     for &(c, l) in sources {
-        if c < n && grid.walk[c] == 1 && dist[c] < 0 {
+        if c < n && open(c) && dist[c] < 0 {
             dist[c] = 0;
             label[c] = l;
             queue.push(c);
@@ -197,13 +200,17 @@ fn reach_main(grid: &Grid, rect: [f64; 4], sources: &[(usize, usize)], main: i32
         if dist[u] >= LANDING_REACH as i64 {
             continue;
         }
-        for k in 0..8 {
-            if grid.moves[u] & (1 << k) == 0 {
+        for (k, &(di, dj)) in DIRS8.iter().enumerate() {
+            let Some(v) = grid.neighbour(u, k) else { continue };
+            if dist[v] >= 0 || !open(v) {
                 continue;
             }
-            let Some(v) = grid.neighbour(u, k) else { continue };
-            if dist[v] >= 0 || grid.walk[v] != 1 {
-                continue;
+            if di != 0 && dj != 0 {
+                let across_i = grid.neighbour(u, if di > 0 { 0 } else { 1 });
+                let across_j = grid.neighbour(u, if dj > 0 { 2 } else { 3 });
+                if !(across_i.is_some_and(open) && across_j.is_some_and(open)) {
+                    continue;
+                }
             }
             let [x, z] = grid.cell_centre(v);
             if x >= px && x < px + pw && z >= pz && z < pz + pd {

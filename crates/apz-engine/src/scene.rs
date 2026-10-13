@@ -393,6 +393,17 @@ pub enum Kind {
     PointLight { color: Color, intensity: f32, distance: f32, decay: f32 },
 }
 
+/// A node's GPU animation (`hw_anim.wgsl`): its own mesh turns or blinks as a vertex function of the
+/// clock, so it bakes as static geometry. Fields are in the node's local frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NodeAnim {
+    /// Turns about `axis` through `pivot` at `rps` revolutions per second, from `phase` radians at time 0.
+    Spin { pivot: Vec3, axis: Vec3, rps: f32, phase: f32 },
+    /// Blinks `rate` times a second (period 1 / rate): `hi` for the first half of each period, shifted by
+    /// `phase` seconds, and `lo` for the second half.
+    Blink { rate: f32, phase: f32, lo: f32, hi: f32 },
+}
+
 /// A node's state. Reach it through [`Obj::get`].
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -409,6 +420,8 @@ pub struct Node {
     pub render_order: i32,
     /// `userData.dynamic`: moves or changes after the world is built, so it is never baked.
     pub dynamic: bool,
+    /// The GPU animation of this node's own mesh (None: none). See [`NodeAnim`].
+    pub anim: Option<NodeAnim>,
     /// The ink hull `outline()` gave this mesh (`toon.ts`), drawn behind it.
     pub hull: Option<Geo>,
     /// `userData.outline === false`: `outline()` leaves it alone.
@@ -449,6 +462,7 @@ impl Obj {
             receive_shadow: false,
             render_order: 0,
             dynamic: false,
+            anim: None,
             hull: None,
             no_outline: false,
             walk: false,
@@ -558,6 +572,12 @@ impl Obj {
         self
     }
     /// `userData.outline = false`.
+    /// Gives this node a GPU animation (see [`NodeAnim`]).
+    pub fn set_anim(&self, anim: NodeAnim) -> &Self {
+        self.get().anim = Some(anim);
+        self
+    }
+
     pub fn no_outline(&self) -> &Self {
         self.get().no_outline = true;
         self
@@ -801,6 +821,47 @@ pub struct Draw {
     pub fade: u32,
 }
 
+/// Whether the static bake takes the GPU-animated nodes (fan spins, LED blinks) out of the per-frame
+/// draws. Off until the render pass draws [`Baked::animated`]: while off, [`bake`] is unchanged and such
+/// nodes stay dynamic.
+pub const GPU_HW_ANIM: bool = false;
+
+/// The kind of a GPU animation batch: the shader that animates it (`vs_spin` or `vs_blink`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimKind {
+    Spin,
+    Blink,
+}
+
+/// One vertex of an animated batch, in the shader's attribute order (`SpinIn` and `BlinkIn` in
+/// `hw_anim.wgsl`): the rest position and normal (batch frame), the colour, then `params` and `axis`.
+/// A spin has `params` = (pivot, phase) and `axis` = (unit axis, rps); a blink has `params` = (period,
+/// phase, glow, off level) and `axis` zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimVertex {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub color: [f32; 4],
+    pub params: [f32; 4],
+    pub axis: [f32; 4],
+}
+
+/// Animated parts merged into one draw of one kind (`draw.model` is identity; `vertices` line up with
+/// `draw.geo.positions`).
+#[derive(Debug, Clone)]
+pub struct AnimBatch {
+    pub draw: Draw,
+    pub kind: AnimKind,
+    pub vertices: Vec<AnimVertex>,
+}
+
+/// A static bake split in two: the static draws, and the GPU-animated batches.
+#[derive(Debug, Clone)]
+pub struct Baked {
+    pub statics: Vec<Draw>,
+    pub animated: Vec<AnimBatch>,
+}
+
 /// A model's detail by camera distance: its centre and its radius R. Detail 1 is shown while the
 /// camera is within 160 units of that sphere, detail 2 within 90 (the renderer adds hysteresis).
 #[derive(Debug, Clone, Copy)]
@@ -872,7 +933,7 @@ pub struct Overlay {
 pub fn flatten(root: &Obj, filter: Filter) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut draws = Vec::new();
     let mut lights = Vec::new();
-    walk(root, Mat4::IDENTITY, false, filter, &mut draws, &mut lights);
+    walk(root, Mat4::IDENTITY, false, filter, &mut draws, &mut lights, None);
     (draws, lights)
 }
 
@@ -884,14 +945,30 @@ pub enum Filter {
     Dynamic,
 }
 
-fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &mut Vec<Draw>, lights: &mut Vec<PointLightDraw>) {
-    let (world, dynamic, children) = {
+/// A mesh draw of an animated node, split off a static bake with its animation.
+struct AnimDraw {
+    draw: Draw,
+    anim: NodeAnim,
+}
+
+/// [`walk`], with `split`: the static nodes that carry a [`NodeAnim`] go there (their mesh and hull draws)
+/// rather than into `draws`.
+fn walk(
+    node: &Obj,
+    parent: Mat4,
+    dynamic_above: bool,
+    filter: Filter,
+    draws: &mut Vec<Draw>,
+    lights: &mut Vec<PointLightDraw>,
+    mut split: Option<&mut Vec<AnimDraw>>,
+) {
+    let (world, dynamic, children, anim) = {
         let n = node.get();
         if !n.visible {
             return;
         }
         let world = parent * local_of(&n);
-        (world, dynamic_above || n.dynamic, n.children.clone())
+        (world, dynamic_above || n.dynamic, n.children.clone(), n.anim)
     };
     let wanted = match filter {
         Filter::All => true,
@@ -899,10 +976,23 @@ fn walk(node: &Obj, parent: Mat4, dynamic_above: bool, filter: Filter, draws: &m
         Filter::Dynamic => dynamic,
     };
     if wanted {
-        emit(node, world, draws, lights);
+        match (split.as_deref_mut(), anim) {
+            (Some(out), Some(anim)) => {
+                let mut own = Vec::new();
+                emit(node, world, &mut own, &mut Vec::new());
+                for draw in own {
+                    if matches!(draw.kind, DrawKind::Mesh | DrawKind::Outline) {
+                        out.push(AnimDraw { draw, anim });
+                    } else {
+                        draws.push(draw);
+                    }
+                }
+            }
+            _ => emit(node, world, draws, lights),
+        }
     }
     for child in &children {
-        walk(child, world, dynamic, filter, draws, lights);
+        walk(child, world, dynamic, filter, draws, lights, split.as_deref_mut());
     }
 }
 
@@ -1183,7 +1273,7 @@ pub fn flatten_roots(roots: &[(Obj, Mat4)]) -> (Vec<Draw>, Vec<PointLightDraw>) 
     let mut draws = Vec::new();
     let mut lights = Vec::new();
     for (node, parent) in roots {
-        walk(node, *parent, true, Filter::Dynamic, &mut draws, &mut lights);
+        walk(node, *parent, true, Filter::Dynamic, &mut draws, &mut lights, None);
     }
     (draws, lights)
 }
@@ -1196,8 +1286,93 @@ fn empty_geo() -> Geo {
 /// The static part of `root`, merged: one draw per (material, shadow flags, render order, kind)
 /// with the vertices moved to world space (the web floor's `bakeStatic`). Hulls merge too.
 pub fn bake(root: &Obj) -> Vec<Draw> {
-    let (draws, _) = flatten(root, Filter::Static);
-    merge_draws(draws, false)
+    bake_split(root, GPU_HW_ANIM).statics
+}
+
+/// [`bake`], with the GPU-animated nodes (fan spins, LED blinks) split into [`Baked::animated`] when
+/// `gpu_anim` is set. With `GPU_HW_ANIM` on, [`bake`] leaves those out, so the caller must draw them.
+pub fn bake_split(root: &Obj, gpu_anim: bool) -> Baked {
+    let (mut draws, mut lights, mut anim) = (Vec::new(), Vec::new(), Vec::new());
+    let split = if gpu_anim { Some(&mut anim) } else { None };
+    walk(root, Mat4::IDENTITY, false, Filter::Static, &mut draws, &mut lights, split);
+    Baked { statics: merge_draws(draws, false), animated: merge_anim(anim) }
+}
+
+/// The shader parameters of an animation for a part whose world matrix is `model`: the kind, then
+/// `params` and `axis` (see [`AnimVertex`]). A spin's pivot and axis move into the batch frame.
+fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4]) {
+    match *anim {
+        NodeAnim::Spin { pivot, axis, rps, phase } => {
+            let (p, k) = (model.transform_point3(pivot), model.transform_vector3(axis).normalize_or_zero());
+            (AnimKind::Spin, [p.x, p.y, p.z, phase], [k.x, k.y, k.z, rps])
+        }
+        NodeAnim::Blink { rate, phase, lo, hi } => {
+            let period = if rate > 0.0 { 1.0 / rate } else { 1.0 };
+            let off = if hi != 0.0 { lo / hi } else { 0.0 };
+            (AnimKind::Blink, [period, phase, hi, off], [0.0; 4])
+        }
+    }
+}
+
+/// The animated draws merged per animation, material and state (as [`merge_draws`] does for statics),
+/// each vertex carrying its part's animation parameters.
+fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
+    // Per part: its geometry, world matrix, tint, and animation parameters.
+    type Part = (Geo, Mat4, Option<[f32; 3]>, [f32; 4], [f32; 4]);
+    let mut groups: Vec<(Draw, AnimKind, Vec<Part>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for AnimDraw { draw: d, anim } in items {
+        let (kind, params, axis) = anim_params(&anim, d.model);
+        let tag = if kind == AnimKind::Spin { "s" } else { "b" };
+        let (key, tint) = match d.kind {
+            DrawKind::Outline => (format!("o|{tag}|{}|{}|{}", d.render_order, d.lod, d.fade), None),
+            _ if d.geo.slots.is_empty() => (
+                format!(
+                    "c|{tag}|{}|{}|{}|{}|{}|{}",
+                    class_of(&d.material),
+                    d.cast_shadow,
+                    d.receive_shadow,
+                    d.render_order,
+                    d.lod,
+                    d.fade
+                ),
+                Some(d.material.color.to_array()),
+            ),
+            _ => (format!("m|{tag}|{}|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade), None),
+        };
+        let part = (Arc::clone(&d.geo), d.model, tint, params, axis);
+        match index.get(&key) {
+            Some(&at) => groups[at].2.push(part),
+            None => {
+                index.insert(key, groups.len());
+                groups.push((d, kind, vec![part]));
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(mut first, kind, parts)| {
+            if parts.iter().any(|p| p.2.is_some()) {
+                first.material.color = Color::WHITE;
+            }
+            let tris: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts.iter().map(|p| (Arc::clone(&p.0), p.1, p.2)).collect();
+            let geo = merge_tinted(&tris);
+            let mut vertices = Vec::with_capacity(geo.positions.len());
+            for p in &parts {
+                for _ in 0..p.0.positions.len() {
+                    let i = vertices.len();
+                    vertices.push(AnimVertex {
+                        pos: geo.positions[i],
+                        normal: geo.normals.get(i).copied().unwrap_or([0.0; 3]),
+                        color: geo.colors.get(i).map_or([1.0; 4], |c| [c[0], c[1], c[2], 1.0]),
+                        params: p.3,
+                        axis: p.4,
+                    });
+                }
+            }
+            AnimBatch { draw: Draw { geo, model: Mat4::IDENTITY, ..first }, kind, vertices }
+        })
+        .collect()
 }
 
 /// Merges draws into one per material and state, their vertices moved into the common (identity)
@@ -1417,6 +1592,47 @@ mod tests {
         assert_eq!(baked[0].geo.positions.len(), 9);
         assert_eq!(baked[0].geo.indices, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(baked[0].geo.positions[3], [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn gpu_animated_parts_bake_into_animated_batches_and_leave_the_dynamic_draws() {
+        let geo = Geometry::new(vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], vec![], vec![], vec![0, 1, 2]);
+        let (toon, basic) = (Mat::toon(Color::WHITE), Mat::basic(Color::BLACK));
+        // A body, a fan and an LED; the fan and LED are dynamic exactly when the GPU does not animate them.
+        let machine = |gpu: bool| {
+            let root = Obj::group();
+            root.add(&Obj::mesh(&geo, &toon));
+            let fan = Obj::mesh(&geo, &toon);
+            fan.set_position(2.0, 0.0, 0.0)
+                .set_dynamic(!gpu)
+                .set_anim(NodeAnim::Spin { pivot: Vec3::ZERO, axis: Vec3::Y, rps: 2.0, phase: 0.0 });
+            root.add(&fan);
+            let led = Obj::mesh(&geo, &basic);
+            led.set_dynamic(!gpu).set_anim(NodeAnim::Blink { rate: 1.0, phase: 0.0, lo: 0.1, hi: 1.0 });
+            root.add(&led);
+            root
+        };
+        let (off, on) = (bake_split(&machine(false), false), bake_split(&machine(true), true));
+        let (dyn_off, dyn_on) = (flatten(&machine(false), Filter::Dynamic).0.len(), flatten(&machine(true), Filter::Dynamic).0.len());
+        println!(
+            "static/animated/dynamic: off {}/{}/{}, on {}/{}/{}",
+            off.statics.len(),
+            off.animated.len(),
+            dyn_off,
+            on.statics.len(),
+            on.animated.len(),
+            dyn_on
+        );
+        assert_eq!((off.statics.len(), off.animated.len(), dyn_off), (1, 0, 2));
+        assert_eq!((on.statics.len(), on.animated.len(), dyn_on), (1, 2, 0));
+        let spin = on.animated.iter().find(|b| b.kind == AnimKind::Spin).unwrap();
+        assert_eq!(spin.vertices.len(), 3);
+        assert_eq!(spin.vertices[0].pos, [2.0, 0.0, 0.0]);
+        assert_eq!(spin.vertices[0].params, [2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(spin.vertices[0].axis, [0.0, 1.0, 0.0, 2.0]);
+        let blink = on.animated.iter().find(|b| b.kind == AnimKind::Blink).unwrap();
+        assert_eq!(blink.vertices[0].params, [1.0, 0.0, 1.0, 0.1]);
+        assert_eq!(bake(&machine(false)).len(), 1);
     }
 
     #[test]

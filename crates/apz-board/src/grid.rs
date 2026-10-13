@@ -486,6 +486,8 @@ struct Shape<'a> {
     sign: f64,
     min: [f64; 2],
     max: [f64; 2],
+    /// Each edge's start, its (ex, ez) vector and its length, computed once (the same values `contains` would compute).
+    seg: Vec<([f64; 2], f64, f64, f64)>,
 }
 
 impl<'a> Shape<'a> {
@@ -497,7 +499,14 @@ impl<'a> Shape<'a> {
             min = [min[0].min(p[0]), min[1].min(p[1])];
             max = [max[0].max(p[0]), max[1].max(p[1])];
         }
-        Shape { poly, sign: if area < 0.0 { -1.0 } else { 1.0 }, min, max }
+        let seg = edges(poly)
+            .map(|(a, b)| {
+                let ex = b[0] - a[0];
+                let ez = b[1] - a[1];
+                (a, ex, ez, (ex * ex + ez * ez).sqrt())
+            })
+            .collect();
+        Shape { poly, sign: if area < 0.0 { -1.0 } else { 1.0 }, min, max, seg }
     }
 
     fn contains(&self, x: f64, z: f64) -> bool {
@@ -509,12 +518,7 @@ impl<'a> Shape<'a> {
         {
             return false;
         }
-        edges(self.poly).all(|(a, b)| {
-            let ex = b[0] - a[0];
-            let ez = b[1] - a[1];
-            let len = (ex * ex + ez * ez).sqrt();
-            len == 0.0 || self.sign * (ex * (z - a[1]) - ez * (x - a[0])) / len >= -EPS
-        })
+        self.seg.iter().all(|&(a, ex, ez, len)| len == 0.0 || self.sign * (ex * (z - a[1]) - ez * (x - a[0])) / len >= -EPS)
     }
 }
 
@@ -687,7 +691,9 @@ fn mark_block(flags: &mut [bool], cols: usize, rows: usize, c: usize, r: i64) {
 fn fine_field(shapes: &[Shape], x0: f64, z0: f64, cols: usize, rows: usize) -> FineField {
     let per = (NAV_CELL / NAV_FINE).round() as usize;
     let (fcols, frows) = (cols * per, rows * per);
-    let mut pairs: Vec<(usize, u32)> = Vec::new();
+    let total = fcols * frows;
+    // Each shape's fine sample range (i0, i1, j0, j1); None for a shape too small to hold a surface.
+    let mut ranges: Vec<Option<(usize, usize, usize, usize)>> = vec![None; shapes.len()];
     if fcols > 0 && frows > 0 {
         let span = |lo: f64, hi: f64, o: f64, count: usize| -> (usize, usize) {
             let a = ((lo - o) / NAV_FINE).floor().max(0.0) as usize;
@@ -700,25 +706,38 @@ fn fine_field(shapes: &[Shape], x0: f64, z0: f64, cols: usize, rows: usize) -> F
             }
             let (i0, i1) = span(sh.min[0], sh.max[0], x0, fcols);
             let (j0, j1) = span(sh.min[1], sh.max[1], z0, frows);
-            for j in j0..=j1 {
-                for i in i0..=i1 {
-                    pairs.push((j * fcols + i, s as u32));
-                }
-            }
+            ranges[s] = Some((i0, i1, j0, j1));
         }
     }
-    pairs.sort_by_key(|p| p.0);
-    let total = fcols * frows;
+    // A counting sort by sample: the shapes of each sample come out in ascending shape order, as a stable sort would.
+    // A counting sort by sample: the shapes of each sample come out in ascending shape order, as a stable sort would.
     let mut start = vec![0u32; total + 1];
-    for &(k, _) in &pairs {
-        start[k + 1] += 1;
+    for &(i0, i1, j0, j1) in ranges.iter().flatten() {
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                start[j * fcols + i + 1] += 1;
+            }
+        }
     }
     let mut acc = 0u32;
     for v in start.iter_mut() {
         acc += *v;
         *v = acc;
     }
-    let items: Vec<u32> = pairs.iter().map(|p| p.1).collect();
+    let mut items = vec![0u32; acc as usize];
+    let mut cursor: Vec<u32> = start[..total].to_vec();
+    for (s, r) in ranges.iter().enumerate() {
+        let Some((i0, i1, j0, j1)) = *r else {
+            continue;
+        };
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                let k = j * fcols + i;
+                items[cursor[k] as usize] = s as u32;
+                cursor[k] += 1;
+            }
+        }
+    }
     FineField { cols: fcols, rows: frows, x0, z0, start, items }
 }
 
