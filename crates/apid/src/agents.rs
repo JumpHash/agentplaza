@@ -493,6 +493,11 @@ fn reconcile_once(app: &App) {
             for vm in run["vms"].as_array().into_iter().flatten() {
                 if let (Some(guest), Some(id)) = (vm["guest_cid"].as_u64(), vm["id"].as_u64()) {
                     placements.insert(guest, (run_id.to_owned(), id as u32));
+                    // The role noded booted this guest with: trusted, unlike the role the guest claims in its hello.
+                    let role = vm["role"].as_str().or(run["role"].as_str()).unwrap_or_default();
+                    if !role.is_empty() {
+                        app.spawned.note_fleet_role(guest, role);
+                    }
                 }
             }
         }
@@ -501,10 +506,13 @@ fn reconcile_once(app: &App) {
         let Some((run, vm)) = placements.get(&agent.cid).cloned() else {
             continue;
         };
-        if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) {
+        // An agent that said hello before noded's runs were read gets its fleet role now.
+        let role = if agent.role.is_empty() { app.spawned.role_of(agent.cid).unwrap_or_default() } else { agent.role.clone() };
+        if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role {
             let updated = app.agents.update(agent.cid, |slot| {
                 slot.run = Some(run);
                 slot.vm = Some(vm);
+                slot.role = role;
             });
             if updated {
                 if let Some(fresh) = app.agents.get(agent.cid) {

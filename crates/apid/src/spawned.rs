@@ -39,6 +39,9 @@ pub struct Store {
     registry: Mutex<Registry>,
     /// `(role, model)` per spawned run, matched by role in arrival order.
     pending: Mutex<VecDeque<(String, Option<String>)>>,
+    /// The role each node booted a guest CID with from its fleet manifest, as noded reports it in its runs
+    /// (refreshed by the reconcile pass; not saved: noded reports it again after a restart).
+    fleet: Mutex<BTreeMap<u64, String>>,
 }
 
 impl Store {
@@ -48,7 +51,7 @@ impl Store {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
-        Self { path, registry: Mutex::new(registry), pending: Mutex::new(VecDeque::new()) }
+        Self { path, registry: Mutex::new(registry), pending: Mutex::new(VecDeque::new()), fleet: Mutex::new(BTreeMap::new()) }
     }
 
     /// Every spawned agent, in the order they were spawned.
@@ -61,11 +64,20 @@ impl Store {
         self.guard().models.get(&cid).cloned()
     }
 
-    /// The operator asked noded for one more run of `role`; its first hello of that role is it.
-    /// The role the plaza spawned agent `cid` with, if the plaza spawned it.
+    /// The role the plaza spawned agent `cid` with, if the plaza spawned it: an operator spawn's role, else the
+    /// role its node booted it with (`note_fleet_role`). Never the role a guest claims.
     pub fn role_of(&self, cid: u64) -> Option<String> {
-        self.entries().into_iter().find(|entry| entry.cid == cid).map(|entry| entry.role)
+        let spawned = self.entries().into_iter().find(|entry| entry.cid == cid).map(|entry| entry.role);
+        spawned.or_else(|| self.fleet.lock().unwrap_or_else(PoisonError::into_inner).get(&cid).cloned())
     }
+
+    /// Noded reports guest `cid` running with `role` (its fleet manifest's role). Returns whether that is new.
+    pub fn note_fleet_role(&self, cid: u64, role: &str) -> bool {
+        let mut fleet = self.fleet.lock().unwrap_or_else(PoisonError::into_inner);
+        fleet.insert(cid, role.to_owned()).as_deref() != Some(role)
+    }
+
+    /// The operator asked noded for one more run of `role`; its first hello of that role is it.
 
     pub fn expect(&self, role: &str, model: Option<String>) {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).push_back((role.to_owned(), model));
@@ -215,6 +227,25 @@ mod snapshot_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fleet_role_comes_from_noded_and_a_spawn_wins() {
+        let dir = std::env::temp_dir().join(format!("apid-spawned-fleet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::load(dir.join("spawned.json"));
+        // A guest's own claim never gives it a role; noded's report does.
+        store.hello(200, "orchestrator");
+        assert_eq!(store.role_of(200), None);
+        assert!(store.note_fleet_role(200, "architect"));
+        assert!(!store.note_fleet_role(200, "architect"));
+        assert_eq!(store.role_of(200).as_deref(), Some("architect"));
+        // An operator spawn's recorded role wins over the fleet's.
+        store.expect("builder", None);
+        store.hello(201, "builder");
+        store.note_fleet_role(201, "qa");
+        assert_eq!(store.role_of(201).as_deref(), Some("builder"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn registry_survives_a_round_trip() {
