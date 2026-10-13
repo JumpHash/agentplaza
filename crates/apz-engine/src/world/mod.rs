@@ -8,7 +8,9 @@ pub mod behaviour;
 pub mod board_layout;
 pub mod labels;
 pub mod layout;
+pub mod lift_mesh;
 pub mod motion;
+pub mod walkway_mesh;
 pub mod view;
 
 use std::collections::HashMap;

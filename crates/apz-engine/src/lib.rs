@@ -22,6 +22,7 @@ pub mod gpus;
 pub mod geometry;
 pub mod hardware;
 pub mod input;
+pub mod lift_ctrl;
 pub mod machine_stage;
 pub mod outskirts;
 pub mod portrait;
