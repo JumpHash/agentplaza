@@ -136,7 +136,7 @@ impl Auth {
     }
 }
 
-const AUTH_OPTIONS: [(Auth, &str); 2] = [(Auth::Secure, "Secure (token required)"), (Auth::Open, "Open (no token)")];
+const AUTH_OPTIONS: [(Auth, &str); 2] = [(Auth::Secure, "Secure"), (Auth::Open, "Open")];
 
 const OBSERVE_TOOLS: &[&str] = &[
     "plaza_status",
@@ -747,6 +747,7 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
         ui::seg(&BIND_OPTIONS, state.bind, Msg::SetBind),
         ui::label("Auth").into(),
         ui::seg(&AUTH_OPTIONS, state.auth, Msg::SetAuth),
+        ui::faint(if matches!(state.auth, Auth::Open) { "no token" } else { "token required" }).into(),
     ];
     if open {
         parts.push(ui::error_line("Anyone who can reach this address can use these tools without a token."));
@@ -811,10 +812,10 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
 
 fn status_line(state: &State) -> Element<'_, Msg> {
     if let Some(error) = &state.status_error {
-        return ui::error_line(error);
+        return ui::empty("alert", "Could not load the hub server", error);
     }
     let Some(status) = &state.status else {
-        return ui::loading();
+        return ui::faint("Loading...").into();
     };
     let label = if !status.enabled {
         "Off".to_string()

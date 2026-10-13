@@ -887,3 +887,8 @@ fn or_none(value: &str) -> String {
         value.to_string()
     }
 }
+
+/// No live topic: the web polls this screen too (every few seconds), and so does the desktop.
+pub fn subscription(_ctx: &Ctx) -> iced::Subscription<Msg> {
+    iced::Subscription::none()
+}

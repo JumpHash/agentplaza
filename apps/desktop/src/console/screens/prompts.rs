@@ -108,6 +108,10 @@ pub enum Msg {
     NewBody(text_editor::Action),
     Create,
     Created(Result<OneResp, String>),
+    /// Load the list again after a failure.
+    Retry,
+    /// Clear the kind filter and the search.
+    ClearFilters,
     Editor(prompt_editor::Msg),
 }
 
@@ -236,15 +240,36 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 }
             }
         }
-        Msg::Editor(prompt_editor::Msg::Back) => {
-            st.editor = None;
-            load(st, ctx)
+        Msg::Retry => load(st, ctx),
+        Msg::ClearFilters => {
+            st.filter = Filter::All;
+            st.query.clear();
+            Task::none()
         }
+        Msg::Editor(prompt_editor::Msg::Back) => {
+            // With unsaved edits, the editor asks first (Discard leaves; Keep editing stays).
+            let dirty = st.editor.as_ref().is_some_and(prompt_editor::is_dirty);
+            if dirty {
+                if let Some(ed) = st.editor.as_mut() {
+                    prompt_editor::ask_leave(ed);
+                }
+                Task::none()
+            } else {
+                leave_editor(st, ctx)
+            }
+        }
+        Msg::Editor(prompt_editor::Msg::Discard) => leave_editor(st, ctx),
         Msg::Editor(m) => match st.editor.as_mut() {
             Some(ed) => prompt_editor::update(ed, m, ctx).map(Msg::Editor),
             None => Task::none(),
         },
     }
+}
+
+/// Close the editor and reload the list.
+fn leave_editor(st: &mut State, ctx: &Ctx) -> Task<Msg> {
+    st.editor = None;
+    load(st, ctx)
 }
 
 fn open_editor(st: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
@@ -402,7 +427,11 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         page = page.push(ui::loading());
     }
     if let Some(e) = st.error.as_ref() {
-        page = page.push(ui::error_line(e));
+        page = page.push(column![
+            ui::error_line(e),
+            ui::btn_sm("Try again", None, ui::Kind::Secondary, Some(Msg::Retry)),
+        ]
+        .spacing(8));
     }
 
     let needle = st.query.trim().to_lowercase();
@@ -422,7 +451,13 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
                 "The library holds the system prompts, AGENTS.md files and fragments that the plaza's agents read. Create one to start.",
             ));
         } else if visible.is_empty() {
-            page = page.push(ui::empty("file", "Nothing matches", "Try another kind, or clear the search."));
+            page = page.push(
+                column![
+                    ui::empty("file", "Nothing matches", "Try another kind, or clear the search."),
+                    ui::btn_sm("Clear filters", None, ui::Kind::Secondary, Some(Msg::ClearFilters)),
+                ]
+                .spacing(12),
+            );
         }
     }
 

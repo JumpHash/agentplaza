@@ -418,3 +418,8 @@ fn vet_confirm<'a>(v: &'a Vet) -> Element<'a, Msg> {
     );
     column(items).spacing(14).into()
 }
+
+/// No live topic: the web polls this screen too (every few seconds), and so does the desktop.
+pub fn subscription(_ctx: &Ctx) -> iced::Subscription<Msg> {
+    iced::Subscription::none()
+}

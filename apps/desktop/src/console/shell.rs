@@ -5,12 +5,32 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, row, scrollable, tooltip, Space, Stack};
+use iced::widget::{button, column, container, row, scrollable, text_input, tooltip, Space, Stack};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 
 use super::events;
 use super::screens::{Id, NAV};
 use super::{toast, ui, Ctx};
+
+/// The sidebar mode the last run left ("open" or "rail"), Open when none was saved. Tests never read the owner's
+/// settings file.
+fn saved_mode() -> Mode {
+    if cfg!(test) {
+        return Mode::Open;
+    }
+    match super::boot::saved_setting("sidebar").as_ref().and_then(|v| v.as_str()) {
+        Some("rail") => Mode::Rail,
+        _ => Mode::Open,
+    }
+}
+
+/// Saves the sidebar mode for the next run (not from tests).
+fn save_mode(name: &str) -> std::io::Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    super::boot::save_setting("sidebar", serde_json::json!(name))
+}
 
 /// The sidebar's display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -52,13 +72,15 @@ pub struct State {
     pub again: bool,
     /// The toasts on screen, newest last; they outlive the screen that raised them.
     pub toasts: Vec<toast::Toast>,
+    /// An open confirmation (STOP ALL or RESUME), asked before the hub is called.
+    pub confirm: Option<Confirm>,
 }
 
 impl Default for State {
     fn default() -> Self {
         State {
             current: Id::Overview,
-            mode: Mode::Open,
+            mode: saved_mode(),
             width: 248.0,
             paused: false,
             held_note: String::new(),
@@ -76,8 +98,16 @@ impl Default for State {
             loading: false,
             again: false,
             toasts: Vec::new(),
+            confirm: None,
         }
     }
+}
+
+/// An open confirmation: STOP ALL with its optional reason, or RESUME.
+#[derive(Debug, Clone)]
+pub enum Confirm {
+    Stop(String),
+    Resume,
 }
 
 #[derive(Debug, Clone)]
@@ -86,8 +116,16 @@ pub enum Msg {
     ToggleSidebar,
     /// Width change in px (negative narrows); clamped to 200–420.
     Resize(f32),
+    /// Opens the STOP ALL confirmation.
     StopAll,
+    /// Opens the RESUME confirmation.
     Resume,
+    /// The STOP ALL dialog's reason field (capped at 200 characters).
+    StopReason(String),
+    /// The confirmations' action buttons, and Cancel.
+    StopGo,
+    ResumeGo,
+    CancelConfirm,
     /// `GET /v1/overview` + `GET /v1/plaza/state` answered.
     Loaded(Result<serde_json::Value, String>),
     /// `POST /v1/plaza/stop` or `/v1/plaza/resume` answered.
@@ -144,14 +182,47 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
                 Mode::Open => Mode::Rail,
                 Mode::Rail => Mode::Open,
             };
+            // Remembered across runs, as the web keeps it in localStorage (`apz.sidebar`).
+            let name = if state.mode == Mode::Rail { "rail" } else { "open" };
+            if let Err(err) = save_mode(name) {
+                eprintln!("agentplaza-desktop: the sidebar mode was not saved: {err}");
+            }
             (Task::none(), None)
         }
         Msg::Resize(delta) => {
             state.width = (state.width + delta).clamp(200.0, 420.0);
             (Task::none(), None)
         }
-        Msg::StopAll => (post(ctx, "/v1/plaza/stop", serde_json::json!({ "reason": "stop all (desktop)" })), None),
-        Msg::Resume => (post(ctx, "/v1/plaza/resume", serde_json::json!({})), None),
+        Msg::StopAll => {
+            state.confirm = Some(Confirm::Stop(String::new()));
+            (Task::none(), None)
+        }
+        Msg::Resume => {
+            state.confirm = Some(Confirm::Resume);
+            (Task::none(), None)
+        }
+        Msg::StopReason(reason) => {
+            if let Some(Confirm::Stop(r)) = &mut state.confirm {
+                *r = reason.chars().take(200).collect();
+            }
+            (Task::none(), None)
+        }
+        Msg::StopGo => {
+            let reason = match &state.confirm {
+                Some(Confirm::Stop(r)) => r.trim().to_string(),
+                _ => String::new(),
+            };
+            state.confirm = None;
+            (post(ctx, "/v1/plaza/stop", serde_json::json!({ "reason": reason })), None)
+        }
+        Msg::ResumeGo => {
+            state.confirm = None;
+            (post(ctx, "/v1/plaza/resume", serde_json::json!({})), None)
+        }
+        Msg::CancelConfirm => {
+            state.confirm = None;
+            (Task::none(), None)
+        }
         Msg::Done(Ok(_)) => (load(ctx), None),
         Msg::Done(Err(_)) => (Task::none(), None),
         Msg::Loaded(Ok(v)) => {
@@ -234,10 +305,14 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
     main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
     let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
     let base: Element<'a, M> = row![sidebar(state, wrap), main].height(Length::Fill).into();
-    if state.toasts.is_empty() {
-        return base;
+    let mut layers = Stack::new().push(base);
+    if let Some(which) = &state.confirm {
+        layers = layers.push(confirm_view(which, wrap));
     }
-    Stack::new().push(base).push(toast::view(&state.toasts)).into()
+    if !state.toasts.is_empty() {
+        layers = layers.push(toast::view(&state.toasts));
+    }
+    layers.into()
 }
 
 /// The id of the wrap around a screen that does not scroll its own page; the Machines screen scrolls
@@ -277,7 +352,63 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
     };
     // The toasts' clock runs only while a toast is on screen (a quarter-second step ends them within 4.25 s).
     let clock = if state.toasts.is_empty() { Subscription::none() } else { iced::time::every(Duration::from_millis(250)).map(Msg::ToastTick) };
-    Subscription::batch([frames, clock])
+    // The `[` key cycles the sidebar, as on the web. A key a focused text field takes is captured
+    // (status Captured), so it does not reach here while the STOP ALL reason is being typed.
+    let keys = iced::event::listen_with(|event, status, _| match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Character(c), modifiers, .. })
+            if status == iced::event::Status::Ignored && c.as_str() == "[" && !modifiers.control() && !modifiers.alt() && !modifiers.logo() =>
+        {
+            Some(Msg::ToggleSidebar)
+        }
+        _ => None,
+    });
+    Subscription::batch([frames, clock, keys])
+}
+
+/// The confirmation over the shell, worded as the web's: STOP ALL asks for an optional reason, RESUME asks once.
+fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> Element<'a, M> {
+    let (title, body, action): (&str, &str, Element<'a, M>) = match which {
+        Confirm::Stop(reason) => (
+            "Stop all agents?",
+            "Every agent's running work is cancelled and nothing new starts until you resume. Queued work, VMs and workspaces are kept.",
+            column![
+                ui::label("Reason"),
+                text_input("Why (optional)", reason).on_input(move |s| wrap(Msg::StopReason(s))).padding(8),
+                ui::faint("Optional. Shown on the held banner."),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(wrap(Msg::CancelConfirm))),
+                    top_btn("Stop all", "stop", crate::theme::palette().crit, wrap(Msg::StopGo)),
+                ]
+                .spacing(8),
+            ]
+            .spacing(10)
+            .into(),
+        ),
+        Confirm::Resume => (
+            "Resume the plaza?",
+            "New work can start again. The items cancelled by the stop stay cancelled.",
+            row![
+                ui::btn("Cancel", None, ui::Kind::Ghost, Some(wrap(Msg::CancelConfirm))),
+                top_btn("Resume", "play", crate::theme::palette().signal, wrap(Msg::ResumeGo)),
+            ]
+            .spacing(8)
+            .into(),
+        ),
+    };
+    let panel = container(column![ui::mono(title, 14.0, crate::theme::palette().ink), ui::mono(body, 12.0, crate::theme::palette().ink_2), action].spacing(14))
+        .padding(18)
+        .width(Length::Fixed(440.0))
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().sheet.into()),
+            border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        });
+    container(panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center(Length::Fill)
+        .style(|_: &Theme| container::Style { background: Some(Color { a: 0.5, ..Color::BLACK }.into()), ..Default::default() })
+        .into()
 }
 
 fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {

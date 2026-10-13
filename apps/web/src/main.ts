@@ -10,7 +10,7 @@ import { applySidebar, sidebar, sidebarToggle } from './ui/sidebar';
 
 import { onRoute, type Route } from './router';
 import { agents, overview, startShared } from './store';
-import { button, dot } from './ui/components';
+import { button, dot, modal } from './ui/components';
 import { h, icon, replace } from './ui/dom';
 import { SCREENS, type Cleanup } from './views';
 import { signInScreen } from './views/sign-in';
@@ -27,15 +27,25 @@ function showSignIn(): void {
 
 function signOutControl(): HTMLElement | null {
   if (LOOPBACK.has(location.hostname)) return null;
+  // Asks first, as the desktop does: signing out ends this browser's session with the hub.
+  const signOut = async () => {
+    try {
+      await api.signOut();
+    } catch {
+      // the session may already be gone; reload either way to show where things stand
+    }
+    location.reload();
+  };
   return button(
     'Sign out',
-    async () => {
-      try {
-        await api.signOut();
-      } catch {
-        // the session may already be gone; reload either way to show where things stand
-      }
-      location.reload();
+    () => {
+      const close = modal(
+        'Sign out?',
+        h('div', null, [
+          h('p', null, 'You will need the owner token to sign in to this hub again.'),
+          h('div.actions', null, [button('Sign out', () => void signOut(), { kind: 'primary' }), button('Cancel', () => close(), { kind: 'ghost' })]),
+        ]),
+      );
     },
     { kind: 'ghost', size: 'sm' },
   );

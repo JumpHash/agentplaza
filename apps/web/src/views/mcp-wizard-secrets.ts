@@ -230,7 +230,7 @@ async function fillPick(
       entries.length === 0
         ? h('p.muted', null, 'The vault has no secrets yet. Create one instead.')
         : [
-            h('label.wsec-opt', null, all, h('span', null, 'Show all')),
+            h('label.wsec-opt', null, all, h('span', null, showAll ? 'Show fewer' : 'Show all')),
             shown.length === 0
               ? h('p.muted', null, 'No secret has a plausible name. Tick Show all.')
               : h(

@@ -250,7 +250,7 @@ pub enum Msg {
     CancelSwitchOff,
     /// The id typed into the open switch-off dialog.
     TypeConfirm(String),
-    /// A hub event: a `law` change reloads the screen.
+    /// A hub event: a law, agent or violation change reloads the screen.
     Event(events::Event),
     SelectLaw(String),
     NewRule,
@@ -399,7 +399,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Event(event) => {
-            if event.kind == "law" {
+            if event.kind == "law" || event.kind == "agent" || event.kind == "violation" {
                 return load(state, ctx);
             }
         }
@@ -650,7 +650,7 @@ fn switch_off_dialog<'a>(state: &'a State, dialog: &'a SwitchOff) -> Option<Elem
     Some(ui::card(&format!("Switch off \"{}\"?", law.title), column(body).spacing(12).into()))
 }
 
-/// The hub's events for this screen: a constitutional law changed on the hub, so it reloads.
+/// The hub's events for this screen: a law, agent or violation change on the hub reloads it.
 pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
     events::subscription(&ctx.client).map(Msg::Event)
 }

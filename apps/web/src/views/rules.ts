@@ -13,6 +13,7 @@ import {
   EXAMPLE_LAW,
   SEVERITIES,
   STRICT_HELP,
+  TIER_DESCRIPTIONS,
   TIER_FILTERS,
   builtinLaws,
   cap,
@@ -99,6 +100,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   // Built-in statutes.
   const tierTabs = h('div.rules-tabs');
+  const tierDesc = h('p.rules-section-desc');
   const builtinCount = h('p.rules-count');
   const builtinBox = h('div.rules-list');
 
@@ -127,6 +129,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         renderBuiltin();
       }),
     );
+    tierDesc.textContent = filter.tier === 'all' ? '' : TIER_DESCRIPTIONS[filter.tier];
   }
 
   function renderChips(): void {
@@ -728,6 +731,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
               null,
               h('div.rules-row', null, search, field('Severity', sevSel)),
               h('div.rules-row', null, chipBox, tierTabs),
+              tierDesc,
             ),
             builtinCount,
             builtinBox,

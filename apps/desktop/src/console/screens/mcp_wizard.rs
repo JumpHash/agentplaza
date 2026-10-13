@@ -22,7 +22,7 @@ const SECRET_WORDS: [&str; 4] = ["TOKEN", "KEY", "SECRET", "PASSWORD"];
 const KEPT: [&str; 3] = ["limits", "allow_private", "storage"];
 /// The risk levels a tool can be given; the empty value means auto (the hub's own).
 const RISKS: [&str; 3] = ["read", "write", "irreversible"];
-const TOOL_MODE: [(bool, &str); 2] = [(true, "All tools"), (false, "Pick tools")];
+const TOOL_MODE: [(bool, &str); 2] = [(true, "Allow all tools"), (false, "Pick tools")];
 const ROLE_MODE: [(bool, &str); 2] = [(true, "All roles"), (false, "Pick roles")];
 const NODE_MODE: [(bool, &str); 2] = [(true, "All nodes"), (false, "Pick nodes")];
 const ID_HINT: &str = "The ID must be 2 to 32 characters: lower-case letters, digits and hyphens, starting with a letter.";

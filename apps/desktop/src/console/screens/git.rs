@@ -940,13 +940,19 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(12)
     .align_y(Alignment::Center);
-    let actions = row![
+    let buttons = row![
         ui::btn("Approve", None, Kind::Primary, Some(Msg::Modal(Modal::Review(ReviewEvent::Approve)))),
         ui::btn("Request changes", None, Kind::Danger, Some(Msg::Modal(Modal::Review(ReviewEvent::RequestChanges)))),
         ui::btn("Comment", None, Kind::Ghost, Some(Msg::Modal(Modal::Review(ReviewEvent::Comment)))),
         ui::btn("Merge", None, Kind::Primary, mergeable.then_some(Msg::Modal(Modal::Merge))),
     ]
     .spacing(8);
+    // The web explains a disabled Merge in its tooltip; the desktop says it under the buttons.
+    let actions: Element<'a, Msg> = if mergeable {
+        buttons.into()
+    } else {
+        column![buttons, ui::faint("Needs an approving review and no conflicts")].spacing(6).into()
+    };
     let description: Element<'a, Msg> = if d.body.is_empty() {
         ui::faint("No description provided.").into()
     } else {

@@ -445,7 +445,7 @@ fn servers_view(state: &State) -> Element<'_, Msg> {
     if let Some((text, is_error)) = &state.notice {
         parts.push(if *is_error { ui::error_line(text) } else { ui::faint(text.clone()).into() });
     }
-    if let Some(error) = &state.error {
+    if let (Some(error), Some(_)) = (&state.error, &state.servers) {
         parts.push(ui::error_line(error));
     }
     parts.push(servers_section(state));
@@ -468,7 +468,10 @@ fn tab_bar<'a>(tab: Tab) -> Element<'a, Msg> {
 
 fn servers_section<'a>(state: &'a State) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match &state.servers {
-        None => ui::loading(),
+        None => match &state.error {
+            Some(error) => ui::empty("alert", "Could not load MCP servers", error),
+            None => ui::faint("Loading MCP servers...").into(),
+        },
         Some(list) if list.is_empty() => ui::empty("terminal", "No servers yet", "Add one from the catalogue below, or in the web console."),
         Some(list) => column(list.iter().map(|s| server_row(state.busy, s)).collect::<Vec<Element<'a, Msg>>>()).spacing(18).into(),
     };

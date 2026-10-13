@@ -165,6 +165,8 @@ pub enum Preview {
     Image(image::Handle),
     Text(String),
     Markdown(String),
+    /// A video: no inline player in iced, so a Play action hands it to the system's player.
+    Video,
     Note(String),
 }
 
@@ -215,6 +217,8 @@ pub struct State {
     tool_view: Option<ToolFileView>,
     tool_action: Option<ToolAction>,
     reject_note: String,
+    /// The file last picked (opened by a click or by Enter): Enter opens it again from the list.
+    selected: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +247,11 @@ pub enum Msg {
     ToolConfirm,
     RejectNote(String),
     Done(Result<String, String>),
+    /// Enter pressed while no text field has the key: opens the selected file.
+    OpenSelected,
+    /// Play a video: save it and hand it to the system's player.
+    Play(String),
+    Played(Result<String, String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -298,6 +307,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Filter(filter) => {
             state.filter = filter;
+            Task::none()
+        }
+        Msg::OpenSelected => match state.selected.clone() {
+            Some(id) if state.open.is_none() => open(state, id, ctx),
+            _ => Task::none(),
+        },
+        Msg::Play(id) => play(state, &id, ctx),
+        Msg::Played(Ok(path)) => {
+            state.notice = Some(format!("Opened {path}"));
+            Task::none()
+        }
+        Msg::Played(Err(e)) => {
+            state.error = Some(e);
             Task::none()
         }
         Msg::Open(id) => open(state, id, ctx),
@@ -394,6 +416,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// Enter opens the selected file, but only when no widget (the search field) captured the key.
+pub fn subscription(_ctx: &Ctx) -> iced::Subscription<Msg> {
+    iced::event::listen_with(|event, status, _window| match (event, status) {
+        (
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                ..
+            }),
+            iced::event::Status::Ignored,
+        ) => Some(Msg::OpenSelected),
+        _ => None,
+    })
+}
+
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(e) = &state.error {
@@ -414,6 +450,15 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 
 /// Opens a file: loads its preview if the type has one, else says so.
 fn open(state: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
+    state.selected = Some(id.clone());
+    let video = state.files.iter().any(|d| d.id == id && Group::of(&d.content_type) == Group::Video);
+    if video {
+        state.open = Some(id);
+        state.notice = None;
+        state.confirm_delete = false;
+        state.preview = Preview::Video;
+        return Task::none();
+    }
     let (how, size) = match state.files.iter().find(|d| d.id == id) {
         Some(d) => (shown(d), d.size),
         None => return Task::none(),
@@ -475,6 +520,40 @@ fn save(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
         },
         Msg::Saved,
     )
+}
+
+/// Plays a video: saves it to Downloads (as Download does) and hands the file to the system's player.
+fn play(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
+    let Some(name) = state.files.iter().find(|d| d.id == id).map(|d| d.name.clone()) else {
+        return Task::none();
+    };
+    let client = ctx.client.clone();
+    let path = format!("/v1/files/{id}/content?download=1");
+    client::task(
+        move || {
+            let bytes = fetch_bytes(&client, &path)?;
+            let saved = save_download(&name, &bytes)?;
+            open_file(&saved)?;
+            Ok(saved)
+        },
+        Msg::Played,
+    )
+}
+
+/// Opens a local file in the system's default app: `open` on macOS, the URL protocol handler on
+/// Windows, `xdg-open` elsewhere. The path is one argument (no shell).
+fn open_file(path: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn delete(id: String, ctx: &Ctx) -> Task<Msg> {
@@ -554,7 +633,14 @@ fn card<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
     let title = if d.title.is_empty() { d.name.as_str() } else { d.title.as_str() };
     let mut body: Vec<Element<'a, Msg>> = vec![
         container(ui::faint(d.store.as_str())).into(),
-        container(ui::mono(monogram(&d.name), 20.0, crate::theme::palette().ink_2)).padding(12).width(Fill).into(),
+        container(ui::mono(
+            if Group::of(&d.content_type) == Group::Video { "▶".to_string() } else { monogram(&d.name) },
+            20.0,
+            crate::theme::palette().ink_2,
+        ))
+        .padding(12)
+        .width(Fill)
+        .into(),
         text(title).font(SEMIBOLD).size(15.0).color(crate::theme::palette().ink).into(),
         ui::mono(d.name.as_str(), 11.0, crate::theme::palette().ink_3).into(),
         ui::faint(format!("by {} · {} · {}", d.author, ago(d.created_ms), human_size(d.size))).into(),
@@ -587,6 +673,12 @@ fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
         Preview::Text(s) => container(ui::mono(s.as_str(), 12.0, crate::theme::palette().ink)).padding(12).width(Fill).into(),
         Preview::Markdown(s) => ui::markdown(s),
         Preview::Note(s) => ui::faint(s.as_str()).into(),
+        Preview::Video => column![
+            container(ui::mono("▶", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
+            ui::btn("Play", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
+        ]
+        .spacing(12)
+        .into(),
     };
     let mut body: Vec<Element<'a, Msg>> = vec![preview, facts(d)];
     if let Some(desc) = &d.description {

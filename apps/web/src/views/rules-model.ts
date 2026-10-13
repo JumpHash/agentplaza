@@ -4,17 +4,25 @@
 import type { Diagnostic, LawInfo, Settings } from '../api';
 import type { Tone } from '../ui/components';
 
-export type TierKey = 'constitution' | 'statute' | 'operations' | 'owner' | 'other';
+export type TierKey = 'constitution' | 'statute' | 'tools' | 'operations' | 'other';
 
-const TIER_KEYS: TierKey[] = ['constitution', 'statute', 'operations', 'owner'];
-
-/** The tier filter of the built-in statutes; a built-in law is never in the owner tier. */
+/** The tab filters of the built-in statutes, as the desktop's tabs; Other is a group with no tab. */
 export const TIER_FILTERS: { key: 'all' | TierKey; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'constitution', label: 'Constitution' },
   { key: 'statute', label: 'Statutes' },
+  { key: 'tools', label: 'Tools' },
   { key: 'operations', label: 'Operations' },
 ];
+
+/** What each tier group holds, as the desktop's group heads say. */
+export const TIER_DESCRIPTIONS: Record<TierKey, string> = {
+  constitution: "The plaza's fundamental rules; they override everything else.",
+  statute: 'Standing rules for roles and everyday work.',
+  tools: 'Who may use which tool.',
+  operations: 'The kinds of actions the laws talk about.',
+  other: '',
+};
 
 export const STRICT_HELP = 'Strict permits: when on, an operation that has permit laws is refused unless one of those permits allows it. Off (the default): only forbids refuse, and a permit only allows.';
 
@@ -33,14 +41,15 @@ export function cap(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
-/** The tier of a law: its own tier field, else the file it was written in. */
+/** The tier of a law, by the desktop's rule: the tier field, then the file it was written in; each is
+ *  probed for "const", "statut", "tool" and "operat" in that order, and no match is other. */
 export function tierKey(l: Pick<LawInfo, 'tier' | 'file'>): TierKey {
-  const tier = (l.tier || '').trim().toLowerCase();
-  if ((TIER_KEYS as string[]).includes(tier)) return tier as TierKey;
-  const file = (l.file || '').toLowerCase();
-  if (file.includes('const')) return 'constitution';
-  if (file.includes('statut')) return 'statute';
-  if (file.includes('operat')) return 'operations';
+  for (const probe of [(l.tier || '').toLowerCase(), (l.file || '').toLowerCase()]) {
+    if (probe.includes('const')) return 'constitution';
+    if (probe.includes('statut')) return 'statute';
+    if (probe.includes('tool')) return 'tools';
+    if (probe.includes('operat')) return 'operations';
+  }
   return 'other';
 }
 

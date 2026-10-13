@@ -111,6 +111,9 @@ pub struct State {
     /// A decision is on its way to the hub.
     pub busy: bool,
     pub decide_error: Option<String>,
+    /// A live refresh is in flight; an event that came meanwhile runs once more when it lands.
+    refreshing: bool,
+    again: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +127,8 @@ pub enum Msg {
     Cancel,
     Submit,
     Decided(Result<Value, String>),
+    /// A hub event: a motion change reloads the screen.
+    Event(crate::console::events::Event),
 }
 
 /// The navigation this message asks for, if any.
@@ -141,7 +146,34 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    let landed = matches!(msg, Msg::Loaded(_));
+    let task = apply(state, msg, ctx);
+    if !landed {
+        return task;
+    }
+    state.refreshing = false;
+    if std::mem::take(&mut state.again) {
+        state.refreshing = true;
+        return Task::batch([task, load(state, ctx)]);
+    }
+    task
+}
+
+/// The screen's messages. `update` wraps it to keep the live refresh's in-flight flag.
+fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
+        Msg::Event(event) => {
+            if !matches!(event.kind.as_str(), "motion") {
+                return Task::none();
+            }
+            if state.refreshing {
+                state.again = true;
+                Task::none()
+            } else {
+                state.refreshing = true;
+                load(state, ctx)
+            }
+        }
         Msg::Go(_) => Task::none(),
         Msg::Loaded(Ok(envelope)) => {
             state.motions = Some(envelope.motions);
@@ -378,4 +410,8 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
     .width(Length::Fill)
     .style(ui::frame(None, crate::theme::palette().rule))
     .into()
+}
+
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    crate::console::events::subscription(&ctx.client).map(Msg::Event)
 }

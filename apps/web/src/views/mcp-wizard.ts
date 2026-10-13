@@ -70,7 +70,7 @@ interface Local {
 }
 
 /** Opens the wizard. `existing` null means Add server; a view means Edit (the same steps, prefilled). */
-export function openWizard(existing: McpServerView | null, onDone: () => void): void {
+export function openWizard(existing: McpServerView | null, onDone: () => void, presetId: string | null = null): void {
   const state: WizardState = existing
     ? { mode: 'edit', draft: copyConfig(existing), saved: true, server: existing, probe: null, step: 1, specs: { env: [], headers: [] } }
     : { mode: 'create', draft: blankConfig('', '', { kind: 'stdio', image: '' }), saved: false, server: null, probe: null, step: 1, specs: { env: [], headers: [] } };
@@ -293,6 +293,10 @@ export function openWizard(existing: McpServerView | null, onDone: () => void): 
       const match = catalog.find((p) => p.id === state.draft.id);
       state.specs = match ? { env: match.env, headers: match.headers } : { env: [], headers: [] };
       local.source = matchSource(state.draft.transport, catalog);
+    }
+    if (!existing && presetId) {
+      const preset = catalog.find((p) => p.id === presetId);
+      if (preset) choosePreset(ctx, local, preset);
     }
     local.loaded = true;
     renderAll();

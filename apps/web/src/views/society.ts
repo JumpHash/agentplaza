@@ -922,7 +922,13 @@ function groupDetail(d: Society, key: Key, act: Actions): HTMLElement {
   }
   const mean = (bs: Bond[]): number | null => (bs.length ? bs.reduce((sum, b) => sum + b.opinion.e, 0) / bs.length : null);
   const trust = (label: string, m: number | null): HTMLElement =>
-    h('div.soc-trust', null, h('span.soc-k', null, label), m === null ? h('span.soc-none', null, 'No contacts') : bar({ e: m, u: 0 }));
+    h(
+      'div.soc-trust',
+      null,
+      h('span.soc-k', null, label),
+      m === null ? h('span.soc-none', null, 'none yet') : bar({ e: m, u: 0 }),
+      m === null ? null : h('span.soc-val', null, m.toFixed(2)),
+    );
   const nameOf = (cid: number): string => {
     const a = agent.get(cid);
     return a ? agentName(a) : `agent ${cid}`;
@@ -933,7 +939,7 @@ function groupDetail(d: Society, key: Key, act: Actions): HTMLElement {
     'div.soc-detail',
     null,
     h('header.soc-head', null, h('h2', null, title), h('p.soc-role', null, sub)),
-    h('div.soc-stats', null, trust('Trust out', mean(outs)), trust('Trust in', mean(ins))),
+    h('div.soc-stats', null, trust('Mean trust in', mean(ins)), trust('Mean trust out', mean(outs))),
     h('h3.soc-h', null, 'Members'),
     h('ul.soc-list', null, members.map((m) => memberRow(m, act))),
     h('h3.soc-h', null, 'Strongest outside ties'),

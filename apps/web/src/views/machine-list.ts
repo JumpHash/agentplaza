@@ -827,9 +827,11 @@ export function machineList(): MachineList {
   const paintDetail = (it: Item): void => {
     const slot = h('div.mlist-stage-slot', null, it.onStage ? null : fallbackPicture(it.row));
     const caption = it.onStage ? h('p.mlist-caption', null, 'Drag to rotate, scroll to zoom') : null;
+    // The desktop's labelled toggle: closes the open row's 3D view (the row's picture comes back).
+    const toggle = it.onStage ? button('Hide 3D view', () => choose(it.key), { kind: 'ghost', size: 'sm' }) : null;
     replace(
       it.inner,
-      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption), h('div.mlist-detail-main', null, it.row.detail())),
+      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption, toggle), h('div.mlist-detail-main', null, it.row.detail())),
     );
   };
 

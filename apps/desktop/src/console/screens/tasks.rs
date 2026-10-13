@@ -9,14 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, pick_list, row, scrollable, text, text_editor, text_input, Space};
-use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
+use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::ui::{self, Tone};
-use crate::console::{client, Ctx};
+use crate::console::{client, events, Ctx};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
@@ -166,6 +166,11 @@ pub struct State {
     activity: HashMap<u64, String>,
     detail: Option<Detail>,
     draft: Option<Draft>,
+    /// The card under the pointer last: Enter opens it.
+    hovered: Option<String>,
+    /// A reload from a hub event is in flight, and whether another one was asked for meanwhile.
+    reloading: bool,
+    again: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +196,12 @@ pub enum Msg {
     Assigned(Result<Value, String>),
     Withdraw,
     Withdrawn(Result<Value, String>),
+    /// The pointer entered a card.
+    Hover(String),
+    /// Enter was pressed.
+    EnterKey,
+    /// A hub event: a task, work or transcript frame.
+    Event(events::Event),
 }
 
 /// The navigation this message asks for, if any.
@@ -209,6 +220,41 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) => Task::none(),
+        Msg::Hover(id) => {
+            state.hovered = Some(id);
+            Task::none()
+        }
+        Msg::EnterKey => {
+            if state.selected.is_none() && state.draft.is_none() {
+                if let Some(id) = state.hovered.clone() {
+                    return update(state, Msg::Open(id), ctx);
+                }
+            }
+            Task::none()
+        }
+        Msg::Event(event) => match event.kind.as_str() {
+            "task" | "work" => reload(state, ctx),
+            "transcript" => {
+                let cid = event.data.get("cid").and_then(Value::as_u64);
+                if state.selected.is_some() {
+                    // On a task page the timeline is rebuilt from the assignee's transcript.
+                    let assignee = state.detail.as_ref().and_then(|d| d.task.as_ref()).and_then(|t| t.agent_cid);
+                    if cid.is_some() && cid == assignee {
+                        reload(state, ctx)
+                    } else {
+                        Task::none()
+                    }
+                } else {
+                    // On the board the frame's one activity line replaces the card's.
+                    let line = serde_json::from_value::<EntryRecord>(event.data.clone()).ok().and_then(|e| activity_of(&e));
+                    if let (Some(cid), Some(line)) = (cid, line) {
+                        state.activity.insert(cid, line);
+                    }
+                    Task::none()
+                }
+            }
+            _ => Task::none(),
+        },
         Msg::Loaded(Ok(snap)) => {
             state.error = None;
             if snap.detail.is_none() {
@@ -217,11 +263,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.agents = snap.agents;
             state.detail = if state.selected.is_some() { snap.detail } else { None };
-            Task::none()
+            landed(state, ctx)
         }
         Msg::Loaded(Err(e)) => {
             state.error = Some(e);
-            Task::none()
+            landed(state, ctx)
         }
         Msg::Open(id) => {
             state.selected = Some(id.clone());
@@ -765,6 +811,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord) -> Element<'a, Msg> {
     let body = column![top, title, who, container(detail).width(Length::Fill)].spacing(10).width(Length::Fill);
     mouse_area(container(body).padding(12.0).width(Length::Fill).style(card_box))
         .on_press(Msg::Open(t.id.clone()))
+        .on_enter(Msg::Hover(t.id.clone()))
         .into()
 }
 
@@ -955,5 +1002,41 @@ mod tests {
     fn clip_cuts_at_a_word_and_ends_with_an_ellipsis() {
         assert_eq!(clip("RE-ISSUE of task t3 with a workable budget", 20), "RE-ISSUE of task t3…");
         assert!(clip("a0b7ecad718094baff717f1c29be4b2a0b7ecad718094baff", 20).ends_with('…'));
+    }
+}
+
+/// The hub events this screen follows live (the web refreshes on the same topics). None yet: see docs/design/parity.md.
+pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
+    Subscription::batch([events::subscription(&ctx.client).map(Msg::Event), iced::event::listen_with(enter_key)])
+}
+
+/// Enter, for the card under the pointer (the web's focused card opens on Enter).
+fn enter_key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            ..
+        }) => Some(Msg::EnterKey),
+        _ => None,
+    }
+}
+
+/// A reload from a hub event: one read in flight at a time, and an event meanwhile asks for one more.
+fn reload(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    if state.reloading {
+        state.again = true;
+        return Task::none();
+    }
+    state.reloading = true;
+    fetch(ctx, state.selected.clone())
+}
+
+/// A read landed: the reload that an event asked for meanwhile runs now.
+fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.reloading = false;
+    if std::mem::take(&mut state.again) {
+        reload(state, ctx)
+    } else {
+        Task::none()
     }
 }

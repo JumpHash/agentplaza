@@ -39,6 +39,34 @@ Audited on 2026-10-13 against the code (each row checked by the hub endpoints bo
 | 1 | Setup | First-run checks | done: `#/setup` runs them through the hub API (845a960) |
 | 2 | Setup | The start-up chooser: start locally, host, join, connect | not applicable: the web console is served by a running hub, so there is nothing to start or choose |
 
+## Screen-level audit (2026-10-13, second pass)
+
+The first audit compared the hub endpoints each app calls. This pass compared what each screen offers: actions,
+filters, fields, tabs, form checks, keyboard, empty and error states, and live updates. Every row is being closed.
+
+| Area | Gap | Side to change |
+|---|---|---|
+| Live updates | Projects, tasks (transcripts), approvals, conversations, board, council, treasury, lab datasets, recipes and HF imports refresh on hub events on the web; the desktop waited for its poll. Each desktop screen now has a `subscription` hook | desktop |
+| Projects | "Open" on a document's file | desktop |
+| Tasks, Library | Enter opens the selected row | desktop |
+| Library | video tiles (the desktop opens them in the system player) | desktop |
+| Git | the disabled Merge button says why | desktop |
+| Prompts | clear filters, try again, unsaved-changes guard, reload latest on a conflict, download .md, unpick and clear in compare | desktop |
+| New agent | approve or reject the orchestrator's proposals, a reason required to reject | desktop |
+| Memory | find filters the graph, keyboard on nodes, drag to pin, clickable backlinks with missing chips, live note refresh; a Fit control on the web | both |
+| Treasury | "Where the money goes", task-id filter, clawback kind, sortable tables | desktop |
+| Conversations | clear search, Escape closes a thread | desktop |
+| Board | Ctrl/Cmd+Enter sends a reply on both | desktop |
+| Council | role display names | web |
+| Rules | the Tools and Other groups | web |
+| Society | mean trust in and out | web |
+| Usage, lab | empty states, breeder sorts, model-detail fields, form validation messages | both, as verified |
+| Shell | `[` toggles the sidebar; STOP ALL and RESUME ask first | desktop |
+| Vault | copy-failure hint for the recovery code | desktop |
+| MCP | loading and error states; catalogue, access scopes and hub server wording made identical | both, as verified |
+| Machines | the desktop's diagnostics and live stats on the web | web |
+| Sign-in | sign out on the web | web |
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment

@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use super::usage::usd;
 use super::Id;
-use crate::console::{chart, client::{self, Client}, ui, Ctx};
+use crate::console::{chart, client::{self, Client}, events, ui, Ctx};
 use crate::theme::{self, MONO};
 
 const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
@@ -30,7 +30,7 @@ const JOURNAL_PAGE: usize = 50;
 const SERIES_PAGE: usize = 25;
 /// One credit is a tenth of a cent.
 const CREDIT_USD: f64 = 0.001;
-const KNOWN_KINDS: [&str; 8] = ["mint", "escrow", "spend", "payment", "refund", "transfer", "fine", "model"];
+const KNOWN_KINDS: [&str; 11] = ["mint", "budget_move", "payment", "refund", "fine", "fee", "clawback", "spend", "subcontract", "transfer", "model"];
 const BLUE: Color = Color::from_rgb8(0x6f, 0xa8, 0xdc);
 const PURPLE: Color = Color::from_rgb8(0xb4, 0x8e, 0xd6);
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -86,6 +86,10 @@ pub struct State {
     series_sort: SeriesSort,
     series_asc: bool,
     series_page: usize,
+    balance_sort: BalanceSort,
+    balance_asc: bool,
+    flow_sort: FlowSort,
+    flow_asc: bool,
     wallet_sort: WalletSort,
     wallet_asc: bool,
     /// The journal's filter as applied, and the draft typed into the task box.
@@ -97,6 +101,9 @@ pub struct State {
     older_busy: bool,
     /// Rows that arrived on a poll, with the moment they arrived (they fade in).
     fresh: Vec<(i64, Instant)>,
+    /// A load is in flight; a live event meanwhile marks the screen dirty, and the answer starts the next load.
+    loading: bool,
+    dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +117,8 @@ pub enum Msg {
     /// Moves the series table by this many pages.
     SeriesPage(i64),
     WalletSort(WalletSort),
+    BalanceSort(BalanceSort),
+    FlowSort(FlowSort),
     KindPicked(KindChoice),
     WalletPicked(WalletChoice),
     TaskDraft(String),
@@ -128,6 +137,8 @@ pub enum Msg {
     FineMemo(String),
     SubmitFine,
     Fined(i64, Result<Value, String>),
+    /// A live event from the hub; a `treasury` one reloads the screen.
+    Event(events::Event),
 }
 
 /// An agent in the fine form's picker.
@@ -238,9 +249,31 @@ pub enum SeriesSort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WalletSort {
     Name,
+    Role,
     #[default]
     Balance,
+    Earned,
+    Spent,
     Share,
+}
+
+/// The balance table's columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BalanceSort {
+    #[default]
+    Time,
+    Budget,
+    Circulating,
+    Treasury,
+}
+
+/// The flow table's columns: the bucket, the entries, then the kinds that moved money (by index).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FlowSort {
+    #[default]
+    Time,
+    Entries,
+    Kind(usize),
 }
 
 /// The journal's filters as applied; a change starts the journal over from its newest page.
@@ -261,17 +294,19 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// The animation frames while the screen shows data: the figures, the charts, the new journal rows
 /// and the flow's dashes. Subscribed by `screens::subscription` while the Treasury is open.
-pub fn subscription(state: &State) -> Subscription<Msg> {
-    if state.data.is_some() {
+pub fn subscription(state: &State, ctx: &Ctx) -> Subscription<Msg> {
+    let frames = if state.data.is_some() {
         iced::time::every(Duration::from_millis(33)).map(|_| Msg::Frame)
     } else {
         Subscription::none()
-    }
+    };
+    Subscription::batch([frames, events::subscription(&ctx.client).map(Msg::Event)])
 }
 
 /// Loads the treasury, its series, wallets, roster, real cost and the journal's newest page (called
 /// when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = true;
     let to = now_ms() as u64;
     let query = Query { from: to.saturating_sub(state.range.days() * DAY_MS), to, bucket: state.range.bucket(), filter: state.filter.clone() };
     let client = ctx.client.clone();
@@ -292,7 +327,16 @@ fn fetch(c: &Client, q: &Query) -> Result<Snapshot, String> {
     let series: Value = c.get(&format!("/v1/treasury/series?from={}&to={}&bucket={}", q.from, q.to, q.bucket))?;
     let usage: Value = c.get(&format!("/v1/usage/summary?from={}&to={}", q.from, q.to))?;
     let page = journal_page(c, &q.filter, None)?;
-    Ok(Snapshot { data: Data::parse(&treasury, &wallets, &roster, &series, &usage), filter: q.filter.clone(), page })
+    let mut data = Data::parse(&treasury, &wallets, &roster, &series, &usage);
+    // Earned and spent come from each wallet's agent profile; a profile that fails leaves them out (shown as a dash).
+    for w in &mut data.wallets {
+        let profile: Result<Value, String> = c.get(&format!("/v1/agents/{}/profile", w.cid));
+        if let Ok(p) = profile {
+            w.earned = Some(num(&p, "earned"));
+            w.spent = Some(num(&p, "spent"));
+        }
+    }
+    Ok(Snapshot { data, filter: q.filter.clone(), page })
 }
 
 fn journal_page(c: &Client, filter: &JournalFilter, before: Option<i64>) -> Result<JournalPage, String> {
@@ -332,11 +376,22 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if snap.filter == state.filter {
                 apply(state, snap);
             }
-            Task::none()
+            settle(state, ctx)
         }
         Msg::Loaded(Err(err)) => {
             state.error = Some(err);
-            Task::none()
+            settle(state, ctx)
+        }
+        Msg::Event(event) => {
+            if event.kind != "treasury" {
+                return Task::none();
+            }
+            if state.loading {
+                state.dirty = true;
+                Task::none()
+            } else {
+                load(state, ctx)
+            }
         }
         Msg::Range(range) => {
             state.range = range;
@@ -356,8 +411,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.series_page = (state.series_page as i64 + delta).max(0) as usize;
             Task::none()
         }
+        Msg::BalanceSort(sort) => {
+            resort(&mut state.balance_sort, &mut state.balance_asc, sort, false);
+            Task::none()
+        }
+        Msg::FlowSort(sort) => {
+            resort(&mut state.flow_sort, &mut state.flow_asc, sort, false);
+            Task::none()
+        }
         Msg::WalletSort(sort) => {
-            resort(&mut state.wallet_sort, &mut state.wallet_asc, sort, sort == WalletSort::Name);
+            resort(&mut state.wallet_sort, &mut state.wallet_asc, sort, matches!(sort, WalletSort::Name | WalletSort::Role));
             Task::none()
         }
         Msg::KindPicked(choice) => {
@@ -497,6 +560,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// A load has answered: a live event that came meanwhile starts the next one, so loads never pile up.
+fn settle(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = false;
+    if std::mem::take(&mut state.dirty) {
+        load(state, ctx)
+    } else {
+        Task::none()
+    }
+}
+
 /// Starts the journal over under the current filter and loads its newest page.
 fn refilter(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.journal.clear();
@@ -581,9 +654,13 @@ fn sections<'a>(d: &Data, state: &State, now: Instant) -> Vec<Element<'a, Msg>> 
     let mut out: Vec<Element<'a, Msg>> = vec![tallies(d, state, now), controls(state)];
     match state.mode {
         Mode::Chart => out.extend(charts(d, state, now)),
-        Mode::Table => out.push(ui::card("Series", series_table(d, state))),
+        Mode::Table => {
+            out.push(ui::card("Balances", balance_table(d, state)));
+            out.push(ui::card("Flows", flow_table(d, state)));
+            out.push(ui::card("Series", series_table(d, state)));
+        }
     }
-    out.push(ui::card("Flow", flow(d)));
+    out.push(ui::card("Where the money goes", flow(d)));
     out.push(wallets_card(d, state));
     out.push(journal_card(Some(d), state, now));
     out
@@ -670,13 +747,16 @@ fn tile<'a>(title: &str, value: String, note: String) -> Element<'a, Msg> {
 /// (agents), then wallets. The arrows carry dashes that run along them, faster for larger flows.
 fn flow<'a>(d: &Data) -> Element<'a, Msg> {
     // The same range totals as the flows chart's legend: the series summed over the selected range.
-    let diagram = FlowChart { budget: d.budget, escrow: d.escrowed(), spent: d.spent(), paid: d.paid(), wallets: d.wallets_total(), t: now_ms() / 1000.0 };
+    let diagram = FlowChart { budget: d.budget, escrow: d.escrow, escrowed: d.escrowed(), refunded: d.refunded(), spent: d.spent(), paid: d.paid(), wallets: d.wallets_total(), t: now_ms() / 1000.0 };
     iced::widget::canvas(diagram).width(Length::Fill).height(Length::Fixed(180.0)).into()
 }
 
 struct FlowChart {
     budget: f64,
     escrow: f64,
+    /// The range's escrowed and refunded flows, on the arrows between budget and escrow.
+    escrowed: f64,
+    refunded: f64,
     spent: f64,
     paid: f64,
     wallets: f64,
@@ -715,13 +795,14 @@ impl canvas::Program<Msg> for FlowChart {
                 ..canvas::Text::default()
             });
         };
-        let arrow = |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32), flow: f64| {
+        let arrow = |frame: &mut canvas::Frame, from: (f32, f32), to: (f32, f32), flow: f64, max: f64| {
+            let share = (flow.max(0.0) / max) as f32;
             let (dx, dy) = (to.0 - from.0, to.1 - from.1);
             let len = (dx * dx + dy * dy).sqrt().max(1.0);
             let (ux, uy) = (dx / len, dy / len);
             let head = 8.75;
             let base = (to.0 - ux * head, to.1 - uy * head);
-            frame.stroke(&Path::line(at(from.0, from.1), at(base.0, base.1)), Stroke::default().with_color(crate::theme::palette().ink_2).with_width(1.25 * scale));
+            frame.stroke(&Path::line(at(from.0, from.1), at(base.0, base.1)), Stroke::default().with_color(crate::theme::palette().ink_2).with_width((1.0 + 3.0 * share) * scale));
             let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
             let (wing_a, wing_b, tip) = (at(base.0 + px, base.1 + py), at(base.0 - px, base.1 - py), at(to.0, to.1));
             let head_path = Path::new(|b| {
@@ -745,17 +826,35 @@ impl canvas::Program<Msg> for FlowChart {
                 }
                 s += DASH_PERIOD;
             }
+            if flow > 0.0 {
+                frame.fill_text(canvas::Text {
+                    content: money(flow),
+                    position: at((from.0 + to.0) / 2.0, (from.1 + to.1) / 2.0 - 6.0),
+                    color: crate::theme::palette().ink_2,
+                    size: Pixels(10.5 * scale),
+                    font: MONO,
+                    align_x: alignment::Horizontal::Center.into(),
+                    ..canvas::Text::default()
+                });
+            }
         };
 
-        boxed(&mut frame, 0.0, 55.0, "Budget", self.budget);
-        boxed(&mut frame, 220.0, 55.0, "Escrow", self.escrow);
-        boxed(&mut frame, 440.0, 10.0, "Spend", self.spent);
-        boxed(&mut frame, 440.0, 100.0, "Payment", self.paid);
-        boxed(&mut frame, 660.0, 55.0, "Wallets", self.wallets);
-        arrow(&mut frame, (170.0, 90.0), (220.0, 90.0), self.escrow);
-        arrow(&mut frame, (390.0, 90.0), (440.0, 45.0), self.spent);
-        arrow(&mut frame, (390.0, 90.0), (440.0, 135.0), self.paid);
-        arrow(&mut frame, (610.0, 135.0), (660.0, 90.0), self.paid);
+        boxed(&mut frame, 0.0, 55.0, "Budget · now", self.budget);
+        boxed(&mut frame, 220.0, 55.0, "Escrow · now", self.escrow);
+        boxed(&mut frame, 440.0, 10.0, "Spend · range", self.spent);
+        boxed(&mut frame, 440.0, 100.0, "Payment · range", self.paid);
+        boxed(&mut frame, 660.0, 55.0, "Wallets · now", self.wallets);
+        let arrows = [
+            ((170.0, 78.0), (220.0, 78.0), self.escrowed),
+            ((220.0, 102.0), (170.0, 102.0), self.refunded),
+            ((390.0, 70.0), (440.0, 45.0), self.spent),
+            ((390.0, 110.0), (440.0, 135.0), self.paid),
+            ((610.0, 135.0), (660.0, 100.0), self.paid),
+        ];
+        let max = arrows.iter().map(|a| a.2).fold(1.0, f64::max);
+        for (from, to, flow) in arrows {
+            arrow(&mut frame, from, to, flow, max);
+        }
         vec![frame.into_geometry()]
     }
 }
@@ -979,6 +1078,100 @@ fn series_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     column![lines, footer].spacing(14).into()
 }
 
+/// The balance table: the plaza budget, the money in circulation and the treasury at each bucket's end.
+/// Newest first until a column is picked.
+fn balance_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
+    if d.points.is_empty() {
+        return ui::empty("clock", "No buckets in this range.", "");
+    }
+    let hourly = state.range.hourly();
+    let mut points: Vec<&Bucket> = d.points.iter().collect();
+    points.sort_by(|a, b| {
+        let o = balance_value(a, state.balance_sort).total_cmp(&balance_value(b, state.balance_sort));
+        if state.balance_asc {
+            o
+        } else {
+            o.reverse()
+        }
+    });
+    let heads: Vec<Element<'a, Msg>> = vec![
+        sort_head("When", 3, BalanceSort::Time, state.balance_sort, state.balance_asc, Msg::BalanceSort),
+        sort_head("Plaza budget", 2, BalanceSort::Budget, state.balance_sort, state.balance_asc, Msg::BalanceSort),
+        sort_head("In circulation", 2, BalanceSort::Circulating, state.balance_sort, state.balance_asc, Msg::BalanceSort),
+        sort_head("Treasury", 2, BalanceSort::Treasury, state.balance_sort, state.balance_asc, Msg::BalanceSort),
+    ];
+    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
+    let mut lines = column![row(heads).spacing(8)].spacing(8);
+    for p in points {
+        let label = cell(3, false, ui::mono(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2));
+        lines = lines.push(ui::hairline());
+        lines = lines.push(row![label, figure(p.budget), figure(p.circulating), figure(p.treasury)].spacing(8).align_y(Alignment::Center));
+    }
+    lines.into()
+}
+
+/// The flow table: the entries and the money of each kind that moved in each bucket, with a total row.
+/// Newest first until a column is picked.
+fn flow_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
+    if d.points.is_empty() {
+        return ui::empty("clock", "No buckets in this range.", "");
+    }
+    let hourly = state.range.hourly();
+    let kinds = flow_kinds(&d.points);
+    let mut points: Vec<&Bucket> = d.points.iter().collect();
+    points.sort_by(|a, b| {
+        let o = flow_value(a, state.flow_sort, &kinds).total_cmp(&flow_value(b, state.flow_sort, &kinds));
+        if state.flow_asc {
+            o
+        } else {
+            o.reverse()
+        }
+    });
+    let mut heads: Vec<Element<'a, Msg>> = vec![
+        sort_head("When", 3, FlowSort::Time, state.flow_sort, state.flow_asc, Msg::FlowSort),
+        sort_head("Entries", 2, FlowSort::Entries, state.flow_sort, state.flow_asc, Msg::FlowSort),
+    ];
+    for (i, kind) in kinds.iter().enumerate() {
+        heads.push(sort_head(&kind_label(kind), 2, FlowSort::Kind(i), state.flow_sort, state.flow_asc, Msg::FlowSort));
+    }
+    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
+    let mut lines = column![row(heads).spacing(8)].spacing(8);
+    for p in points {
+        let mut cells: Vec<Element<'a, Msg>> = vec![
+            cell(3, false, ui::mono(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2)),
+            figure(p.entries),
+        ];
+        cells.extend(kinds.iter().map(|k| figure(p.by_kind.get(k).copied().unwrap_or(0.0))));
+        lines = lines.push(ui::hairline());
+        lines = lines.push(row(cells).spacing(8).align_y(Alignment::Center));
+    }
+    let mut foot: Vec<Element<'a, Msg>> = vec![
+        cell(3, false, ui::mono("Total".to_string(), 11.5, crate::theme::palette().ink_2)),
+        figure(d.points.iter().map(|p| p.entries).sum::<f64>()),
+    ];
+    foot.extend(kinds.iter().map(|k| figure(d.points.iter().map(|p| p.by_kind.get(k).copied().unwrap_or(0.0)).sum::<f64>())));
+    lines = lines.push(ui::hairline());
+    lines = lines.push(row(foot).spacing(8).align_y(Alignment::Center));
+    lines.into()
+}
+
+fn balance_value(p: &Bucket, sort: BalanceSort) -> f64 {
+    match sort {
+        BalanceSort::Time => p.at,
+        BalanceSort::Budget => p.budget,
+        BalanceSort::Circulating => p.circulating,
+        BalanceSort::Treasury => p.treasury,
+    }
+}
+
+fn flow_value(p: &Bucket, sort: FlowSort, kinds: &[String]) -> f64 {
+    match sort {
+        FlowSort::Time => p.at,
+        FlowSort::Entries => p.entries,
+        FlowSort::Kind(i) => kinds.get(i).and_then(|k| p.by_kind.get(k)).copied().unwrap_or(0.0),
+    }
+}
+
 /// One series row, in the order of `SERIES_COLUMNS`.
 fn series_cells<'a>(p: &Bucket, label: String) -> Vec<Element<'a, Msg>> {
     let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
@@ -1042,6 +1235,9 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     wallets.sort_by(|a, b| {
         let o = match state.wallet_sort {
             WalletSort::Name => a.name.cmp(&b.name),
+            WalletSort::Role => role_of(d, a.cid).cmp(&role_of(d, b.cid)),
+            WalletSort::Earned => a.earned.unwrap_or(0.0).total_cmp(&b.earned.unwrap_or(0.0)),
+            WalletSort::Spent => a.spent.unwrap_or(0.0).total_cmp(&b.spent.unwrap_or(0.0)),
             _ => a.balance.total_cmp(&b.balance),
         };
         if state.wallet_asc {
@@ -1052,8 +1248,10 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     });
     let heads: Vec<Element<'a, Msg>> = vec![
         sort_head("Agent", 3, WalletSort::Name, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
-        cell(2, false, ui::label("Role")),
+        sort_head("Role", 2, WalletSort::Role, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
         sort_head("Balance", 2, WalletSort::Balance, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
+        sort_head("Earned", 2, WalletSort::Earned, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
+        sort_head("Spent", 2, WalletSort::Spent, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
         sort_head("Share", 3, WalletSort::Share, state.wallet_sort, state.wallet_asc, Msg::WalletSort),
     ];
     let mut lines = column![row(heads).spacing(8)].spacing(8);
@@ -1070,13 +1268,36 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
                 cell(3, false, name),
                 cell(2, false, iced::widget::text(role).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_2)),
                 cell(2, true, ui::mono(money(w.balance), 12.5, crate::theme::palette().ink)),
+                cell(2, true, ui::mono(w.earned.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
+                cell(2, true, ui::mono(w.spent.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
                 cell(3, false, row![share_bar(share), ui::mono(format!("{:.1}%", share * 100.0), 11.0, crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center)),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
         );
     }
+    // The totals row, as the web's: balance, earned and spent summed (a wallet with no profile counts 0).
+    let sum = |f: &dyn Fn(&Wallet) -> f64| d.wallets.iter().map(f).sum::<f64>();
+    let bold = |v: String| ui::mono(v, 12.5, crate::theme::palette().ink);
+    lines = lines.push(ui::hairline());
+    lines = lines.push(
+        row![
+            cell(3, false, iced::widget::text("Total").font(theme::SERIF).size(14.0).color(crate::theme::palette().ink)),
+            cell(2, false, Space::new()),
+            cell(2, true, bold(money(sum(&|w| w.balance)))),
+            cell(2, true, bold(money(sum(&|w| w.earned.unwrap_or(0.0))))),
+            cell(2, true, bold(money(sum(&|w| w.spent.unwrap_or(0.0))))),
+            cell(3, false, Space::new()),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    );
     ui::card("Wallets", lines.into())
+}
+
+/// The role label of the agent `cid` on the roster, or empty when it is not there.
+fn role_of(d: &Data, cid: u64) -> String {
+    d.roster.iter().find(|m| m.cid == cid).map_or_else(String::new, |m| m.role_label.clone())
 }
 
 /// A bar of `share` (0 to 1) of the row's width.
@@ -1105,7 +1326,7 @@ fn journal_card<'a>(d: Option<&Data>, state: &State, now: Instant) -> Element<'a
     let wallets = wallet_options(d);
     let selected_wallet = wallets.iter().find(|o| o.cid == state.filter.wallet).cloned();
     let wallet_pick = pick_list(wallets, selected_wallet, Msg::WalletPicked);
-    let task = text_input("Task", &state.task_draft).on_input(Msg::TaskDraft).on_submit(Msg::TaskApply).style(theme::input).width(Length::Fill);
+    let task = text_input("Task id", &state.task_draft).on_input(Msg::TaskDraft).on_submit(Msg::TaskApply).style(theme::input).width(Length::Fill);
     let filters = row![kind_pick, wallet_pick, task].spacing(12).align_y(Alignment::Center);
 
     let body: Element<'a, Msg> = if state.journal.is_empty() {
@@ -1298,8 +1519,7 @@ fn kind_options(d: Option<&Data>, journal: &[Entry]) -> Vec<KindChoice> {
     if let Some(d) = d {
         kinds.extend(d.points.iter().flat_map(|p| p.by_kind.keys().cloned()));
     }
-    kinds.sort();
-    kinds.dedup();
+    sort_kinds(&mut kinds);
     let mut options = vec![KindChoice { kind: None, label: "All kinds".to_string() }];
     options.extend(kinds.into_iter().map(|k| KindChoice { label: kind_label(&k), kind: Some(k) }));
     options
@@ -1324,10 +1544,10 @@ fn whole(text: &str) -> Option<i64> {
 fn kind_tone(kind: &str) -> ui::Tone {
     match kind {
         "mint" => ui::Tone::Ok,
-        "spend" | "model" => ui::Tone::Warn,
-        "payment" => ui::Tone::Signal,
+        "spend" | "model" | "fee" => ui::Tone::Warn,
+        "payment" | "subcontract" => ui::Tone::Signal,
         "refund" | "transfer" => ui::Tone::Info,
-        "fine" => ui::Tone::Danger,
+        "fine" | "clawback" => ui::Tone::Danger,
         _ => ui::Tone::Muted,
     }
 }
@@ -1339,7 +1559,10 @@ fn kind_color(kind: &str) -> Color {
         "spend" => crate::theme::palette().warn,
         "payment" => crate::theme::palette().signal,
         "refund" | "transfer" => BLUE,
-        "fine" => crate::theme::palette().crit,
+        "fine" | "clawback" => crate::theme::palette().crit,
+        "fee" => Color::from_rgb8(0xe8, 0xb8, 0x4a),
+        "budget_move" => crate::theme::palette().ink_2,
+        "subcontract" => Color::from_rgb8(0x6f, 0xc8, 0xb0),
         "escrow" => PURPLE,
         _ => crate::theme::palette().ink_3,
     }
@@ -1358,16 +1581,28 @@ fn balance_series(points: &[Bucket]) -> Vec<chart::Series> {
 /// The flows per bucket, one series per kind that moved money in the range, sorted by kind. A kind
 /// that is zero across the whole range is left out, so the legend lists only what the chart shows.
 fn flow_series(points: &[Bucket]) -> Vec<chart::Series> {
-    let mut kinds: Vec<String> = points.iter().flat_map(|p| p.by_kind.keys().cloned()).collect();
-    kinds.sort();
-    kinds.dedup();
-    kinds
+    flow_kinds(points)
         .into_iter()
-        .filter_map(|kind| {
+        .map(|kind| {
             let values: Vec<f64> = points.iter().map(|p| p.by_kind.get(&kind).copied().unwrap_or(0.0)).collect();
-            (values.iter().any(|v| *v != 0.0)).then(|| chart::Series { color: kind_color(&kind), key: kind_label(&kind), values })
+            chart::Series { color: kind_color(&kind), key: kind_label(&kind), values }
         })
         .collect()
+}
+
+/// Kinds in the web's order (`KNOWN_KINDS`, as treasury.ts `KINDS`), then any other kind by name; duplicates dropped.
+fn sort_kinds(kinds: &mut Vec<String>) {
+    let rank = |k: &str| KNOWN_KINDS.iter().position(|known| *known == k).unwrap_or(KNOWN_KINDS.len());
+    kinds.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    kinds.dedup();
+}
+
+/// The kinds that moved money in the range, in the web's kind order.
+fn flow_kinds(points: &[Bucket]) -> Vec<String> {
+    let mut kinds: Vec<String> = points.iter().flat_map(|p| p.by_kind.keys().cloned()).collect();
+    sort_kinds(&mut kinds);
+    kinds.retain(|kind| points.iter().any(|p| p.by_kind.get(kind).is_some_and(|v| *v != 0.0)));
+    kinds
 }
 
 /// A kind's id as a reader sees it: "budget_move" is "Budget move", "subcontract" is "Subcontract".
@@ -1541,6 +1776,7 @@ impl Animated {
 #[derive(Debug, Clone)]
 pub struct Data {
     budget: f64,
+    escrow: f64,
     treasury: f64,
     wallets: Vec<Wallet>,
     roster: Vec<Member>,
@@ -1596,6 +1832,8 @@ struct Wallet {
     cid: u64,
     name: String,
     balance: f64,
+    earned: Option<f64>,
+    spent: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1612,10 +1850,11 @@ impl Data {
         let totals = usage.get("totals").cloned().unwrap_or(Value::Null);
         Data {
             budget: num(treasury, "plaza_budget"),
+            escrow: balance("task_escrow"),
             treasury: balance("treasury"),
             wallets: list(wallets, "wallets")
                 .iter()
-                .map(|w| Wallet { cid: uint(w, "cid"), name: text(w, "name"), balance: num(w, "balance") })
+                .map(|w| Wallet { cid: uint(w, "cid"), name: text(w, "name"), balance: num(w, "balance"), earned: None, spent: None })
                 .collect(),
             roster: list(roster, "agents")
                 .iter()
@@ -1637,6 +1876,10 @@ impl Data {
 
     fn escrowed(&self) -> f64 {
         self.points.iter().map(|p| p.escrowed).sum()
+    }
+
+    fn refunded(&self) -> f64 {
+        self.points.iter().map(|p| p.refunded).sum()
     }
 
     fn fined(&self) -> f64 {
@@ -1852,8 +2095,9 @@ mod tests {
         let points: Vec<Bucket> = list(&series, "points").iter().map(Bucket::parse).collect();
         let flows = flow_series(&points);
         let keys: Vec<&str> = flows.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, vec!["Fine", "Mint", "Payment", "Spend"]);
-        assert_eq!(flows[1].values, vec![5.0, 0.0]);
+        // The web's kind order (treasury.ts KINDS), not alphabetical.
+        assert_eq!(keys, vec!["Mint", "Payment", "Fine", "Spend"]);
+        assert_eq!(flows[0].values, vec![5.0, 0.0]);
         assert_eq!(balance_series(&points)[0].values, vec![10.0, 8.0]);
         let all = totals(&points);
         assert_eq!((all.minted, all.paid, all.budget, all.circulating), (5.0, 3.0, 8.0, 6.0));

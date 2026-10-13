@@ -7,12 +7,15 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{button, column, container, row, text, text_input, Space};
-use iced::{font, Alignment, Border, Color, Element, Font, Length, Task, Theme};
+use iced::{font, Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
 use serde_json::json;
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, events, ui, Ctx};
+
+/// The document types a system viewer shows as plain content; any other file is not opened.
+const OPENABLE: [&str; 9] = ["pdf", "md", "txt", "png", "jpg", "jpeg", "gif", "webp", "json"];
 use crate::theme;
 
 /// The eight stages, in order (`PROJECT_STAGES` on the web).
@@ -47,6 +50,9 @@ pub struct Project {
 pub struct Doc {
     pub kind: String,
     pub title: String,
+    /// The hub file id behind the document, when it has one.
+    #[serde(default)]
+    pub file: Option<String>,
     pub repo_path: Option<String>,
     pub commit: Option<String>,
     pub summary: String,
@@ -95,6 +101,10 @@ pub struct State {
     pub approve: Option<String>,
     /// The send-back form, while it is open.
     pub send_back: Option<SendBack>,
+    /// A reload from a hub event is in flight.
+    pub loading: bool,
+    /// A hub event came while a reload was in flight: one more reload when it lands.
+    pub again: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +125,11 @@ pub enum Msg {
     SubmitApprove,
     SubmitSendBack,
     CancelForm,
+    /// A hub event: the screen reloads when a project or task changed.
+    Event(events::Event),
+    /// Open a document's file in the system viewer: the file id and the document's title.
+    OpenFile(String, String),
+    Opened(Result<(), String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -145,7 +160,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 }
                 Err(e) => state.error = Some(e),
             }
-            Task::none()
+            landed(state, ctx)
         }
         Msg::Detail(id, res) => {
             if state.open.as_deref() == Some(id.as_str()) {
@@ -156,6 +171,27 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     }
                     Err(e) => state.error = Some(e),
                 }
+            }
+            landed(state, ctx)
+        }
+        Msg::Event(event) => {
+            if !matches!(event.kind.as_str(), "project" | "task") {
+                return Task::none();
+            }
+            if state.loading {
+                state.again = true;
+                return Task::none();
+            }
+            state.loading = true;
+            load(state, ctx)
+        }
+        Msg::OpenFile(id, name) => {
+            let client = ctx.client.clone();
+            client::task(move || open_file(&client, &id, &name), Msg::Opened)
+        }
+        Msg::Opened(res) => {
+            if let Err(e) = res {
+                state.error = Some(e);
             }
             Task::none()
         }
@@ -578,6 +614,9 @@ fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
     if !d.summary.is_empty() {
         col = col.push(ui::markdown(&d.summary));
     }
+    if let Some(id) = &d.file {
+        col = col.push(link("Open", Msg::OpenFile(id.clone(), d.title.clone())));
+    }
     if let Some(path) = &d.repo_path {
         let commit = d.commit.as_deref().map(|c| format!(" @ {}", c.get(..7).unwrap_or(c))).unwrap_or_default();
         col = col.push(ui::mono(format!("{path}{commit}"), 12.0, crate::theme::palette().ink_2));
@@ -641,4 +680,62 @@ fn event_row<'a>(e: &'a Event) -> Element<'a, Msg> {
         line = line.push(ui::mono(format!("— {}", e.note), 12.0, crate::theme::palette().ink_3));
     }
     line.into()
+}
+
+/// The hub events this screen follows live: a project or task changed, so the page reloads.
+pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
+    events::subscription(&ctx.client).map(Msg::Event)
+}
+
+/// A load landed: the reload that an event asked for meanwhile runs now.
+fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.loading = false;
+    if std::mem::take(&mut state.again) {
+        state.loading = true;
+        load(state, ctx)
+    } else {
+        Task::none()
+    }
+}
+
+/// Saves one document's file under the temp directory and opens it in the system's viewer, as the
+/// web opens the file in a new tab. A file of another type, or one whose name has no such
+/// extension, is refused.
+fn open_file(client: &client::Client, id: &str, name: &str) -> Result<(), String> {
+    let file = std::path::Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| "the document has no file name".to_string())?;
+    let ext = std::path::Path::new(file).extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    if !OPENABLE.contains(&ext.as_str()) {
+        return Err(format!("this file cannot be opened here: {file}"));
+    }
+    let path = format!("/v1/files/{id}/content");
+    let reply = apz_http::client::request(&client.target, "GET", &path, None, client.timeout).map_err(|e| e.to_string())?;
+    if !(200..300).contains(&reply.status) {
+        return Err(format!("HTTP {}", reply.status));
+    }
+    let dir = std::env::temp_dir().join("apz-documents").join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let target = dir.join(file);
+    std::fs::write(&target, &reply.body).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(&target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }

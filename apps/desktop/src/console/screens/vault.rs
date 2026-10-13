@@ -22,7 +22,7 @@ use forms::{
     rotate_card, sealed_card, secret_path, slot_path, slots_card, test_body, unseal_body, PassForm, RekeyField, Rotate, ScopeMode,
     SecretForm, SecretKind, UnsealForm, UnsealMethod,
 };
-use iced::widget::{column, pick_list, row, text};
+use iced::widget::{column, pick_list, row, text, text_input};
 use iced::{Element, Length, Task};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -260,6 +260,8 @@ pub struct State {
     pub add_pass: PassForm,
     /// A new recovery code, shown once until dismissed.
     pub recovery: Option<String>,
+    /// The last copy did not reach the clipboard: the recovery card shows the code to select instead.
+    pub copy_failed: bool,
     /// The rekey form, open while the owner gives each slot's secret.
     pub rekey: Option<Vec<RekeyField>>,
     /// The create form, open while a secret is being added.
@@ -312,6 +314,10 @@ pub enum Msg {
     AddPassphrase,
     MakeRecovery,
     CopyRecovery,
+    /// The clipboard's read-back after a copy: true when the code is on it.
+    CopyChecked(bool),
+    /// Edits to the read-only recovery field; they are dropped.
+    Noop,
     DismissRecovery,
     OpenRekey,
     RekeyInput(usize, String),
@@ -373,6 +379,24 @@ fn call(state: &mut State, ctx: &Ctx, method: &'static str, path: String, body: 
     state.notice = None;
     let c = ctx.client.clone();
     client::task(move || c.call(method, &path, body.as_ref()).map(|_| note), Msg::Mutated)
+}
+
+/// The recovery reveal after a copy that did not reach the clipboard: the code in a read-only field to select.
+fn recovery_card_selectable<'a>(code: &str) -> Element<'a, Msg> {
+    ui::card(
+        "Recovery code",
+        column![
+            ui::faint("Could not copy. Select the code and copy it."),
+            text_input("", code).on_input(|_| Msg::Noop),
+            row![
+                ui::btn("Copy", None, ui::Kind::Primary, Some(Msg::CopyRecovery)),
+                ui::btn("Done", None, ui::Kind::Ghost, Some(Msg::DismissRecovery)),
+            ]
+            .spacing(12),
+        ]
+        .spacing(12)
+        .into(),
+    )
 }
 
 /// The recovery code from `POST /v1/vault/recovery`.
@@ -552,18 +576,29 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         },
         Msg::MakeRecovery => {
             state.busy = true;
+            state.copy_failed = false;
             state.failure = None;
             state.notice = None;
             let c = ctx.client.clone();
             client::task(move || c.call("POST", "/v1/vault/recovery", Some(&json!({}))).and_then(|v| recovery_code(&v)), Msg::Recovery)
         }
         Msg::CopyRecovery => match &state.recovery {
+            // iced's clipboard write cannot report failure, so the code is read back: a copy that did not
+            // land (no clipboard) reads back as nothing, and the card then shows the code to select.
             Some(code) => {
-                state.notice = Some("Copied the recovery code.".into());
-                iced::clipboard::write(code.clone())
+                let expected = code.clone();
+                iced::clipboard::write::<Msg>(code.clone()).chain(
+                    iced::clipboard::read().map(move |got| Msg::CopyChecked(got.as_deref() == Some(expected.as_str()))),
+                )
             }
             None => Task::none(),
         },
+        Msg::CopyChecked(ok) => {
+            state.copy_failed = !ok;
+            state.notice = if ok { Some("Copied the recovery code.".into()) } else { None };
+            Task::none()
+        }
+        Msg::Noop => Task::none(),
         Msg::DismissRecovery => {
             state.recovery = None;
             Task::none()
@@ -937,7 +972,7 @@ fn unsealed_parts<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
         parts.push(pending_card(pending, state.busy));
     }
     if let Some(code) = &state.recovery {
-        parts.push(recovery_card(code));
+        parts.push(if state.copy_failed { recovery_card_selectable(code) } else { recovery_card(code) });
     }
     parts.push(slots_card(state));
     if let Some(fields) = &state.rekey {

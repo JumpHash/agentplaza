@@ -52,6 +52,9 @@ pub struct State {
     query: String,
     seq: u64,
     retention: Retention,
+    /// A live refresh is in flight; an event that came meanwhile runs once more when it lands.
+    refreshing: bool,
+    again: bool,
 }
 
 /// The selected pair's messages, newest first, with the cursor for the next older page.
@@ -103,6 +106,8 @@ pub enum Msg {
     /// Save the retention; the result is the saved `(keep, days)`, or the failure.
     SaveRetention,
     RetentionSaved(Result<(u64, u64), String>),
+    /// A hub event: a conversation or a settings change reloads the screen.
+    Event(crate::console::events::Event),
 }
 
 /// One message from `GET /v1/conversations`.
@@ -156,7 +161,34 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    let landed = matches!(msg, Msg::Loaded { .. });
+    let task = apply(state, msg, ctx);
+    if !landed {
+        return task;
+    }
+    state.refreshing = false;
+    if std::mem::take(&mut state.again) {
+        state.refreshing = true;
+        return Task::batch([task, load(state, ctx)]);
+    }
+    task
+}
+
+/// The screen's messages. `update` wraps it to keep the live refresh's in-flight flag.
+fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
+        Msg::Event(event) => {
+            if !matches!(event.kind.as_str(), "conversation" | "settings") {
+                return Task::none();
+            }
+            if state.refreshing {
+                state.again = true;
+                Task::none()
+            } else {
+                state.refreshing = true;
+                load(state, ctx)
+            }
+        }
         Msg::Go(_) => Task::none(),
         Msg::Select(key) => {
             state.selected = Some(key);
@@ -366,6 +398,8 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .size(12.0)
         .padding(8)
         .style(crate::theme::input);
+    let clear = ui::btn("Clear", None, ui::Kind::Ghost, (!state.draft.is_empty()).then(|| Msg::Search(String::new())));
+    let search: Element<'a, Msg> = row![search, clear].spacing(6).align_y(Alignment::Center).into();
 
     let list: Element<'a, Msg> = if !state.loaded {
         ui::loading()
@@ -804,5 +838,23 @@ mod tests {
         assert_eq!(times(&parse_thread(&page)), vec![2, 1]);
         assert_eq!(next_of(&page), Some(1));
         assert_eq!(next_of(&json!({"messages": []})), None);
+    }
+}
+
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    iced::Subscription::batch([
+        crate::console::events::subscription(&ctx.client).map(Msg::Event),
+        iced::event::listen_with(escape),
+    ])
+}
+
+/// Escape clears the search, as the web's search box does.
+fn escape(event: iced::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) => Some(Msg::Search(String::new())),
+        _ => None,
     }
 }

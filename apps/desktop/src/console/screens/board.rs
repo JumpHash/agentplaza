@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_editor, text_input};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -104,7 +104,12 @@ pub struct State {
     /// Posts with a reply composer open, their unsent text, and the replies on their way.
     composing: HashSet<String>,
     drafts: HashMap<String, String>,
+    /// The editors the open composers type in, kept beside their drafts (each draft mirrors its editor).
+    editors: HashMap<String, text_editor::Content>,
     sending: HashSet<String>,
+    /// A live refresh is in flight; an event that came meanwhile runs once more when it lands.
+    refreshing: bool,
+    again: bool,
 }
 
 impl State {
@@ -126,11 +131,14 @@ pub enum Msg {
     ToggleBody(String),
     ToggleThread(String),
     ToggleReply(String),
-    Draft(String, String),
+    /// An edit in a reply composer (the editor applies it; its text becomes the draft).
+    Edit(String, text_editor::Action),
     Send(String),
     /// A reply went out: the post, the text sent, and the result.
     Sent(String, String, Result<Value, String>),
     Cancel(String),
+    /// A hub event: a board change reloads the screen.
+    Event(crate::console::events::Event),
 }
 
 /// The navigation this message asks for, if any.
@@ -152,7 +160,34 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
+    let landed = matches!(msg, Msg::Loaded(_));
+    let task = apply(state, msg, ctx);
+    if !landed {
+        return task;
+    }
+    state.refreshing = false;
+    if std::mem::take(&mut state.again) {
+        state.refreshing = true;
+        return Task::batch([task, load(state, ctx)]);
+    }
+    task
+}
+
+/// The screen's messages. `update` wraps it to keep the live refresh's in-flight flag.
+fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
+        Msg::Event(event) => {
+            if !matches!(event.kind.as_str(), "board") {
+                return Task::none();
+            }
+            if state.refreshing {
+                state.again = true;
+                Task::none()
+            } else {
+                state.refreshing = true;
+                load(state, ctx)
+            }
+        }
         Msg::Go(_) => Task::none(),
         Msg::Loaded(res) => {
             match res.and_then(|v| serde_json::from_value::<Board>(v).map_err(|e| e.to_string())) {
@@ -210,16 +245,23 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::ToggleReply(id) => {
             if !state.composing.remove(&id) {
+                let seed = state.drafts.get(&id).cloned().unwrap_or_default();
+                state.editors.entry(id.clone()).or_insert_with(|| text_editor::Content::with_text(&seed));
                 state.composing.insert(id);
             }
             Task::none()
         }
-        Msg::Draft(id, text) => {
+        Msg::Edit(id, action) => {
+            let seed = state.drafts.get(&id).cloned().unwrap_or_default();
+            let editor = state.editors.entry(id.clone()).or_insert_with(|| text_editor::Content::with_text(&seed));
+            editor.perform(action);
+            let text = editor.text();
             state.drafts.insert(id, text);
             Task::none()
         }
         Msg::Cancel(id) => {
             state.drafts.remove(&id);
+            state.editors.remove(&id);
             state.composing.remove(&id);
             Task::none()
         }
@@ -242,6 +284,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     // The composer closes only if nothing was typed while the reply went out.
                     if state.drafts.get(&id).map(|d| d.trim()) == Some(sent.as_str()) {
                         state.drafts.remove(&id);
+                        state.editors.remove(&id);
                         state.composing.remove(&id);
                     }
                     state.thread_open.insert(id);
@@ -506,16 +549,30 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
 }
 
 /// The owner's reply composer. Its draft lives in the state, so a redraw never loses it.
-/// Enter sends; the Send button is off while the text is empty, too long, or on its way.
+/// Ctrl/Cmd+Enter sends (Enter adds a line); the Send button is off while the text is empty,
+/// too long, or on its way.
 fn composer<'a>(state: &'a State, p: &'a Post) -> Element<'a, Msg> {
     let draft = state.drafts.get(&p.id).map(String::as_str).unwrap_or("");
     let len = draft.chars().count();
     let can_send = !draft.trim().is_empty() && len <= REPLY_MAX && !state.sending.contains(&p.id);
+    let Some(editor_content) = state.editors.get(&p.id) else {
+        return column![].into();
+    };
     let typed_id = p.id.clone();
-    let input = text_input("Reply as the owner. Enter sends.", draft)
-        .on_input(move |t| Msg::Draft(typed_id.clone(), t))
-        .on_submit(Msg::Send(p.id.clone()))
-        .padding(6.0);
+    let send_id = p.id.clone();
+    let input = text_editor(editor_content)
+        .placeholder("Reply as the owner. Ctrl+Enter sends.")
+        .padding(6.0)
+        .height(Length::Fixed(96.0))
+        .key_binding(move |kp| {
+            let enter = kp.key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter);
+            if enter && (kp.modifiers.control() || kp.modifiers.command()) {
+                Some(text_editor::Binding::Custom(Msg::Send(send_id.clone())))
+            } else {
+                text_editor::Binding::from_key_press(kp)
+            }
+        })
+        .on_action(move |a| Msg::Edit(typed_id.clone(), a));
     let meter = ui::faint(format!("{len}/{REPLY_MAX}"));
     let cancel = ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel(p.id.clone())));
     let send = ui::btn("Send", None, ui::Kind::Primary, can_send.then(|| Msg::Send(p.id.clone())));
@@ -561,4 +618,8 @@ fn ago(ms: f64) -> String {
         3600..=86399 => format!("{}h ago", s / 3600),
         _ => format!("{}d ago", s / 86400),
     }
+}
+
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    crate::console::events::subscription(&ctx.client).map(Msg::Event)
 }

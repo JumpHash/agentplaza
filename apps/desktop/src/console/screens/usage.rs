@@ -327,6 +327,8 @@ pub enum Msg {
     Sort(Sort),
     ModelFilter(Choice<Option<String>>),
     AgentFilter(Choice<Option<u64>>),
+    /// The empty calls state's "Clear filters": both filters back to every call.
+    ClearFilters,
     RefreshPrices,
     Refreshed(Result<PriceHead, String>),
     LoadOlder,
@@ -663,6 +665,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.clear_calls();
             load(state, ctx)
         }
+        Msg::ClearFilters => {
+            state.model_filter = None;
+            state.agent_filter = None;
+            state.clear_calls();
+            load(state, ctx)
+        }
         Msg::RefreshPrices => {
             state.busy = true;
             let c = ctx.client.clone();
@@ -982,6 +990,14 @@ fn chart_panel<'a>(state: &'a State, d: &'a Data, now: Instant) -> Element<'a, M
         View::Chart => row![segmented(&View::ALL, state.view, Msg::View), segmented(&Unit::ALL, state.unit, Msg::Unit)].spacing(16).into(),
         View::Table => row![segmented(&View::ALL, state.view, Msg::View)].into(),
     };
+    if state.view == View::Chart && d.summary.totals.calls == 0 {
+        return column![
+            toolbar,
+            ui::empty("zap", "No model calls in this window", "Every call an agent makes is recorded here with its tokens and cost. Nothing has been called in this window yet."),
+        ]
+        .spacing(14)
+        .into();
+    }
     match state.view {
         View::Chart => {
             let series = state.chart.current(now);
@@ -1176,7 +1192,12 @@ fn calls_card<'a>(state: &'a State, d: &'a Data) -> Element<'a, Msg> {
         ].spacing(10));
     }
     if d.calls.is_empty() {
-        lines = lines.push(ui::empty("zap", "No calls yet", "Model calls appear here as agents make them; the ledger keeps a year of them."));
+        let filtered = state.model_filter.is_some() || state.agent_filter.is_some();
+        let sentence = if filtered { "Clear the filters to see every call." } else { "Calls appear here as agents work." };
+        lines = lines.push(ui::empty("zap", "No calls match", sentence));
+        if filtered {
+            lines = lines.push(ui::btn("Clear filters", None, ui::Kind::Ghost, Some(Msg::ClearFilters)));
+        }
     }
     let mut footer = row![ui::faint(format!("{} of {} calls", d.calls.len(), commas(&d.calls_total.to_string())))].align_y(Alignment::Center);
     footer = footer.push(Space::new().width(Length::Fill));
@@ -1203,7 +1224,7 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
     ].spacing(10);
     let mut lines = column![head].spacing(6);
     if models.is_empty() {
-        lines = lines.push(ui::faint("No models in use yet."));
+        lines = lines.push(ui::empty("models", "No models in use", "Models appear here once a model is called or set as a default."));
     }
     let txt = |s: String| text(s).font(MONO).size(12.0).color(crate::theme::palette().ink_2);
     for model in &models {

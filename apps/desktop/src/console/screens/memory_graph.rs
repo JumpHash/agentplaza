@@ -2,12 +2,15 @@
 //! as ink curves and shared tags as faint straight lines. The layout is the web's force simulation (same constants,
 //! same cooling: alpha from 1 down by 0.985 to 0.004, repulsion, name-tag collision, springs, a pull to the middle), run
 //! once per note set with a seeded generator, so a given set of notes always lands in the same place. Hovering a note
-//! lights it and its neighbours, a click selects it and opens it in the host's reader, dragging pans, the wheel zooms
-//! around the pointer, and a right click fits the view again.
+//! lights it and its neighbours, a click selects it and opens it in the host's reader, dragging pans, dragging a note
+//! moves it while it is held (the rest settle around it, and it floats back on release, as the web does), the wheel
+//! zooms around the pointer, and a right click fits the view again. Tab and Shift+Tab walk the notes in a stable order
+//! (by slug), the focused one is ringed, and Enter or Space opens it. The find text dims the notes whose titles miss it.
 
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 
+use iced::keyboard::{self, key::Named};
 use iced::widget::canvas::{self, Canvas, Event, Frame, Path, Stroke, Text};
 use iced::{mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
@@ -17,11 +20,52 @@ const LINK_LEN: f32 = 150.0;
 const TAG_LEN: f32 = 230.0;
 const SEED: u64 = 0x2545_F491_4F6C_DD1D;
 
+/// The keys the graph takes (the host's subscription passes only the ones no focused text field captured).
+#[derive(Debug, Clone, Copy)]
+pub enum Key {
+    /// Tab walks the notes forwards, Shift+Tab backwards.
+    Tab { back: bool },
+    /// Enter or Space opens the note in focus.
+    Open,
+}
+
+/// The graph's key for a key press, if it takes it.
+pub fn key(key: &keyboard::Key, shift: bool) -> Option<Key> {
+    match key {
+        keyboard::Key::Named(Named::Tab) => Some(Key::Tab { back: shift }),
+        keyboard::Key::Named(Named::Enter | Named::Space) => Some(Key::Open),
+        _ => None,
+    }
+}
+
+/// The note the keyboard moves to: Tab walks the notes in a stable order (by slug), from the first (or, backwards, the
+/// last) when none is in focus.
+pub fn walk(layout: &Layout, kb: Option<&str>, back: bool) -> Option<String> {
+    let mut order: Vec<usize> = (0..layout.nodes.len()).collect();
+    order.sort_by(|&a, &b| layout.nodes[a].slug.cmp(&layout.nodes[b].slug));
+    let n = order.len();
+    if n == 0 {
+        return None;
+    }
+    let cur = kb.and_then(|s| order.iter().position(|&i| layout.nodes[i].slug == s));
+    let next = match (cur, back) {
+        (None, false) => 0,
+        (None, true) => n - 1,
+        (Some(c), false) => (c + 1) % n,
+        (Some(c), true) => (c + n - 1) % n,
+    };
+    Some(layout.nodes[order[next]].slug.clone())
+}
+
 /// What the graph tells the host.
 #[derive(Debug, Clone)]
 pub enum Msg {
-    /// A note was clicked: the host reads it into its reader.
+    /// A note was clicked (or Enter or Space was pressed on it): the host reads it into its reader.
     Open(String),
+    /// A note is dragged to (x, y), in graph coordinates: the host holds it there.
+    Drag { slug: String, x: f32, y: f32 },
+    /// The drag ends: the host lets the note go.
+    Drop,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,6 +103,8 @@ pub struct Layout {
     edges: Vec<Edge>,
     neighbours: Vec<Vec<usize>>,
     key: Vec<(String, u64)>,
+    /// The note held under the pointer while it is dragged: its index and where it sits.
+    held: Option<(usize, f32, f32)>,
 }
 
 /// A small xorshift generator: the seed makes the layout repeatable.
@@ -83,6 +129,26 @@ impl Layout {
         }
         let prev: HashMap<String, (f32, f32)> = self.nodes.iter().map(|n| (n.slug.clone(), (n.x, n.y))).collect();
         *self = Layout::build(notes, &prev, key);
+    }
+
+    /// Holds a note at (x, y) while it is dragged; the rest of the graph settles around it.
+    pub fn hold(&mut self, slug: &str, x: f32, y: f32) {
+        let Some(i) = self.nodes.iter().position(|n| n.slug == slug) else { return };
+        self.held = Some((i, x, y));
+        let mut rng = Rng(SEED);
+        for _ in 0..8 {
+            self.tick(0.3, &mut rng);
+        }
+    }
+
+    /// Lets the held note go: it floats back into place around the others.
+    pub fn release(&mut self) {
+        if self.held.take().is_some() {
+            let mut rng = Rng(SEED);
+            for _ in 0..8 {
+                self.tick(0.3, &mut rng);
+            }
+        }
     }
 
     fn build(notes: &[Note], prev: &HashMap<String, (f32, f32)>, key: Vec<(String, u64)>) -> Self {
@@ -146,7 +212,7 @@ impl Layout {
         // Cooling: a fresh layout starts hot, a refresh starts warm. Same decay and stop as the web.
         let mut alpha = if prev.is_empty() { 1.0 } else { 0.3 };
         nodes.shrink_to_fit();
-        let mut lay = Layout { nodes, edges, neighbours, key };
+        let mut lay = Layout { nodes, edges, neighbours, key, held: None };
         loop {
             lay.tick(alpha, &mut rng);
             alpha *= 0.985;
@@ -212,6 +278,14 @@ impl Layout {
             p.vy *= 0.6;
             p.x += p.vx;
             p.y += p.vy;
+        }
+        // The held note stays where the pointer holds it, whatever pushed it.
+        if let Some((i, x, y)) = self.held {
+            let p = &mut self.nodes[i];
+            p.x = x;
+            p.y = y;
+            p.vx = 0.0;
+            p.vy = 0.0;
         }
     }
 }
@@ -294,20 +368,25 @@ fn hit(lay: &Layout, cam: Cam, p: Point) -> Option<usize> {
     best.map(|(_, i)| i)
 }
 
-/// The view's own state: the camera (`None` until the user moves it, then the fit is kept), the pointer, the hover and
-/// the selection.
+/// The view's own state: the camera (`None` until the user moves it, then the fit is kept), the pointer, the hover,
+/// the selection, the note being dragged and the note the keyboard is on.
 #[derive(Debug, Default)]
 pub struct View {
     cam: Option<Cam>,
     press: Option<Point>,
     drag: Option<Point>,
     moved: bool,
+    grab: Option<String>,
     hover: Option<usize>,
     selected: Option<usize>,
 }
 
 struct GraphView<'a> {
     layout: &'a Layout,
+    /// The find text, trimmed and lower case: notes whose titles lack it are dimmed.
+    query: String,
+    /// The note the keyboard is on (ringed), from the host.
+    kb: Option<&'a str>,
 }
 
 impl GraphView<'_> {
@@ -331,6 +410,12 @@ impl canvas::Program<Msg> for GraphView<'_> {
                     st.moved = true;
                     st.drag = Some(p);
                     let cam = self.cam(st, bounds);
+                    if let Some(slug) = st.grab.clone() {
+                        // A note under the press follows the pointer; the camera holds still meanwhile.
+                        st.cam = Some(cam);
+                        let (x, y) = ((p.x - cam.x) / cam.k, (p.y - cam.y) / cam.k);
+                        return Some(canvas::Action::publish(Msg::Drag { slug, x, y }));
+                    }
                     st.cam = Some(Cam { x: cam.x + dx, y: cam.y + dy, ..cam });
                     return Some(canvas::Action::request_redraw());
                 }
@@ -346,14 +431,17 @@ impl canvas::Program<Msg> for GraphView<'_> {
                 st.press = Some(p);
                 st.drag = Some(p);
                 st.moved = false;
+                let cam = self.cam(st, bounds);
+                st.grab = hit(self.layout, cam, p).map(|i| self.layout.nodes[i].slug.clone());
                 None
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 let was_moved = std::mem::take(&mut st.moved);
                 st.drag = None;
+                let grabbed = st.grab.take();
                 let press = st.press.take()?;
                 if was_moved {
-                    return None;
+                    return grabbed.map(|_| canvas::Action::publish(Msg::Drop));
                 }
                 let i = hit(self.layout, self.cam(st, bounds), press)?;
                 st.selected = Some(i);
@@ -396,6 +484,9 @@ impl canvas::Program<Msg> for GraphView<'_> {
             None => true,
             Some(f) => i == f || lay.neighbours[f].contains(&i),
         };
+        // The find text dims the notes whose titles miss it (the web's `off` class, the strongest fade).
+        let matches = |n: &Node| self.query.is_empty() || n.title.to_lowercase().contains(&self.query);
+        let kb = self.kb.and_then(|s| lay.nodes.iter().position(|n| n.slug == s));
 
         for e in &lay.edges {
             let (na, nb) = (&lay.nodes[e.a], &lay.nodes[e.b]);
@@ -425,10 +516,19 @@ impl canvas::Program<Msg> for GraphView<'_> {
         for (i, n) in lay.nodes.iter().enumerate() {
             let c = to_screen(n.x, n.y);
             let r = (n.r * cam.k).max(4.0);
-            let a = if lit(i) { 1.0 } else { 0.3 };
+            let a = if !matches(n) {
+                0.08
+            } else if lit(i) {
+                1.0
+            } else {
+                0.3
+            };
             frame.fill(&Path::circle(c, r), fade(kind_colour(&n.kind), a));
             frame.fill(&Path::circle(Point::new(c.x - r * 0.35, c.y - r * 0.4), r * 0.28), fade(Color::WHITE, 0.55 * a));
             frame.stroke(&Path::circle(c, r), Stroke::default().with_color(fade(pal.ink, a)).with_width(1.6));
+            if kb == Some(i) {
+                frame.stroke(&Path::circle(c, r + 5.0), Stroke::default().with_color(pal.ink).with_width(2.5));
+            }
 
             let tw = n.tag_w * ls * cam.k;
             let top = c.y + (n.r + 7.0 * ls) * cam.k;
@@ -465,7 +565,9 @@ impl canvas::Program<Msg> for GraphView<'_> {
     }
 }
 
-/// The graph for the Memory tab: fills the column, 480 px tall like the list it replaces.
-pub fn view(layout: &Layout) -> Element<'_, Msg> {
-    Canvas::new(GraphView { layout }).width(Length::Fill).height(Length::Fixed(480.0)).into()
+/// The graph for the Memory tab: fills the column, 480 px tall like the list it replaces. `query` is the find text:
+/// notes whose titles miss it are dimmed.
+pub fn view<'a>(layout: &'a Layout, query: String, kb: Option<&'a str>) -> Element<'a, Msg> {
+    let query = query.trim().to_lowercase();
+    Canvas::new(GraphView { layout, query, kb }).width(Length::Fill).height(Length::Fixed(480.0)).into()
 }

@@ -4,7 +4,7 @@
 // table that turns into stacked cards on narrow screens.
 
 import '../styles/mcp.css';
-import { mcpApi, type McpServerView, type McpTestResult } from '../api';
+import { mcpApi, type McpPreset, type McpServerView, type McpTestResult } from '../api';
 import { ago, attempt, badge, button, clip, empty, modal, tabs, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
@@ -80,14 +80,16 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let timer: number | undefined;
   let loadSeq = 0;
   let servers: McpServerView[] | null = null;
+  let catalog: McpPreset[] = [];
   let loadError: unknown = null;
 
   const reload = async (): Promise<void> => {
     const seq = ++loadSeq;
     try {
-      const list = await mcpApi.servers();
+      const [list, presets] = await Promise.all([mcpApi.servers(), mcpApi.catalog()]);
       if (!alive || seq !== loadSeq) return;
       servers = list;
+      catalog = presets;
       loadError = null;
     } catch (err) {
       if (!alive || seq !== loadSeq) return;
@@ -110,9 +112,42 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     }, 250);
   };
 
-  const openAdd = (): void => openWizard(null, () => void reload());
+  const openAdd = (presetId: string | null = null): void => openWizard(null, () => void reload(), presetId);
 
-  const addButton = (): HTMLElement => button('Add server', openAdd, { kind: 'primary', icon: 'plus' });
+  const addButton = (): HTMLElement => button('Add server', () => openAdd(), { kind: 'primary', icon: 'plus' });
+
+  /** The hub's presets: each opens the wizard with that preset chosen; the custom button opens it empty. */
+  const catalogueCard = (): HTMLElement =>
+    h(
+      'div.card.mcp-catalogue',
+      null,
+      h('header.card-head', null, h('h2', null, 'Catalogue')),
+      h(
+        'div.card-body',
+        null,
+        button('Custom server', () => openAdd(), { kind: 'ghost' }),
+        catalog.length
+          ? h(
+              'ul.mcp-presets',
+              null,
+              catalog.map((p) =>
+                h(
+                  'li',
+                  null,
+                  h(
+                    'div.mcp-preset-info',
+                    null,
+                    h('strong.mcp-mono', null, p.name),
+                    h('p', null, p.description),
+                    h('span.mcp-muted', null, [p.transport, p.note].filter(Boolean).join(' · ')),
+                  ),
+                  button('Add', () => openAdd(p.id), { kind: 'ghost', size: 'sm' }),
+                ),
+              ),
+            )
+          : empty('terminal', 'No presets', 'The catalogue is empty on this hub.'),
+      ),
+    );
 
   // The two tabs: the servers, and this hub as a server. Leaving the hub tab empties its page, token included.
   let tab: 'servers' | 'hub' = 'servers';
@@ -235,7 +270,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         'div.mcp-page',
         null,
         tabBar(),
-        tab === 'hub' ? hubBody : [h('div.mcp-toolbar', null, servers?.length ? addButton() : null), body],
+        tab === 'hub' ? hubBody : [h('div.mcp-toolbar', null, servers?.length ? addButton() : null), body, servers && !loadError ? catalogueCard() : null],
       ),
     );
   }

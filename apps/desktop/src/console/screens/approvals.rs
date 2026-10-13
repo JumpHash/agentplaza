@@ -7,10 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{column, container, row, text, text_input, Space};
+use iced::widget::{column, container, row, text, text_input, Space, Stack};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::{json, Value};
 
+use super::wizard::{self, ProposalView, WizardMsg};
 use super::{sanctions, Id};
 use crate::console::{client, ui, Ctx};
 use crate::theme::{SERIF};
@@ -43,6 +44,12 @@ pub struct State {
     /// The collapsed "Decided" list of proposals is open.
     proposals_open: bool,
     pub error: Option<String>,
+    /// Answers still due from the running load (four calls); 0 when idle.
+    pending: u8,
+    /// A reload was asked for while a load ran: it starts once the running one settles.
+    again: bool,
+    /// The new-agent wizard, opened on a proposal's Review (it approves or rejects the proposal).
+    wizard: wizard::Wizard,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +60,8 @@ pub enum Msg {
     Proposals(Result<Value, String>),
     Agents(Result<Value, String>),
     Sanctions(Result<sanctions::Register, String>),
+    /// A hub event: the approval and agent_proposal topics reload the screen.
+    Event(crate::console::events::Event),
     /// A reason typed for a draft key.
     Draft(String, String),
     /// Approve (true) or deny (false) an approval; `action` picks the sanction call explicitly
@@ -64,6 +73,8 @@ pub enum Msg {
     RejectConfirm(String),
     Rejected(String, Result<(), String>),
     ToggleDecided,
+    /// The proposal wizard's messages (Review opens it; Done(Ok) reloads the list).
+    Wizard(WizardMsg),
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +126,8 @@ struct Proposal {
     decided_ms: i64,
     state: String,
     note: String,
+    /// The proposal as the wizard reviews it (its Review opens the wizard on it).
+    review: Option<ProposalView>,
 }
 
 impl Proposal {
@@ -123,6 +136,7 @@ impl Proposal {
         let title = Some(field(&role, "title")).filter(|t| !t.is_empty()).unwrap_or_else(|| field(&role, "id"));
         Some(Self {
             id: v.get("id")?.as_str()?.to_string(),
+            review: serde_json::from_value(v.clone()).ok(),
             title,
             new_role: v.get("new_role").and_then(Value::as_bool).unwrap_or(false),
             count: v.get("count").and_then(Value::as_u64).unwrap_or(1),
@@ -183,7 +197,13 @@ pub fn go(msg: &Msg) -> Option<Id> {
 }
 
 /// Loads the screen's data (called when it opens and on every poll tick).
-pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
+pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    // One load at a time: a reload asked for meanwhile runs once the four answers are in.
+    if state.pending > 0 {
+        state.again = true;
+        return Task::none();
+    }
+    state.pending = 4;
     let (c1, c2, c3, c4) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     Task::batch([
         client::task(move || c1.get::<Value>("/v1/approvals"), Msg::Approvals),
@@ -191,6 +211,16 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
         client::task(move || c3.get::<Value>("/v1/agents"), Msg::Agents),
         client::task(move || sanctions::list(&c4, None, None, None), Msg::Sanctions),
     ])
+}
+
+/// One of the four load answers arrived; the last one starts a reload that was asked for meanwhile.
+fn settled(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    state.pending = state.pending.saturating_sub(1);
+    if state.pending == 0 && std::mem::take(&mut state.again) {
+        load(state, ctx)
+    } else {
+        Task::none()
+    }
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -205,24 +235,28 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Err(_) => state.failed = true,
             }
             state.loaded = true;
-            Task::none()
+            settled(state, ctx)
         }
         Msg::Proposals(res) => {
             state.proposals = res.map(|v| list(&v, Proposal::from_value)).unwrap_or_default();
-            Task::none()
+            settled(state, ctx)
         }
         Msg::Agents(res) => {
             if let Ok(v) = res {
                 state.agents = list(&v, agent_entry);
             }
-            Task::none()
+            settled(state, ctx)
         }
         Msg::Sanctions(res) => {
             if let Ok(register) = res {
                 state.suspensions = register.suspensions.iter().filter(|s| s.active).map(|s| s.id).collect();
             }
-            Task::none()
+            settled(state, ctx)
         }
+        Msg::Event(event) => match event.kind.as_str() {
+            "approval" | "agent_proposal" => load(state, ctx),
+            _ => Task::none(),
+        },
         Msg::Draft(key, text) => {
             state.drafts.insert(key, text);
             Task::none()
@@ -282,10 +316,29 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.proposals_open = !state.proposals_open;
             Task::none()
         }
+        Msg::Wizard(m) => {
+            // A proposal approved or rejected: the wizard closes and the list reloads.
+            let reload = matches!(m, WizardMsg::Done(Ok(())));
+            let step = wizard::update(&mut state.wizard, m, ctx).map(Msg::Wizard);
+            if reload {
+                Task::batch([step, load(state, ctx)])
+            } else {
+                step
+            }
+        }
     }
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+    let page = page(state);
+    if state.wizard.open {
+        Stack::new().push(page).push(wizard::view(&state.wizard, ctx).map(Msg::Wizard)).into()
+    } else {
+        page
+    }
+}
+
+fn page<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
@@ -440,8 +493,8 @@ fn proposal_card<'a>(state: &'a State, p: &'a Proposal) -> Element<'a, Msg> {
         body = body.push(ui::prose(format!("“{}”", p.instruction)));
     }
     body = body.push(ui::faint(format!("Proposed by {}", p.by)));
-    // The review opens the new-agent wizard, which is not ported yet (contract WIZ): disabled for now.
-    let review = ui::btn("Review…", None, ui::Kind::Primary, None);
+    // The review opens the new-agent wizard on this proposal (approve or reject there).
+    let review = ui::btn("Review…", None, ui::Kind::Primary, p.review.clone().map(|v| Msg::Wizard(WizardMsg::OpenProposal(v))));
     let reject = ui::btn("Reject", None, ui::Kind::Danger, Some(Msg::RejectOpen(p.id.clone())));
     body = body.push(row![Space::new().width(Length::Fill), reject, review].spacing(8).align_y(Alignment::Center));
 
@@ -520,4 +573,9 @@ fn code_box<'a>(source: String) -> Element<'a, Msg> {
             ..Default::default()
         })
         .into()
+}
+
+/// The hub events this screen follows live (the web refreshes on the same topics).
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    crate::console::events::subscription(&ctx.client).map(Msg::Event)
 }

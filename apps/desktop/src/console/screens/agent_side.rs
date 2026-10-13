@@ -65,6 +65,10 @@ pub struct Side {
     // The graph view of the same notes (a toggle beside the list).
     graph_on: bool,
     graph: super::memory_graph::Layout,
+    /// The note the keyboard is on in the graph (ringed), walked with Tab.
+    graph_kb: Option<String>,
+    /// The debounce tick of the latest `memory` event: only the last one reloads the notes.
+    memory_tick: u64,
 }
 
 /// An agent's harness limits; a missing one is the plaza default.
@@ -142,6 +146,10 @@ pub enum After {
 
 #[derive(Debug, Clone)]
 pub enum SideMsg {
+    /// A key the graph takes: Tab walks the notes, Enter or Space opens the one in focus.
+    Key(super::memory_graph::Key),
+    /// The 30-second fallback reload of the notes, while the Memory tab is shown.
+    Refresh,
     Agent(Result<Value, String>),
     Catalogue(Result<(Value, Value), String>),
     Picker(PickerMsg),
@@ -174,6 +182,7 @@ pub enum SideMsg {
     OpenNote(String),
     NoteRead(Result<Note, String>),
     ToggleGraph,
+    MemoryTick(Result<u64, String>),
     Graph(super::memory_graph::Msg),
 }
 
@@ -506,6 +515,31 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             Task::none()
         }
         SideMsg::Graph(super::memory_graph::Msg::Open(slug)) => fetch_note(ctx, cid, slug),
+        SideMsg::Graph(super::memory_graph::Msg::Drag { slug, x, y }) => {
+            side.graph.hold(&slug, x, y);
+            Task::none()
+        }
+        SideMsg::Graph(super::memory_graph::Msg::Drop) => {
+            side.graph.release();
+            Task::none()
+        }
+        SideMsg::Key(super::memory_graph::Key::Tab { back }) => {
+            side.graph_kb = super::memory_graph::walk(&side.graph, side.graph_kb.as_deref(), back);
+            Task::none()
+        }
+        SideMsg::Key(super::memory_graph::Key::Open) => match side.graph_kb.clone() {
+            Some(slug) => fetch_note(ctx, cid, slug),
+            None => Task::none(),
+        },
+        SideMsg::Refresh => fetch_memory(ctx, cid),
+        SideMsg::MemoryTick(Ok(tick)) => {
+            if tick == side.memory_tick {
+                fetch_memory(ctx, cid)
+            } else {
+                Task::none()
+            }
+        }
+        SideMsg::MemoryTick(Err(_)) => Task::none(),
     }
 }
 
@@ -652,6 +686,39 @@ fn permission_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     ui::card("Permissions", body)
 }
 
+/// A `memory` event from the hub: the notes reload once the burst has settled (250 ms, as the web), so a run of
+/// writes costs one fetch.
+pub fn memory_changed(side: &mut Side) -> Task<SideMsg> {
+    side.memory_tick += 1;
+    let tick = side.memory_tick;
+    client::task(
+        move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            Ok::<u64, String>(tick)
+        },
+        SideMsg::MemoryTick,
+    )
+}
+
+/// The note a backlink or `[[link]]` names: its slug, or the slug of its title (the web's `resolveRef`).
+fn resolve_ref<'a>(notes: &'a [Note], r: &str) -> Option<&'a Note> {
+    let want = slugify(r);
+    notes.iter().find(|n| n.slug == r || n.slug == want || slugify(&n.title) == want)
+}
+
+/// The web's slug rule: lower case, runs of other characters become one dash, no edge dashes, at most 60.
+fn slugify(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').chars().take(60).collect()
+}
+
 /// The Memory tab: the notes with a find box, the chosen one read beside them (`memory.ts`, as a
 /// list where the web draws a graph).
 pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
@@ -670,7 +737,8 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let toggle = ui::btn(if side.graph_on { "List" } else { "Graph" }, None, ui::Kind::Ghost, Some(SideMsg::ToggleGraph));
     let head = row![ui::faint(count), Space::new().width(Length::Fill), toggle, find].spacing(12).align_y(Alignment::Center);
     if side.graph_on {
-        return column![head, super::memory_graph::view(&side.graph).map(SideMsg::Graph)].spacing(12).into();
+        let q = side.search.trim().to_lowercase();
+        return column![head, super::memory_graph::view(&side.graph, q, side.graph_kb.as_deref()).map(SideMsg::Graph)].spacing(12).into();
     }
 
     let q = side.search.trim().to_lowercase();
@@ -682,7 +750,7 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         .collect();
     let list = scrollable(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
     let reader: Element<'a, SideMsg> = match &side.reading {
-        Some(doc) => reader_view(doc),
+        Some(doc) => reader_view(doc, &side.notes),
         None => ui::faint("Choose a note to read it.").into(),
     };
     let panes = row![
@@ -737,7 +805,7 @@ fn note_row<'a>(n: &'a Note, open: bool) -> Element<'a, SideMsg> {
 
 /// One note open: its kind and tags, its title, the stamp (when it was updated and by which work),
 /// its body, and the notes that link to it.
-fn reader_view<'a>(doc: &'a Note) -> Element<'a, SideMsg> {
+fn reader_view<'a>(doc: &'a Note, notes: &'a [Note]) -> Element<'a, SideMsg> {
     let tone = match doc.kind.as_str() {
         "person" => ui::Tone::Signal,
         "journal" => ui::Tone::Warn,
@@ -760,7 +828,18 @@ fn reader_view<'a>(doc: &'a Note) -> Element<'a, SideMsg> {
         ui::markdown(&doc.body),
     ];
     if !doc.backlinks.is_empty() {
-        items.push(column![ui::label("Linked from"), ui::faint(doc.backlinks.join(", "))].spacing(4).into());
+        // Each backlink opens its note; one that names no note yet reads as a missing chip.
+        let chips: Vec<Element<'a, SideMsg>> = doc
+            .backlinks
+            .iter()
+            .map(|b| -> Element<'a, SideMsg> {
+                match resolve_ref(notes, b) {
+                    Some(n) => ui::btn(&n.title, None, ui::Kind::Ghost, Some(SideMsg::OpenNote(n.slug.clone()))).into(),
+                    None => ui::faint(format!("{b} (missing)")).into(),
+                }
+            })
+            .collect();
+        items.push(column![ui::label("Linked from"), iced::widget::Row::with_children(chips).spacing(6)].spacing(4).into());
     }
     column(items).spacing(10).into()
 }

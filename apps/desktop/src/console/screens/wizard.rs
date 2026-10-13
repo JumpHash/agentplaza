@@ -55,6 +55,30 @@ pub struct RoleView {
     pub agents: u32,
 }
 
+/// An orchestrator's proposal for a new agent (`/v1/agent-proposals`), reviewed here as the web's wizard does.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProposalView {
+    pub id: String,
+    /// The proposed role, as a `RoleDef` (its `id` included).
+    pub role: Value,
+    pub new_role: bool,
+    pub count: u32,
+    pub model: String,
+    pub reason: String,
+    pub instruction: String,
+}
+
+impl ProposalView {
+    fn role_id(&self) -> String {
+        self.role.get("id").and_then(Value::as_str).unwrap_or_default().to_string()
+    }
+
+    fn role_def(&self) -> RoleDefView {
+        serde_json::from_value(self.role.clone()).unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct ModelPolicy {
@@ -134,6 +158,11 @@ pub struct Wizard {
     prompt_edited: Option<String>,
     editing_prompt: bool,
     prompt: Content,
+    /// The orchestrator's proposal under review; the last step approves or rejects it instead of spawning.
+    proposal: Option<ProposalView>,
+    rejecting: bool,
+    /// The rejection reason, typed in a multi-line editor (Enter adds a line, as the web's textarea).
+    reject_reason: Content,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +187,11 @@ pub enum WizardMsg {
     EditPrompt(bool),
     ResetPrompt,
     Spawn,
+    /// Opens the wizard on an orchestrator's proposal (the approvals screen sends it).
+    OpenProposal(ProposalView),
+    RejectToggle,
+    RejectEdit(text_editor::Action),
+    Reject,
 }
 
 impl Wizard {
@@ -258,6 +292,77 @@ impl Wizard {
         })
     }
 
+    /// Seeds the fields from the proposal's role, as the web's wizard does.
+    fn open_proposal(&mut self, p: ProposalView) {
+        let def = p.role_def();
+        let role_id = p.role_id();
+        self.mode = if p.new_role { Mode::New } else { Mode::Existing };
+        self.role_id = if p.new_role { String::new() } else { role_id.clone() };
+        self.id = role_id;
+        self.id_touched = !self.id.is_empty();
+        self.title = def.title.clone();
+        self.purpose = Content::with_text(&def.purpose);
+        self.collaboration = Content::with_text(&def.collaboration);
+        self.responsibilities = def.responsibilities.clone();
+        self.deliverables = def.deliverables.clone();
+        self.boundaries = def.boundaries.clone();
+        self.tools = def.tools.clone();
+        let budget = if def.budget > 0 { def.budget } else { 2000 };
+        self.budget = Some(budget);
+        self.budget_text = budget.to_string();
+        let raw = if p.model.is_empty() { def.model.clone() } else { p.model.clone() };
+        let (base, effort) = split_model(&raw);
+        self.model = base;
+        self.effort = effort;
+        self.count = p.count.clamp(1, MAX_AGENTS);
+        self.prompt_edited = Some(def.prompt.clone()).filter(|s| !s.is_empty());
+        self.proposal = Some(p);
+    }
+
+    /// Approves the proposal with the wizard's edits, as the web's approve does.
+    fn approve(&mut self, ctx: &Ctx) -> Task<WizardMsg> {
+        let Some(id) = self.proposal.as_ref().map(|p| p.id.clone()) else {
+            return Task::none();
+        };
+        self.busy = true;
+        self.error = None;
+        let model = self.model_value();
+        let count = self.count;
+        let edits = match self.mode {
+            Mode::New => json!({ "role": self.role_json(&model), "count": count, "model": model }),
+            Mode::Existing => json!({ "count": count, "model": model }),
+        };
+        let client = ctx.client.clone();
+        client::task(
+            move || {
+                client.post::<Value>(&format!("/v1/agent-proposals/{id}/approve"), &edits)?;
+                Ok(())
+            },
+            WizardMsg::Done,
+        )
+    }
+
+    /// Rejects the proposal with the owner's reason; the reject button stays off until one is typed.
+    fn reject(&mut self, ctx: &Ctx) -> Task<WizardMsg> {
+        let reason = self.reject_reason.text().trim().to_string();
+        let Some(id) = self.proposal.as_ref().map(|p| p.id.clone()) else {
+            return Task::none();
+        };
+        if reason.is_empty() {
+            return Task::none();
+        }
+        self.busy = true;
+        self.error = None;
+        let client = ctx.client.clone();
+        client::task(
+            move || {
+                client.post::<Value>(&format!("/v1/agent-proposals/{id}/reject"), &json!({ "reason": reason }))?;
+                Ok(())
+            },
+            WizardMsg::Done,
+        )
+    }
+
     /// Saves the new role (if any), then starts the agents; as the web's spawn does.
     fn spawn(&mut self, ctx: &Ctx) -> Task<WizardMsg> {
         self.busy = true;
@@ -315,6 +420,13 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
         WizardMsg::Loaded(Ok(loaded)) => {
             let fallback = split_model(&loaded.settings.default_model).0;
             wizard.roles = loaded.roles;
+            if let Some(p) = wizard.proposal.clone().filter(|p| !p.new_role) {
+                let id = p.role_id();
+                if !wizard.roles.iter().any(|r| r.id == id) {
+                    let def = p.role_def();
+                    wizard.roles.push(RoleView { id, title: def.title.clone(), source: String::new(), def, agents: 0 });
+                }
+            }
             wizard.worker_policy = loaded.settings.model_policy.worker;
             wizard.models = loaded.models;
             if wizard.model.is_empty() {
@@ -338,6 +450,7 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
             if to < STEPS.len() && (to <= wizard.step || wizard.valid(wizard.step)) {
                 wizard.step = to;
                 wizard.editing_prompt = false;
+                wizard.rejecting = false;
             }
         }
         WizardMsg::SetMode(mode) => wizard.mode = mode,
@@ -416,7 +529,20 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
         }
         WizardMsg::Spawn => {
             if !wizard.busy {
-                return wizard.spawn(ctx);
+                return if wizard.proposal.is_some() { wizard.approve(ctx) } else { wizard.spawn(ctx) };
+            }
+        }
+        WizardMsg::OpenProposal(p) => {
+            *wizard = Wizard::fresh();
+            wizard.open = true;
+            wizard.open_proposal(p);
+            return load(ctx);
+        }
+        WizardMsg::RejectToggle => wizard.rejecting = !wizard.rejecting,
+        WizardMsg::RejectEdit(action) => wizard.reject_reason.perform(action),
+        WizardMsg::Reject => {
+            if !wizard.busy {
+                return wizard.reject(ctx);
             }
         }
     }
@@ -453,15 +579,20 @@ pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
     let next = (!last && wizard.loaded && !wizard.busy && wizard.valid(wizard.step)).then(|| WizardMsg::Go(wizard.step + 1));
     let count = plural(wizard.count, "agent");
     let forward = if last {
-        let label = match wizard.mode {
-            Mode::New => format!("Create role and spawn {count}"),
-            Mode::Existing => format!("Spawn {count}"),
+        let label = match (wizard.proposal.is_some(), wizard.mode) {
+            (true, _) => "Approve and spawn".to_string(),
+            (false, Mode::New) => format!("Create role and spawn {count}"),
+            (false, Mode::Existing) => format!("Spawn {count}"),
         };
         ui::btn(&label, None, Kind::Primary, (!wizard.busy).then_some(WizardMsg::Spawn))
     } else {
         ui::btn("Next", None, Kind::Primary, next)
     };
-    let nav = row![ui::btn("Back", None, Kind::Ghost, back), forward].spacing(8);
+    let mut nav = row![ui::btn("Back", None, Kind::Ghost, back)];
+    if last && wizard.proposal.is_some() {
+        nav = nav.push(ui::btn("Reject…", None, Kind::Danger, (!wizard.busy).then_some(WizardMsg::RejectToggle)));
+    }
+    let nav = nav.push(forward).spacing(8);
 
     let mut card = column![head, steps, scrollable(body).height(Length::Fixed(440.0))].spacing(16);
     if let Some(e) = &wizard.error {
@@ -487,16 +618,53 @@ pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
 fn body_for<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let existing = w.mode == Mode::Existing;
     let (heading, content) = match w.step {
-        0 => ("What should this agent do?", purpose_step(w)),
+        0 => ("What should this agent do?", column![proposal_card(w), purpose_step(w)].spacing(14).into()),
         1 if existing => ("The role", role_preview(w)),
         1 => ("Describe the role", role_form(w)),
         2 if existing => ("Tools & limits", existing_limits(w)),
         2 => ("Tools & limits", new_limits(w)),
         3 if existing => ("Prompt", existing_prompt(w)),
         3 => ("Prompt", prompt_step(w)),
-        _ => ("Review and spawn", review_step(w)),
+        _ => (
+            if w.proposal.is_some() { "Approve it, or reject it with a reason" } else { "Review and spawn" },
+            column![review_step(w), reject_panel(w)].spacing(14).into(),
+        ),
     };
     column![ui::mono(heading, 14.0, crate::theme::palette().ink), content].spacing(14).into()
+}
+
+/// The orchestrator's reason and the owner's instruction, shown above the purpose step.
+fn proposal_card<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let Some(p) = &w.proposal else {
+        return column![].into();
+    };
+    column![
+        ui::label("The orchestrator proposes"),
+        ui::prose(p.reason.clone()),
+        ui::label("The owner's instruction"),
+        ui::prose(p.instruction.clone()),
+    ]
+    .spacing(6)
+    .into()
+}
+
+/// The reject form: a reason is required, and the button stays off until one is typed.
+fn reject_panel<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    if w.proposal.is_none() || !w.rejecting {
+        return column![].into();
+    }
+    let send = ui::btn("Reject proposal", None, Kind::Danger, (!w.busy && !w.reject_reason.text().trim().is_empty()).then_some(WizardMsg::Reject));
+    let reason = text_editor(&w.reject_reason)
+        .placeholder("Why this agent is not needed")
+        .height(Length::Fixed(96.0))
+        .on_action(WizardMsg::RejectEdit);
+    column![
+        ui::mono("Reject this proposal", 13.0, crate::theme::palette().ink),
+        field("Reason", reason.into(), "The orchestrator reads this note."),
+        send,
+    ]
+    .spacing(14)
+    .into()
 }
 
 fn purpose_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {

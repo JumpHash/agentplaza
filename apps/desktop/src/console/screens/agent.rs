@@ -200,7 +200,17 @@ fn transcript_id() -> iced::widget::Id {
 
 /// The hub's events, while this page is open: the live `delta` text.
 pub fn stream(ctx: &Ctx) -> iced::Subscription<Msg> {
-    events::subscription(&ctx.client).map(Msg::Event)
+    // The graph's keys. A key a focused text field captures (the find box, the composer) has status Captured and never
+    // reaches here, as the web ignores keys while typing.
+    let keys = iced::event::listen_with(|event, status, _| match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) if status == iced::event::Status::Ignored => {
+            super::memory_graph::key(&key, modifiers.shift()).map(|k| Msg::Side(agent_side::SideMsg::Key(k)))
+        }
+        _ => None,
+    });
+    // The web re-reads the notes every 30 seconds as a fallback to the live events; the Memory tab ignores it when hidden.
+    let refresh = iced::time::every(Duration::from_secs(30)).map(|_| Msg::Side(agent_side::SideMsg::Refresh));
+    iced::Subscription::batch([events::subscription(&ctx.client).map(Msg::Event), keys, refresh])
 }
 
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
@@ -276,6 +286,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             if grew && !state.scrolled_up {
                 snap_to(transcript_id(), scrollable::RelativeOffset::END)
+            } else {
+                Task::none()
+            }
+        }
+        Msg::Event(e) if e.kind == "memory" => {
+            // A note of this agent changed: the Memory tab reloads (debounced in the side panel).
+            let mine = e.data.get("cid").and_then(Value::as_u64) == Some(state.cid);
+            if mine {
+                agent_side::memory_changed(&mut state.side).map(Msg::Side)
             } else {
                 Task::none()
             }
@@ -418,6 +437,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.infractions_all = !state.infractions_all;
             Task::none()
         }
+        Msg::Side(agent_side::SideMsg::Key(_) | agent_side::SideMsg::Refresh) if !matches!(state.tab, Tab::Memory) => Task::none(),
         Msg::Side(m) => agent_side::update(&mut state.side, m, ctx).map(Msg::Side),
     }
 }
