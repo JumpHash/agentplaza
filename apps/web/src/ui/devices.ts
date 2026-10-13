@@ -1,11 +1,9 @@
-import { machineImage } from '../views/floor3d/machine-model';
+import { machineImage, type Look } from '../views/floor3d/machine-model';
 // Small SVG illustrations of the plaza's machines: what each one is.
 // Built with createElementNS only (no innerHTML). Line art: strokes follow
 // currentColor, fills come from the civic-register tokens on :root.
 
 const NS = 'http://www.w3.org/2000/svg';
-
-export type DeviceKind = 'server' | 'workstation' | 'edge' | 'apple';
 
 export interface DeviceOpts {
   /** Draw a small GPU card on the device. */
@@ -111,8 +109,8 @@ function drawEdge(p: Element, active: boolean): number {
   return 80;
 }
 
-/** Flat rounded box with a front light and a top highlight line. */
-function drawApple(p: Element, active: boolean): number {
+/** Flat rounded box with a front light and a top highlight line: a Mac mini or Studio. */
+function drawMini(p: Element, active: boolean): number {
   box(p, 10, 30, 66, 30, 'var(--sheet)', { rx: 8 });
   add(p, 'line', { x1: 18, y1: 35, x2: 66, y2: 35, 'stroke-width': 1 });
   for (const y of [50, 53]) {
@@ -122,12 +120,50 @@ function drawApple(p: Element, active: boolean): number {
   return 76;
 }
 
-const DRAW: Record<DeviceKind, (p: Element, active: boolean) => number> = {
+/** A laptop, lid open: a screen with a camera dot, a base wedge with a keyboard line and a light. */
+function drawLaptop(p: Element, active: boolean): number {
+  box(p, 26, 14, 68, 46, 'var(--sheet)', { rx: 4 });
+  box(p, 31, 19, 58, 36, 'var(--paper)', { rx: 2 });
+  add(p, 'circle', { cx: 60, cy: 16.5, r: 0.9, 'stroke-width': 0.8 });
+  add(p, 'polygon', { points: '12,60 108,60 113,70 7,70', fill: 'var(--sheet)' });
+  add(p, 'line', { x1: 24, y1: 65, x2: 96, y2: 65, 'stroke-width': 1 });
+  leds(p, [[102, 66]], active);
+  return 0;
+}
+
+/** A MacBook: a thin lid with a camera notch and a lit screen, on a slim aluminium base. */
+function drawMacBook(p: Element, active: boolean): number {
+  box(p, 24, 14, 72, 48, 'var(--sheet)', { rx: 6 });
+  box(p, 29, 19, 62, 38, 'var(--paper)', { rx: 3 });
+  box(p, 55, 15.5, 10, 2.5, 'var(--paper)', { rx: 1.2, 'stroke-width': 0.8 });
+  box(p, 12, 62, 96, 6, 'var(--sheet)', { rx: 3 });
+  add(p, 'line', { x1: 44, y1: 65, x2: 76, y2: 65, 'stroke-width': 1 });
+  leds(p, [[104, 65]], active);
+  return 0;
+}
+
+/** A phone standing upright: a slim body, a screen, a speaker grille and a home bar. */
+function drawPhone(p: Element, active: boolean): number {
+  box(p, 40, 8, 40, 74, 'var(--sheet)', { rx: 7 });
+  box(p, 44, 14, 32, 60, 'var(--paper)', { rx: 2 });
+  add(p, 'line', { x1: 55, y1: 11, x2: 65, y2: 11, 'stroke-width': 1 });
+  add(p, 'line', { x1: 54, y1: 78, x2: 66, y2: 78, 'stroke-width': 1.5 });
+  leds(p, [[72, 11]], active);
+  return 0;
+}
+
+const DRAW: Record<Look, (p: Element, active: boolean) => number> = {
   server: drawServer,
   workstation: drawWorkstation,
   edge: drawEdge,
-  apple: drawApple,
+  laptop: drawLaptop,
+  macbook: drawMacBook,
+  phone: drawPhone,
+  mac: drawMini,
 };
+
+/** Portable machines carry no GPU card beside them. */
+const NO_GPU_CARD: ReadonlySet<Look> = new Set<Look>(['laptop', 'macbook', 'phone']);
 
 /** A small GPU card beside the device, riser line joining it at y 46. */
 function drawGpu(p: Element, riserX: number): void {
@@ -139,28 +175,28 @@ function drawGpu(p: Element, riserX: number): void {
   box(g, 90, 56, 20, 3, 'var(--gold, #c9a227)', { stroke: 'none' });
 }
 
-/** An SVG drawing (viewBox 0 0 120 90) of a machine of `kind`. */
-export function deviceSvg(kind: DeviceKind, opts: DeviceOpts): SVGSVGElement {
+/** An SVG drawing (viewBox 0 0 120 90) of a machine of `look`. */
+export function deviceSvg(look: Look, opts: DeviceOpts): SVGSVGElement {
   const svg = document.createElementNS(NS, 'svg') as SVGSVGElement;
   svg.setAttribute('viewBox', '0 0 120 90');
   svg.setAttribute('class', 'device');
   svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', kind);
+  svg.setAttribute('aria-label', look);
   svg.setAttribute('fill', 'none');
   svg.setAttribute('stroke', 'currentColor');
   svg.setAttribute('stroke-width', '1.5');
-  const riserX = DRAW[kind](svg, opts.active);
-  if (opts.gpu) drawGpu(svg, riserX);
+  const riserX = DRAW[look](svg, opts.active);
+  if (opts.gpu && !NO_GPU_CARD.has(look)) drawGpu(svg, riserX);
   return svg;
 }
 
 /** The machine's picture on the Machines screen: a 3D toon model, or the line drawing without WebGL. */
-export function deviceVisual(kind: DeviceKind, opts: DeviceOpts): HTMLElement | SVGSVGElement {
-  const picture = machineImage(kind, opts);
-  if (!picture) return deviceSvg(kind, opts);
+export function deviceVisual(look: Look, opts: DeviceOpts): HTMLElement | SVGSVGElement {
+  const picture = machineImage(look, opts);
+  if (!picture) return deviceSvg(look, opts);
   const img = document.createElement('img');
   img.className = 'device-model';
   img.src = picture;
-  img.alt = kind;
+  img.alt = look;
   return img;
 }

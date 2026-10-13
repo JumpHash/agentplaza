@@ -383,13 +383,16 @@ export function buildFleet(fleet: FleetResponse, palette: Palette = PALETTE): Fl
       }
       cables.push({ node: n.id, segs, packets, timers: [0, 0] });
     }
-    let maxR = 0;
+    // Frame what is there: each machine's distance from the hub plus its own radius (a lone hub
+    // fills the view; a ring frames the ring), as the desktop's frame does.
+    let reach = 0;
     let maxH = 0;
     for (const s of live.values()) {
-      maxR = Math.max(maxR, s.scene.radius);
+      const [x, , z] = s.scene.center;
+      reach = Math.max(reach, Math.hypot(x, z) + s.scene.radius);
       maxH = Math.max(maxH, s.scene.center[1] * 2);
     }
-    frameInfo = { center: [0, maxH / 2, 0], radius: layout.ring + maxR };
+    frameInfo = { center: [0, maxH / 2, 0], radius: reach };
   }
 
   function update(dt: number, f: FleetResponse): void {

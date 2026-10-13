@@ -7,7 +7,16 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { outline, toonMat } from './toon';
 
-export type MachineKind = 'server' | 'workstation' | 'edge' | 'apple';
+/** A machine's kind, as the fleet reports it. */
+export type MachineKind = 'server' | 'workstation' | 'laptop' | 'edge' | 'phone';
+/** The picture a machine is drawn as: Apple's laptops are MacBooks, its other machines Mac minis and Studios. */
+export type Look = MachineKind | 'macbook' | 'mac';
+
+/** The look of a machine of `kind` made by `vendor`. */
+export function lookOf(kind: MachineKind, vendor?: string | null): Look {
+  if (vendor !== 'apple' || kind === 'phone') return kind;
+  return kind === 'laptop' ? 'macbook' : 'mac';
+}
 
 type V = [number, number, number];
 
@@ -145,29 +154,65 @@ function edge(g: THREE.Group, active: boolean): void {
 }
 
 /** A squat rounded box with a front LED and a slot, like a Mac mini. */
-function apple(g: THREE.Group, active: boolean): void {
+function mac(g: THREE.Group, active: boolean): void {
   block(g, [0.95, 0.3, 0.95], 0.14, SHEET, [0, 0.15, 0]);
   block(g, [0.22, 0.02, 0.02], 0.008, INK, [-0.2, 0.15, 0.48]);
   led(g, [0.3, 0.15, 0.48], active);
 }
 
-function build(kind: MachineKind, gpu: boolean, active: boolean): THREE.Group {
+/** A laptop with its lid open a little past upright: a slab base, a keyboard deck, a lit screen. */
+function laptop(g: THREE.Group, active: boolean): void {
+  block(g, [1.5, 0.08, 1.0], 0.03, SHEET, [0, 0.04, 0]);
+  block(g, [1.3, 0.02, 0.7], 0.008, PAPER, [0, 0.09, 0.05]);
+  const lid = new THREE.Group();
+  lid.position.set(0, 0.08, -0.5);
+  lid.rotation.x = -0.35;
+  block(lid, [1.5, 1.0, 0.05], 0.03, SHEET, [0, 0.5, 0]);
+  block(lid, [1.36, 0.86, 0.02], 0.01, active ? INFO : GLASS, [0, 0.5, 0.03], active ? 0.8 : 0);
+  g.add(lid);
+}
+
+/** A MacBook: a thin slab base, a lid with a small bezel and a camera notch, its screen lit while busy. */
+function macbook(g: THREE.Group, active: boolean): void {
+  block(g, [1.56, 0.06, 1.1], 0.03, SHEET, [0, 0.03, 0]);
+  block(g, [1.4, 0.01, 0.8], 0.004, PAPER, [0, 0.062, 0.02]);
+  const lid = new THREE.Group();
+  lid.position.set(0, 0.06, -0.55);
+  lid.rotation.x = -0.35;
+  block(lid, [1.56, 1.02, 0.035], 0.04, SHEET, [0, 0.51, 0]);
+  block(lid, [1.44, 0.9, 0.02], 0.02, active ? INFO : GLASS, [0, 0.52, 0.02], active ? 0.8 : 0);
+  block(lid, [0.1, 0.03, 0.02], 0.01, INK, [0, 0.99, 0.02]);
+  g.add(lid);
+}
+
+/** A phone standing on its edge: a slim body, a lit screen, a speaker grille and a home bar. */
+function phone(g: THREE.Group, active: boolean): void {
+  block(g, [0.5, 1.0, 0.09], 0.07, SHEET, [0, 0.5, 0]);
+  block(g, [0.44, 0.92, 0.02], 0.05, active ? INFO : GLASS, [0, 0.5, 0.05], active ? 0.8 : 0);
+  block(g, [0.12, 0.012, 0.01], 0.004, INK, [0, 0.975, 0.05]);
+  block(g, [0.16, 0.02, 0.01], 0.008, PAPER, [0, 0.06, 0.07]);
+}
+
+function build(look: Look, gpu: boolean, active: boolean): THREE.Group {
   const g = new THREE.Group();
-  if (kind === 'workstation') workstation(g, gpu, active);
-  else if (kind === 'server') server(g, gpu, active);
-  else if (kind === 'edge') edge(g, active);
-  else apple(g, active);
+  if (look === 'workstation') workstation(g, gpu, active);
+  else if (look === 'server') server(g, gpu, active);
+  else if (look === 'edge') edge(g, active);
+  else if (look === 'laptop') laptop(g, active);
+  else if (look === 'macbook') macbook(g, active);
+  else if (look === 'phone') phone(g, active);
+  else mac(g, active);
   return g;
 }
 
 /** The machine's picture as a PNG data URL, or null where WebGL is unavailable. */
-export function machineImage(kind: MachineKind, opts: { gpu: boolean; active: boolean }): string | null {
-  const key = `${kind}|${opts.gpu}|${opts.active}`;
+export function machineImage(look: Look, opts: { gpu: boolean; active: boolean }): string | null {
+  const key = `${look}|${opts.gpu}|${opts.active}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const st = openStudio();
   if (!st) return null;
-  const model = build(kind, opts.gpu, opts.active);
+  const model = build(look, opts.gpu, opts.active);
   outline(model, 0.1);
   model.traverse((o) => {
     if (o.userData.isOutline) return;

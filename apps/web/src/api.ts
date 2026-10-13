@@ -246,7 +246,13 @@ export interface PlazaUsage {
 }
 export interface MachineNode extends Machine {
   id: string;
-  kind: 'server' | 'workstation' | 'edge' | 'apple';
+  kind: FleetKind;
+  /** The maker in lower case (apple, dell, ...); null when unknown. */
+  vendor?: string | null;
+  /** The product's name, e.g. "MacBook Pro (M3 Max)"; null when unknown. */
+  model?: string | null;
+  /** Only on Macs. */
+  apple?: FleetApple | null;
   gpus: Gpu[];
   noded_port?: number;
   runs?: Run[];
@@ -344,7 +350,7 @@ export interface FleetMachine {
   backend: string;
   cpu: { model: string; cores: number; threads: number };
   memory_mib: number;
-  gpus: { name: string; vendor: string; memory_mib: number }[];
+  gpus: { name: string; vendor: string; memory_mib: number | null }[];
   storage_gib: number;
   /** The cids running there. */
   agents: number[];

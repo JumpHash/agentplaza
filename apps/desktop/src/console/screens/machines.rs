@@ -95,11 +95,23 @@ struct AgentRef {
     role_label: String,
 }
 
+/// An Apple machine's chip, as the hub reports it (only on Macs).
+#[derive(Debug, Clone)]
+struct Apple {
+    chip: String,
+    p_cores: u64,
+    e_cores: u64,
+    gpu_cores: u64,
+    unified_memory_gib: u64,
+}
+
 #[derive(Debug, Clone)]
 struct Machine {
     id: String,
     name: String,
     kind: String,
+    model: Option<String>,
+    apple: Option<Apple>,
     class: String,
     arch: String,
     backend: String,
@@ -845,8 +857,9 @@ fn kind_label(kind: &str) -> &str {
     match kind {
         "server" => "Server",
         "workstation" => "Workstation",
+        "laptop" => "Laptop",
         "edge" => "Edge",
-        "apple" => "Apple",
+        "phone" => "Phone",
         other => other,
     }
 }
@@ -864,15 +877,36 @@ fn state_tone(state: &str) -> Tone {
     }
 }
 
+/// "Apple M3 Max · 16 cores (12P + 4E) · 40-core GPU · 64 GB unified".
+fn apple_line(a: &Apple) -> String {
+    format!(
+        "{} · {} cores ({}P + {}E) · {}-core GPU · {} GB unified",
+        a.chip,
+        a.p_cores + a.e_cores,
+        a.p_cores,
+        a.e_cores,
+        a.gpu_cores,
+        a.unified_memory_gib
+    )
+}
+
 fn sentence(m: &Machine) -> String {
-    let head = format!(
-        "{} · {}-core {} on {} · {} GiB memory",
-        kind_label(&m.kind),
-        m.cpus,
-        m.arch,
-        m.backend.to_uppercase(),
-        (m.memory_mib / 1024.0).round()
-    );
+    let chip = match &m.apple {
+        Some(a) => apple_line(a),
+        None => format!(
+            "{}-core {} on {} · {} GiB memory",
+            m.cpus,
+            m.arch,
+            m.backend.to_uppercase(),
+            (m.memory_mib / 1024.0).round()
+        ),
+    };
+    let mut parts = vec![kind_label(&m.kind).to_string()];
+    if let Some(model) = &m.model {
+        parts.push(model.clone());
+    }
+    parts.push(chip);
+    let head = parts.join(" · ");
     if m.gpus.is_empty() {
         head
     } else {
@@ -997,6 +1031,14 @@ fn parse_machine(m: &Value) -> Option<Machine> {
     Some(Machine {
         name: text(m, "name"),
         kind: text(m, "kind"),
+        model: opt_text(m, "model"),
+        apple: m.get("apple").filter(|a| a.is_object()).map(|a| Apple {
+            chip: text(a, "chip"),
+            p_cores: count(a, "p_cores"),
+            e_cores: count(a, "e_cores"),
+            gpu_cores: count(a, "gpu_cores"),
+            unified_memory_gib: count(a, "unified_memory_gib"),
+        }),
         class: text(m, "class"),
         arch: text(m, "arch"),
         backend: text(m, "backend"),
@@ -1076,5 +1118,30 @@ fn parse_vm_row(v: &Value) -> VmRow {
         state: text(v, "state"),
         guest_cid: opt_count(v, "guest_cid"),
         serial: opt_text(v, "serial"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn machines_name_the_apple_chip_and_the_laptop_kind() {
+        let mac = parse_machine(&json!({
+            "id": "n1", "name": "mac", "kind": "laptop", "vendor": "apple",
+            "model": "MacBook Pro (M3 Max)", "arch": "arm64", "backend": "hvf", "cpus": 16,
+            "memory_mib": 65536,
+            "apple": {"chip": "Apple M3 Max", "p_cores": 12, "e_cores": 4, "gpu_cores": 40,
+                      "neural_cores": 16, "unified_memory_gib": 64},
+        }))
+        .expect("a machine with an id");
+        assert_eq!(
+            sentence(&mac),
+            "Laptop · MacBook Pro (M3 Max) · Apple M3 Max · 16 cores (12P + 4E) · 40-core GPU · 64 GB unified"
+        );
+        let pc = parse_machine(&json!({"id": "n0", "kind": "phone", "arch": "arm64", "backend": "kvm", "cpus": 8, "memory_mib": 4096}))
+            .expect("a machine with an id");
+        assert_eq!(sentence(&pc), "Phone · 8-core arm64 on KVM · 4 GiB memory");
     }
 }

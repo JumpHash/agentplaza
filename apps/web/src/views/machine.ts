@@ -4,12 +4,13 @@
 // serial) and its technical details, folded away.
 
 import '../styles/ops.css';
-import { api, type Agent, type MachineNode, type Overview, type ProcessUsage, type Run, type Vm, type VmUsage } from '../api';
+import { api, type Agent, type FleetApple, type MachineNode, type Overview, type ProcessUsage, type Run, type Vm, type VmUsage } from '../api';
 import { agentName, roleLabel } from '../roles';
 import { on } from '../store';
 import { ago, attempt, badge, button, empty, type Tone } from '../ui/components';
 import { deviceVisual } from '../ui/devices';
 import { h, replace } from '../ui/dom';
+import { lookOf } from './floor3d/machine-model';
 import type { Cleanup } from './index';
 
 type Stats = NonNullable<MachineNode['stats']>;
@@ -21,8 +22,9 @@ const POLL_MS = 2000;
 const KIND_LABEL: Record<MachineNode['kind'], string> = {
   server: 'Server',
   workstation: 'Workstation',
+  laptop: 'Laptop',
   edge: 'Edge',
-  apple: 'Apple',
+  phone: 'Phone',
 };
 
 // Column label, and whether the column is numeric.
@@ -64,8 +66,16 @@ function uptime(s: number): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
+// "Apple M3 Max · 16 cores (12P + 4E) · 40-core GPU · 64 GB unified".
+function chipLine(a: FleetApple): string {
+  return `${a.chip} · ${a.p_cores + a.e_cores} cores (${a.p_cores}P + ${a.e_cores}E) · ${a.gpu_cores}-core GPU · ${a.unified_memory_gib} GB unified`;
+}
+
 function sentence(m: MachineNode): string {
-  const head = `${KIND_LABEL[m.kind]} · ${m.cpus}-core ${m.arch} on ${m.backend.toUpperCase()} · ${Math.round(m.memory_mib / 1024)} GiB memory`;
+  const chip = m.apple
+    ? chipLine(m.apple)
+    : `${m.cpus}-core ${m.arch} on ${m.backend.toUpperCase()} · ${Math.round(m.memory_mib / 1024)} GiB memory`;
+  const head = [KIND_LABEL[m.kind], m.model, chip].filter(Boolean).join(' · ');
   return m.gpus.length ? `${head} · ${m.gpus.map((g) => g.name).join(', ')}` : head;
 }
 
@@ -463,7 +473,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const section = (m: MachineNode): HTMLElement => {
     const runs = m.runs ?? [];
-    const dev = deviceVisual(m.kind, { gpu: m.gpus.length > 0, active: isLive(runs) });
+    const dev = deviceVisual(lookOf(m.kind, m.vendor), { gpu: m.gpus.length > 0, active: isLive(runs) });
     dev.classList.add('mach-dev');
     const s = m.stats;
     const live = s
