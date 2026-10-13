@@ -199,11 +199,19 @@ impl Grid {
 
 /// Rasterises a walk set into a grid. Deterministic: the same set gives an equal grid.
 pub fn build(set: &WalkSet) -> Grid {
+    build_with(set, true)
+}
+
+/// The build with the shape lookup chosen: `indexed` tests each cell against the shapes of its bucket (ShapeIndex), and
+/// otherwise against every shape. Both give the same grid; the second is the reference the tests compare with.
+fn build_with(set: &WalkSet, indexed: bool) -> Grid {
     let surfaces = &set.surfaces;
     let shapes: Vec<Shape> = surfaces.iter().map(|s| Shape::new(&s.poly)).collect();
     let by_id: BTreeMap<u32, usize> = surfaces.iter().enumerate().map(|(k, s)| (s.id, k)).collect();
     let (x0, z0, cols, rows) = bounds(&shapes);
     let n = cols * rows;
+    let index = ShapeIndex::new(&shapes, x0, z0, cols, rows);
+    let every: Vec<usize> = (0..shapes.len()).collect();
 
     // The joins (two-way: Step, Ramp, Door), the falls (one-way: Drop) and the lifts (link, bottom, top, join point).
     let mut joins: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -234,7 +242,8 @@ pub fn build(set: &WalkSet) -> Grid {
     let support: Vec<Option<(usize, f64)>> = (0..n)
         .map(|c| {
             let [cx, cz] = centre_of(x0, z0, cols, c);
-            let top = highest(&shapes, surfaces, cx, cz)?;
+            let cands = if indexed { index.candidates(c, cols) } else { &every[..] };
+            let top = highest(&shapes, surfaces, cands, cx, cz)?;
             let ys = surfaces[top].height.at(cx, cz);
             let h = 0.5 * NAV_CELL;
             let corners = [[cx - h, cz - h], [cx + h, cz - h], [cx - h, cz + h], [cx + h, cz + h]];
@@ -254,12 +263,15 @@ pub fn build(set: &WalkSet) -> Grid {
     }
 
     // Lift landings: the supported, unblocked cell of each landing nearest to the join point.
+    // The supported, unblocked cells of each surface, in cell order: the nearest is the same cell as a scan of all cells.
+    let mut landing: Vec<Vec<usize>> = vec![Vec::new(); surfaces.len()];
+    for c in (0..n).filter(|&c| sup[c] >= 0 && blocked[c] == 0) {
+        landing[sup[c] as usize].push(c);
+    }
     let nearest = |s: usize, at: [f64; 2]| -> Option<usize> {
-        (0..n)
-            .filter(|&c| sup[c] == s as i32 && blocked[c] == 0)
-            .min_by(|&p, &q| {
-                dist2(centre_of(x0, z0, cols, p), at).total_cmp(&dist2(centre_of(x0, z0, cols, q), at))
-            })
+        landing[s].iter().copied().min_by(|&p, &q| {
+            dist2(centre_of(x0, z0, cols, p), at).total_cmp(&dist2(centre_of(x0, z0, cols, q), at))
+        })
     };
     let lift_ends: Vec<Option<(usize, usize)>> =
         lifts.iter().map(|&(_, a, b, at)| Some((nearest(a, at)?, nearest(b, at)?))).collect();
@@ -530,10 +542,54 @@ fn bounds(shapes: &[Shape]) -> (f64, f64, usize, usize) {
     (x0, z0, cols, rows)
 }
 
-/// The highest surface whose polygon contains (x, z) (ties go to the lowest index).
-fn highest(shapes: &[Shape], surfaces: &[WalkSurface], x: f64, z: f64) -> Option<usize> {
+/// The shapes bucketed by the cells whose centres they can hold: BUCKET cells square. A cell's candidates are the shapes
+/// of its bucket, in ascending index order, so `highest` sees them in the same order as a scan of every shape.
+const BUCKET: usize = 8;
+
+struct ShapeIndex {
+    bcols: usize,
+    buckets: Vec<Vec<usize>>,
+}
+
+impl ShapeIndex {
+    fn new(shapes: &[Shape], x0: f64, z0: f64, cols: usize, rows: usize) -> ShapeIndex {
+        if cols == 0 || rows == 0 {
+            return ShapeIndex { bcols: 0, buckets: Vec::new() };
+        }
+        let bcols = cols.div_ceil(BUCKET);
+        let brows = rows.div_ceil(BUCKET);
+        let mut buckets = vec![Vec::new(); bcols * brows];
+        // The cell range whose centres can lie in lo..hi, padded by a cell so rounding never drops one.
+        let span = |lo: f64, hi: f64, o: f64, count: usize| -> (usize, usize) {
+            let a = (((lo - o) / NAV_CELL) - 0.5).floor() as i64 - 1;
+            let b = (((hi - o) / NAV_CELL) - 0.5).ceil() as i64 + 1;
+            let last = count as i64 - 1;
+            (a.clamp(0, last) as usize, b.clamp(0, last) as usize)
+        };
+        for (s, sh) in shapes.iter().enumerate().filter(|(_, sh)| sh.poly.len() >= 3) {
+            let (i0, i1) = span(sh.min[0] - EPS, sh.max[0] + EPS, x0, cols);
+            let (j0, j1) = span(sh.min[1] - EPS, sh.max[1] + EPS, z0, rows);
+            for bj in j0 / BUCKET..=j1 / BUCKET {
+                for bi in i0 / BUCKET..=i1 / BUCKET {
+                    buckets[bj * bcols + bi].push(s);
+                }
+            }
+        }
+        ShapeIndex { bcols, buckets }
+    }
+
+    /// The shapes that may contain the centre of cell `c` (cells are `cols` wide), ascending.
+    fn candidates(&self, c: usize, cols: usize) -> &[usize] {
+        let (i, j) = (c % cols, c / cols);
+        &self.buckets[(j / BUCKET) * self.bcols + i / BUCKET]
+    }
+}
+
+/// The highest surface whose polygon contains (x, z) among `cands` (ascending shape indices; ties go to the lowest index).
+fn highest(shapes: &[Shape], surfaces: &[WalkSurface], cands: &[usize], x: f64, z: f64) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
-    for (s, sh) in shapes.iter().enumerate() {
+    for &s in cands {
+        let sh = &shapes[s];
         if !sh.contains(x, z) {
             continue;
         }
@@ -729,6 +785,26 @@ mod tests {
 
     fn surf(id: u32, poly: Vec<[f64; 2]>, height: Plane, sides: Vec<Side>) -> WalkSurface {
         WalkSurface { id, kind: SurfaceKind::Plate, poly, height, owner: format!("s{id}"), sides }
+    }
+
+    /// The reference build: every cell tested against every shape (test only).
+    fn build_brute(set: &WalkSet) -> Grid {
+        build_with(set, false)
+    }
+
+    #[test]
+    fn indexed_build_equals_brute_force_on_real_boards() {
+        for kind in ["workstation", "laptop", "edge"] {
+            let set = crate::layout::real_walk(kind);
+            let t = std::time::Instant::now();
+            let fast = build(&set);
+            let t_fast = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let slow = build_brute(&set);
+            let t_slow = t.elapsed().as_secs_f64();
+            eprintln!("GRID {kind}: indexed build {t_fast:.4} s, brute-force build {t_slow:.4} s");
+            assert_eq!(fast, slow, "{kind}: indexed build differs from brute force");
+        }
     }
 
     fn cell_walk(g: &Grid, x: f64, z: f64) -> bool {

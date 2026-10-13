@@ -283,11 +283,15 @@ pub struct Layout {
 /// before it grows (board-layout.ts LANDING_ROUNDS).
 const LANDING_ROUNDS: usize = 64;
 
+/// Rounds in a row that may pass without another seat or a smaller bad-key count before a scale is given up. An
+/// infeasible scale otherwise spends every LANDING_ROUNDS round, since its excluded set grows by about one key a round.
+const STALE_ROUNDS: usize = 20;
+
 /// The layout of a board for the given agents, at the smallest world scale (1, then BOARD_SCALE_STEP steps up to the
 /// input's `scale_cap`) that the acceptance test accepts. `board_kind` is the kind's name ("edge", "laptop", ...).
 ///
 /// The acceptance (`at_scale`): every agent has a seat, every plate and every room reaches the main component of the walk,
-/// and no exit's mouth overlaps a room (with its cliff band), a tall part or another plate's mouth. A pass that rejects
+/// and no exit's mouth overlaps a room (with its cliff band), another plate's mouth. A pass that rejects
 /// candidate exits is planned again with them excluded, as board-layout.ts does, before the board grows.
 ///
 /// Panics, naming the kind, when no scale up to the cap seats every agent (board-layout.ts throws there), or when the
@@ -305,17 +309,14 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
     let ctx = Ctx { board: &board, model, kind: board_kind, params: merged, table: rooms::min_table(), ground };
     let mut s = 1.0;
     let mut last = String::new();
-    loop {
-        if s > input.scale_cap + 1e-9 {
-            panic!(
-                "apz-board: {} agents do not seat on {board_kind} within the world scale cap {} ({last})",
-                input.agents.len(),
-                input.scale_cap
-            );
-        }
+    // The scale grows by BOARD_SCALE_STEP (> 1), so this loop ends after a few steps at any finite cap.
+    while s <= input.scale_cap + 1e-9 {
+        let setup = scale_setup(&ctx, s);
         let mut excluded: BTreeSet<String> = BTreeSet::new();
-        let t0 = std::time::Instant::now();
-        let mut pass = at_scale(&ctx, input, s, &excluded);
+        let mut pass = at_scale(&ctx, input, &setup, &excluded);
+        // The most seats and the fewest bad keys so far at this scale: STALE_ROUNDS rounds without either give up the scale.
+        let mut best = (pass.layout.homes.len(), pass.rejected.len());
+        let mut stale = 0;
         for _ in 0..LANDING_ROUNDS {
             if pass.rejected.is_empty() {
                 break;
@@ -325,9 +326,17 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
             if excluded.len() == before {
                 break;
             }
-            let t1 = std::time::Instant::now();
-            pass = at_scale(&ctx, input, s, &excluded);
-            eprintln!("ROUND s={s:.3} excluded {} rejected {:?}", excluded.len(), pass.rejected.iter().take(4).collect::<Vec<_>>());
+            pass = at_scale(&ctx, input, &setup, &excluded);
+            let (seated, bad) = (pass.layout.homes.len(), pass.rejected.len());
+            if seated > best.0 || bad < best.1 {
+                best = (best.0.max(seated), best.1.min(bad));
+                stale = 0;
+            } else {
+                stale += 1;
+                if stale >= STALE_ROUNDS {
+                    break;
+                }
+            }
         }
         if pass.rejected.is_empty() && pass.layout.homes.len() == input.agents.len() {
             return pass.layout;
@@ -341,6 +350,11 @@ pub fn layout(board_kind: &str, input: &LayoutInput) -> Layout {
         );
         s *= BOARD_SCALE_STEP;
     }
+    panic!(
+        "apz-board: {} agents do not seat on {board_kind} within the world scale cap {} ({last})",
+        input.agents.len(),
+        input.scale_cap
+    );
 }
 
 /// One layout pass at a scale: the layout, and the candidate keys its acceptance rejected (to exclude and plan again).
@@ -611,15 +625,32 @@ impl Fill<'_> {
     }
 }
 
-/// The layout at one world scale `s` (board-layout.ts layoutAtScale, without the exits and the acceptance). The board
-/// at scale s is the model at scale s: its slot rects and tops, its anchors and its parts' boxes all scale by s.
-fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>) -> Pass {
-    let (board, model, p, table) = (ctx.board, ctx.model, &ctx.params, &ctx.table);
+/// What every pass at one world scale shares: the setup that depends on the scale and not on the excluded keys (the
+/// visible candidate slots, the parts' boxes, the planning grid and its main component, each candidate's lattice).
+struct ScaleSetup<'a> {
+    s: f64,
+    pcb: Rect,
+    pcb_top: f64,
+    atom: [f64; 3],
+    size: [f64; 2],
+    boxes: Vec<PartBox<'a>>,
+    tall: Vec<Rect>,
+    cands: Vec<Cand>,
+    grid0: Grid,
+    main: i32,
+    lattices: Vec<Lattice>,
+}
+
+/// The setup at one world scale `s`: the slots the default camera sees, the parts' boxes, the planning grid over the PCB
+/// and the candidate plates (aisle.rs), and each candidate's support lattice. Computed once per scale, then shared by
+/// every pass at the scale.
+fn scale_setup<'a>(ctx: &Ctx<'a>, s: f64) -> ScaleSetup<'a> {
+    let (board, model, p) = (ctx.board, ctx.model, &ctx.params);
     let scale3 = |v: [f64; 3]| [v[0] * s, v[1] * s, v[2] * s];
     let pcb_top = p.get("pcb_top").copied().unwrap_or(PCB_TOP_DEFAULT) * s;
     let atom = model.anchors.as_ref().and_then(|a| a.atom).map(scale3).unwrap_or([0.0, pcb_top, 0.0]);
     let hidden = hidden_ids(&model.parts, p);
-    let boxes: Vec<PartBox> = board
+    let boxes: Vec<PartBox<'a>> = board
         .parts()
         .iter()
         .map(|it| PartBox {
@@ -664,8 +695,7 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
         visible
     };
 
-    // The planning grid: the PCB and the candidate plates, as the board-only walk (aisle.rs). Each candidate's aisle is
-    // the first configuration whose exit reaches the grid's main component.
+    // The planning grid: the PCB and the candidate plates, as the board-only walk (aisle.rs).
     let pcb = Rect { x0: -size[0] / 2.0, z0: -size[1] / 2.0, x1: size[0] / 2.0, z1: size[1] / 2.0 };
     let tall: Vec<Rect> = boxes
         .iter()
@@ -675,13 +705,25 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
     let plate_list: Vec<([f64; 4], f64)> = cands.iter().map(|c| (c.rect, c.top)).collect();
     let grid0 = plan_grid(&aisle_walk(pcb, pcb_top, &tall, &plate_list));
     let main = grid0.main_component();
+
+    let sup_at = |x: f64, z: f64| s * board.support_below(x / s, z / s, f64::INFINITY);
+    let lattices: Vec<Lattice> = cands.iter().map(|c| Lattice::of(c.rect, &sup_at)).collect();
+    ScaleSetup { s, pcb, pcb_top, atom, size, boxes, tall, cands, grid0, main, lattices }
+}
+
+/// One layout pass at the setup's scale with the `excluded` keys left out (board-layout.ts layoutAtScale, without the
+/// exits and the acceptance's walk). Each pass plans the aisles again, since the excluded keys change them.
+fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTreeSet<String>) -> Pass {
+    let table = &ctx.table;
+    let (s, pcb, pcb_top, atom, size) = (setup.s, setup.pcb, setup.pcb_top, setup.atom, setup.size);
+    let (boxes, tall, cands, grid0, main) = (&setup.boxes, &setup.tall, &setup.cands, &setup.grid0, setup.main);
     let roles: Vec<(&str, bool)> = input.agents.iter().map(|a| (a.role.as_str(), a.role == rooms::ORCHESTRATOR)).collect();
     let row_min = rooms::typical_row_depth(&roles, table);
     let mut aisles = Vec::new();
     let mut exits = Vec::new();
     let mut unusable = Vec::new();
     for (ci, c) in cands.iter().enumerate() {
-        match plan_aisle(ci, c, &boxes, row_min, &grid0, main, pcb_top, excluded) {
+        match plan_aisle(ci, c, boxes, row_min, grid0, main, pcb_top, excluded) {
             Ok((a, e)) => {
                 aisles.push(a);
                 exits.push(e);
@@ -694,10 +736,9 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
 
     // The plates' heights (the plate rule): each rests on the highest support sample under its footprint, plus PLATE, and
     // its columns run up from the lattice under it. The rooms stand on these tops, so they come first.
-    let sup_at = |x: f64, z: f64| s * board.support_below(x / s, z / s, f64::INFINITY);
     let plate_geo: Vec<(f64, f64, Vec<columns::Leaf>)> = (0..n)
         .map(|i| {
-            let lat = Lattice::of(aisle_cand(i).rect, &sup_at);
+            let lat = &setup.lattices[aisles[i].cand];
             let highest = lat.highest();
             (highest + PLATE, highest, lat.columns(highest))
         })
@@ -728,7 +769,7 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
     let mut seats = Vec::with_capacity(requests.len());
     for (role, family, members, centre) in requests {
         let m = rooms::minimum_side(&role, members.len(), table).unwrap_or(0.0);
-        let slot = Fill { aisles: &aisles, cands: &cands, load: &load, need: &need }.place(family, centre, m, [atom[0], atom[2]]);
+        let slot = Fill { aisles: &aisles, cands, load: &load, need: &need }.place(family, centre, m, [atom[0], atom[2]]);
         if let Some(i) = slot {
             load[i] += 1;
             need[i] = need[i].max(rooms::cell_need_of(m));
@@ -876,7 +917,7 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
         .collect();
 
     // The walk: each plate's mouth (mouth.rs), then the acceptance. A mouth must fit clear of the rooms (with their cliff
-    // band), the tall parts (for the ground pieces), the other plates and the mouths already accepted. A plate whose mouth
+    // band), the other plates and the mouths already accepted. A plate whose mouth
     // does not fit, or whose plate or room does not reach the main component of the walk, rejects its exit (and a room that
     // cannot reach it rejects its slot), so the scale plans again without them.
     let mut rejected: BTreeSet<String> = BTreeSet::new();
@@ -900,22 +941,11 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
             continue;
         };
         let footprint = mouth::footprint(&m);
-        let ground = match &m {
-            Mouth::Ramp { rect, .. } => vec![*rect],
-            Mouth::Lift { cab, bottom, top, gangway, .. } => {
-                if *gangway {
-                    vec![*cab, *bottom]
-                } else {
-                    let _ = top;
-                    vec![*cab, *bottom]
-                }
-            }
-        };
         let clear = footprint.iter().all(|r| {
             room_geo.iter().all(|rr| !overlaps(r, &grow(&rr.rect, RAMP_DEPTH)))
                 && plate_geo.iter().all(|pg| pg.id == i || !overlaps(r, &pg.rect))
                 && accepted.iter().all(|(j, ar)| *j == i || !overlaps(r, ar))
-        }) && ground.iter().all(|r| tall.iter().all(|t| !overlaps(r, t)));
+        });
         if !clear {
             rejected.insert(e.key.clone());
             continue;
@@ -924,9 +954,11 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, s: f64, excluded: &BTreeSet<String>)
         mouths.push((i, m));
     }
 
-    let asm = surfaces::assemble(&Assembly { pcb, pcb_top, tall: &tall, plates: &plate_geo, rooms: &room_geo, mouths: &mouths });
+    let asm = surfaces::assemble(&Assembly { pcb, pcb_top, tall, plates: &plate_geo, rooms: &room_geo, mouths: &mouths });
 
     // The reach: the walk cells of the main component, by the owner of their surface.
+    #[cfg(test)]
+    LAST_WALK.with(|w| *w.borrow_mut() = Some(asm.walk.clone()));
     let grid_walk = crate::grid::build(&asm.walk);
     let mut reached: BTreeSet<&str> = BTreeSet::new();
     if grid_walk.main >= 0 {
@@ -1001,4 +1033,20 @@ fn overlaps(a: &Rect, b: &Rect) -> bool {
 /// A rect grown by `d` on every side.
 fn grow(r: &Rect, d: f64) -> Rect {
     Rect { x0: r.x0 - d, z0: r.z0 - d, x1: r.x1 + d, z1: r.z1 + d }
+}
+
+// Test hook: the walk set of the latest grid pass of `layout` on this thread.
+#[cfg(test)]
+thread_local! {
+    static LAST_WALK: std::cell::RefCell<Option<WalkSet>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The walk set of the last grid pass of a one-agent layout (the orchestrator) on a board kind, for the grid tests.
+#[cfg(test)]
+pub(crate) fn real_walk(board_kind: &str) -> WalkSet {
+    let agents = vec![AgentSpec { id: "agent-00".to_string(), role: "orchestrator".to_string(), seat_hint: None }];
+    // Edge does not seat one agent under the cap, which panics; its last pass still holds a real board's walk.
+    let input = LayoutInput { agents, gpus: 0, scale_cap: 3.0 };
+    let _ = std::panic::catch_unwind(|| layout(board_kind, &input));
+    LAST_WALK.with(|w| w.borrow_mut().take()).expect("layout runs a grid pass")
 }

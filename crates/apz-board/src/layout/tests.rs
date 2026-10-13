@@ -244,15 +244,36 @@ fn plate_rests_on_highest_support() {
 }
 
 
+/// Every board kind at 1, 4, 8 and 20 agents returns, or fails with its panic, in under 2 s. Timing is meaningful only in
+/// release (`cargo test -p apz-board --release`), so the test is ignored in debug builds. Each outcome is printed as TIMING.
 #[test]
-#[ignore]
-fn probe_tmp() {
-    for (kind, n) in [("edge", 1usize)] {
-        let t = std::time::Instant::now();
-        let r = std::panic::catch_unwind(|| layout(kind, &input(n, 0)));
-        match r {
-            Ok(l) => eprintln!("PROBE {kind} n={n}: ok scale {} plates {} homes {} lifts {} landings {} links {} in {:?}", l.board_scale, l.plates.len(), l.homes.len(), l.lifts.len(), l.landings.len(), l.walk.links.len(), t.elapsed()),
-            Err(e) => eprintln!("PROBE {kind} n={n}: panic {:?} in {:?}", e.downcast_ref::<String>(), t.elapsed()),
+#[cfg_attr(debug_assertions, ignore = "layout timing is asserted in release only")]
+fn every_layout_returns_within_two_seconds() {
+    let mut over = Vec::new();
+    for kind in KINDS {
+        for n in COUNTS {
+            let t = std::time::Instant::now();
+            let seated = std::panic::catch_unwind(|| layout(kind, &input(n, 0))).is_ok();
+            let secs = t.elapsed().as_secs_f64();
+            eprintln!("TIMING {kind} n={n}: {secs:.3} s, {}", if seated { "seated" } else { "failed" });
+            if secs >= 2.0 {
+                over.push(format!("{kind} n={n}: {secs:.3} s"));
+            }
         }
+    }
+    assert!(over.is_empty(), "over the 2 s budget: {over:?}");
+}
+
+/// Baseline dump for the layout-speed work: writes `layout(kind, input(4, 0))` as pretty JSON to
+/// `/tmp/apzb-{APZB_LABEL}-{kind}-n4.json` for each kind in APZB_KINDS (comma-separated; default "workstation,laptop").
+/// Ignored by default, so it runs only when named: `-- --ignored dump_layout_json`.
+#[test]
+#[ignore = "writes layout JSON for the before/after comparison"]
+fn dump_layout_json() {
+    let label = std::env::var("APZB_LABEL").unwrap_or_else(|_| "dump".to_string());
+    let kinds = std::env::var("APZB_KINDS").unwrap_or_else(|_| "workstation,laptop".to_string());
+    for kind in kinds.split(',').filter(|k| !k.is_empty()) {
+        let json = serde_json::to_string_pretty(&layout(kind, &input(4, 0))).expect("layout serializes");
+        std::fs::write(format!("/tmp/apzb-{label}-{kind}-n4.json"), json).expect("write dump");
     }
 }

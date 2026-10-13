@@ -101,10 +101,6 @@ fn bounds(pts: &[[f64; 2]]) -> Rect {
     r
 }
 
-/// A square of side `w` centred on `c`.
-fn square(c: [f64; 2], w: f64) -> Rect {
-    Rect { x0: c[0] - w / 2.0, z0: c[1] - w / 2.0, x1: c[0] + w / 2.0, z1: c[1] + w / 2.0 }
-}
 
 /// The point `p` moved `t` along `dir`.
 fn offset(p: [f64; 2], dir: [f64; 2], t: f64) -> [f64; 2] {
