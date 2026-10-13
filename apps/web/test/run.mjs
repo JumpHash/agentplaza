@@ -17,6 +17,8 @@ await build({
   platform: 'node',
   format: 'esm',
   outfile: out,
+  // Views import their stylesheets; the logic under test needs none of them.
+  loader: { '.css': 'empty' },
   logLevel: 'silent',
 });
 try {

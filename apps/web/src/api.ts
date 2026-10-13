@@ -30,6 +30,12 @@ const put = <T>(path: string, body: unknown) => call<T>('PUT', path, body);
 const patch = <T>(path: string, body: unknown) => call<T>('PATCH', path, body);
 const del = <T>(path: string) => call<T>('DELETE', path);
 
+/** A query string from the defined parameters: `?limit=50&q=x`, or `''`. */
+const query = (params: Record<string, string | number | undefined>): string => {
+  const parts = Object.entries(params).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
+  return parts.length ? `?${parts.join('&')}` : '';
+};
+
 // ---- Types -----------------------------------------------------------------
 
 export type AgentStatus = 'offline' | 'idle' | 'working';
@@ -122,7 +128,11 @@ export type DecisionAnswer =
 export interface DecisionResponse { provider: string; model: string; answers: DecisionAnswer[]; usage: { input_tokens: number } }
 export interface DecisionDefault { provider: string | null; model: string | null }
 
+/** The owner's retention limits (apid's `retention` block). `0` days keeps forever. */
+export interface Retention { conversations_max: number; conversations_days: number; posts_max: number; posts_days: number }
+
 export interface Settings {
+  retention?: Retention;
   default_model: string; orchestrator_model: string; role_models: Record<string, string>;
   model_policy: { orchestrator: string[]; worker: string[] };
   effort: string | null; max_turns: number; max_tokens: number; fetch_allow: string[];
@@ -188,6 +198,20 @@ export interface PlazaState { paused: boolean; since_ms: number; by: string; rea
 export interface BoardComment { id: string; post: string; agent_cid: number | null; author: string; body: string; created_at: number; attachments: string[] }
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[] }
 export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
+/** One pair's summary over the retained record: `last_at` and `count` are the whole record's, not the page's. */
+export interface ConversationPair { a: number; b: number; active: boolean; count: number; last_at: number }
+/** Paging and search for the conversation reads; `before` is the `next_before` of the page before. */
+export interface ConversationQuery { limit?: number; before?: number; q?: string }
+/** `GET /v1/conversations`: one page of exchanges, newest first. */
+export interface ConversationsPage {
+  conversations: Conversation[]; pairs: ConversationPair[]; active_secs: number; total: number;
+  limit: number; truncated: boolean; next_before: number | null; pairs_total: number; pairs_truncated: boolean;
+}
+/** `GET /v1/conversations/{a}/{b}`: one page of a thread, oldest first within the page. */
+export interface ThreadPage {
+  a: number; b: number; active: boolean; active_secs: number; messages: Conversation[];
+  total: number; limit: number; truncated: boolean; next_before: number | null;
+}
 export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: { cid: number; role: string; vote: string; reason: string }[]; created_at: number }
 export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
 export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
@@ -336,6 +360,9 @@ export const api = {
   /** The owner comments on a board post. */
   commentOnPost: (postId: string, text: string) => post<BoardComment>(`/v1/board/${postId}/comments`, { text }),
   conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
+  conversationsPage: (q: ConversationQuery = {}) => get<ConversationsPage>(`/v1/conversations${query({ limit: q.limit, before: q.before, q: q.q })}`),
+  conversationThread: (a: number, b: number, q: ConversationQuery = {}) =>
+    get<ThreadPage>(`/v1/conversations/${a}/${b}${query({ limit: q.limit, before: q.before, q: q.q })}`),
   motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
   decide: (id: string, decision: 'approve' | 'reject', reason: string) => post<Motion>(`/v1/motions/${id}/decide`, { decision, reason }),
   treasury: () => get<Treasury>('/v1/treasury'),

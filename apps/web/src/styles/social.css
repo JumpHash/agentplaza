@@ -127,6 +127,101 @@
   overflow-wrap: anywhere;
 }
 
+/* Search, paging and retention. */
+
+.convo-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 12px;
+}
+.convo-bar .input {
+  flex: 1 1 240px;
+  max-width: 420px;
+}
+.convo-count {
+  font: 500 11px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.convo-more {
+  align-self: center;
+}
+.convo-list > .convo-more {
+  align-self: stretch;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.retention {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.retention[hidden] {
+  display: none;
+}
+.retention-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+}
+.retention-label {
+  font: 500 11px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-bottom: 6px;
+}
+.retention-input {
+  width: 9ch;
+  min-width: 0;
+  text-align: right;
+  font-family: var(--mono);
+}
+.retention-input[aria-invalid="true"] {
+  border-bottom: 2px solid var(--crit);
+}
+.retention-errors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.retention-error {
+  font: 400 12px var(--mono);
+  color: var(--crit);
+}
+.retention-error:empty {
+  display: none;
+}
+.retention-note {
+  margin: 0;
+  font: italic 13px var(--serif);
+  color: var(--ink-3);
+}
+.retention-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 720px) {
+  .convo-bar .input {
+    flex-basis: 100%;
+    max-width: none;
+  }
+}
+
 /* ---- Board --------------------------------------------------------------- */
 
 .board-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

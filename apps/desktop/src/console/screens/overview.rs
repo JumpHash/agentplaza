@@ -8,17 +8,27 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::alignment::Vertical;
-use iced::widget::{button, column, container, row, scrollable, space, text_input};
-use iced::{Element, Length, Task};
+use iced::font::{Style as FontStyle, Weight};
+use iced::keyboard::{key::Named, Key};
+use iced::widget::text::{Span, Wrapping};
+use iced::widget::{button, column, container, rich_text, row, scrollable, space, span, text, text_editor, Space};
+use iced::{Background, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme::{self, INK, INK_2, INK_3, OK, SIGNAL};
+use crate::theme::{self, INK, INK_2, INK_3, OK, RULE, RULE_FAINT, SIGNAL};
 
 const FEED_MAX: usize = 40;
 const FLEET_COLS: usize = 4;
+/// The web's `info` tone (dark ground): a working agent.
+const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
+const SERIF_BOLD: Font = Font { weight: Weight::Bold, ..theme::SERIF };
+const SERIF_ITALIC: Font = Font { style: FontStyle::Italic, ..theme::SERIF };
+const MONO_BOLD: Font = Font { weight: Weight::Bold, ..theme::MONO };
+const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::MONO };
+const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::MONO };
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -27,7 +37,7 @@ pub struct State {
     agents: Vec<Agent>,
     feed: Vec<Item>,
     cursors: HashMap<u64, u64>,
-    goal: String,
+    goal: text_editor::Content,
     sending: bool,
     note: Option<String>,
     chat_error: Option<String>,
@@ -39,8 +49,8 @@ pub enum Msg {
     Go(Id),
     /// One poll of the hub: the overview, the fleet and the new transcript entries.
     Loaded(Result<Snapshot, String>),
-    /// The orchestrator goal text changed.
-    Goal(String),
+    /// An edit to the orchestrator goal.
+    Goal(text_editor::Action),
     /// Send the goal to the orchestrator.
     Send,
     /// The chat message was accepted or refused.
@@ -155,9 +165,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.overview = None;
             state.error = Some(e);
         }
-        Msg::Goal(text) => state.goal = text,
+        Msg::Goal(action) => state.goal.perform(action),
         Msg::Send => {
-            let text = state.goal.trim().to_string();
+            let text = state.goal.text().trim().to_string();
             let Some(cid) = state.agents.iter().find(|a| a.tier == "orchestrator").map(|a| a.cid) else {
                 return Task::none();
             };
@@ -175,7 +185,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Sent(Ok(_)) => {
             state.sending = false;
-            state.goal.clear();
+            state.goal = text_editor::Content::new();
             state.note = Some("Sent to the orchestrator".into());
         }
         Msg::Sent(Err(e)) => {
@@ -189,9 +199,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let stats = match &state.overview {
         Some(o) => stat_row(o),
-        None => ui::empty("alert", "apid is unreachable", "Start apid, then reload."),
+        None => empty("alert", "apid is unreachable", "Start apid, then reload."),
     };
-    let mut page = column![stats].spacing(18);
+    let mut page = column![stats].spacing(26);
     if let Some(e) = &state.error {
         page = page.push(ui::error_line(e));
     }
@@ -200,7 +210,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             container(orchestrator(state)).width(Length::FillPortion(1)),
             container(activity(state)).width(Length::FillPortion(1)),
         ]
-        .spacing(16),
+        .spacing(22),
     );
     page = page.push(fleet(&state.agents));
     ui::sheet(ui::view_head("Overview", vec![]), page.into())
@@ -210,106 +220,142 @@ fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
     let open = o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
     let done = o.tasks.get("done").copied().unwrap_or(0);
     row![
-        stat(
-            "Agents",
-            o.agents.total.to_string(),
-            format!("{} working · {} offline", o.agents.working, o.agents.offline),
-        ),
+        stat("Agents", o.agents.total.to_string(), format!("{} working · {} offline", o.agents.working, o.agents.offline)),
         stat("Open tasks", open.to_string(), format!("{done} done")),
         stat("Worker model", model_name(&o.default_model), model_provider(&o.default_model)),
         stat("Orchestrator model", model_name(&o.orchestrator_model), model_provider(&o.orchestrator_model)),
     ]
-    .spacing(16)
+    .spacing(22)
     .into()
 }
 
+/// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line.
 fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
-    container(column![ui::label(label), ui::mono(value, 26.0, INK), ui::faint(sub)].spacing(8))
-        .padding(14.0)
+    let body = column![
+        text(value).font(MONO_BOLD).size(34.0).color(INK),
+        text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(INK_3),
+        text(sub).font(SERIF_ITALIC).size(13.0).color(INK_2),
+    ]
+    .spacing(6);
+    container(body)
+        .padding(Padding { top: 14.0, right: 16.0, bottom: 16.0, left: 16.0 })
         .width(Length::FillPortion(1))
-        .style(theme::boxed)
+        .height(Length::Fill)
+        .style(rule_box)
         .into()
 }
 
 fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
     let Some(orch) = state.agents.iter().find(|a| a.tier == "orchestrator") else {
-        return ui::card(
-            "Orchestrator",
-            ui::empty("orchestrator", "No orchestrator connected", "Add the orchestrator role to the fleet to delegate work by goal."),
+        return card(
+            card_title("Orchestrator"),
+            empty("orchestrator", "No orchestrator connected", "Add the orchestrator role to the fleet to delegate work by goal."),
+            false,
         );
     };
-    let (status, tone) = match orch.status.as_str() {
-        "working" => ("Working", SIGNAL),
-        "idle" => ("Idle", OK),
-        _ => ("Offline", INK_3),
+    let (status, tone, filled) = match orch.status.as_str() {
+        "working" => ("Working", INFO, false),
+        "idle" => ("Idle", OK, true),
+        _ => ("Offline", INK_2, false),
     };
+    let head = row![
+        ui::icon::<Msg>("orchestrator", 15.0, INK),
+        text(name(orch).to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(INK),
+        ui::faint(orch.role_label.clone()),
+        marker_tag(status, tone, filled),
+    ]
+    .spacing(10)
+    .align_y(Vertical::Center);
+
+    let goal = text_editor(&state.goal)
+        .placeholder("Tell the orchestrator what you want done…")
+        .on_action(Msg::Goal)
+        .key_binding(|press| {
+            if matches!(press.key, Key::Named(Named::Enter)) && (press.modifiers.control() || press.modifiers.logo()) {
+                return Some(text_editor::Binding::Custom(Msg::Send));
+            }
+            text_editor::Binding::from_key_press(press)
+        })
+        .font(theme::SERIF)
+        .size(15.0)
+        .padding(Padding { top: 6.0, right: 0.0, bottom: 7.0, left: 0.0 })
+        .height(Length::Fixed(84.0))
+        .style(|_: &Theme, _| text_editor::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            placeholder: INK_3,
+            value: INK,
+            selection: SIGNAL,
+        });
+
     let mut body = column![
+        text(format!("Plans the work and delegates it to the fleet · {}", orch.model)).font(theme::SERIF).size(15.0).color(INK_2),
+        column![goal, rule(INK)],
         row![
-            ui::icon::<Msg>("orchestrator", 16.0, INK),
-            ui::mono(name(orch), 15.0, INK),
-            ui::faint(orch.role_label.clone()),
-            ui::mono(status, 11.0, tone),
-        ]
-        .spacing(10)
-        .align_y(Vertical::Center),
-        ui::prose(format!("Plans the work and delegates it to the fleet · {}", orch.model)).size(13.0).color(INK_2),
-        text_input("Tell the orchestrator what you want done…", &state.goal)
-            .on_input(Msg::Goal)
-            .on_submit(Msg::Send)
-            .padding(10.0)
-            .style(theme::input),
-        row![
-            ui::faint("Enter to send"),
+            ui::faint("Ctrl+Enter to send"),
             space::horizontal(),
-            ui::btn("Open transcript", None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(orch.cid)))),
+            link("Open transcript", 14.0, Msg::Go(Id::Agent(orch.cid))),
             ui::btn("Send", Some("send"), ui::Kind::Primary, (!state.sending).then_some(Msg::Send)),
         ]
-        .spacing(10)
+        .spacing(14)
         .align_y(Vertical::Center),
     ]
-    .spacing(12);
+    .spacing(14);
     if let Some(n) = &state.note {
         body = body.push(ui::faint(n.as_str()));
     }
     if let Some(e) = &state.chat_error {
         body = body.push(ui::error_line(e));
     }
-    ui::card("Orchestrator", body.into())
+    card(head.into(), body.into(), false)
 }
 
 fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
-    let now = now_ms();
-    let mut list = column![].spacing(10);
-    if state.feed.is_empty() {
-        list = list.push(ui::faint("Waiting for activity…"));
-    }
-    for item in &state.feed {
-        let who = state
-            .agents
-            .iter()
-            .find(|a| a.cid == item.cid)
-            .map(name)
-            .unwrap_or_else(|| format!("agent {}", item.cid));
-        list = list.push(
-            row![
-                ui::faint(ago(now, item.at_ms)).width(Length::Fixed(64.0)),
-                ui::btn(&who, None, ui::Kind::Ghost, Some(Msg::Go(Id::Agent(item.cid)))),
-                ui::mono(item.line.clone(), 12.0, INK_2),
-            ]
-            .spacing(10)
-            .align_y(Vertical::Center),
-        );
-    }
-    ui::card("Activity", scrollable(list).height(Length::Fixed(360.0)).into())
+    let body: Element<'a, Msg> = if state.feed.is_empty() {
+        container(ui::faint("Waiting for activity…"))
+            .padding(Padding { top: 6.0, right: 20.0, bottom: 6.0, left: 20.0 })
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .into()
+    } else {
+        let now = now_ms();
+        let mut list = column![].spacing(0);
+        for item in &state.feed {
+            let who = state
+                .agents
+                .iter()
+                .find(|a| a.cid == item.cid)
+                .map(name)
+                .unwrap_or_else(|| format!("agent {}", item.cid));
+            list = list.push(
+                container(
+                    row![
+                        ui::faint(ago(now, item.at_ms)).width(Length::Fixed(72.0)),
+                        link(&who, 13.0, Msg::Go(Id::Agent(item.cid))),
+                        text(item.line.clone()).font(theme::SERIF).size(13.0).color(INK_2).wrapping(Wrapping::None).width(Length::Fill),
+                    ]
+                    .spacing(8)
+                    .align_y(Vertical::Center),
+                )
+                .padding(Padding { top: 6.0, right: 20.0, bottom: 6.0, left: 20.0 })
+                .width(Length::Fill),
+            );
+        }
+        // The web feed scrolls past 360px and is shorter than that when it has less to show.
+        container(scrollable(container(list).padding(Padding { top: 8.0, right: 0.0, bottom: 8.0, left: 0.0 })))
+            .max_height(360.0)
+            .into()
+    };
+    card(card_title("Activity"), body, true)
 }
 
 fn fleet<'a>(agents: &'a [Agent]) -> Element<'a, Msg> {
     if agents.is_empty() {
-        return ui::card("Fleet", ui::empty("agents", "No agents yet", "Agents appear here as their VMs connect."));
+        return card(card_title("Fleet"), empty("agents", "No agents yet", "Agents appear here as their VMs connect."), false);
     }
-    let mut grid = column![].spacing(10);
+    let mut grid = column![].spacing(8);
     for chunk in agents.chunks(FLEET_COLS) {
-        let mut line = row![].spacing(10);
+        let mut line = row![].spacing(8);
         for a in chunk {
             line = line.push(tile(a));
         }
@@ -318,14 +364,14 @@ fn fleet<'a>(agents: &'a [Agent]) -> Element<'a, Msg> {
         }
         grid = grid.push(line);
     }
-    ui::card("Fleet", grid.into())
+    card(card_title("Fleet"), container(grid).padding(16).width(Length::Fill).into(), true)
 }
 
 fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
-    let tone = match a.status.as_str() {
-        "working" => SIGNAL,
-        "idle" => OK,
-        _ => INK_3,
+    let (tone, filled) = match a.status.as_str() {
+        "working" => (INFO, true),
+        "idle" => (OK, true),
+        _ => (INK_3, false),
     };
     let sub = match &a.work {
         Some(w) => clip(&w.prompt, 60),
@@ -333,18 +379,113 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         None => a.role_label.clone(),
     };
     let body = column![
-        row![ui::mono("●", 12.0, tone), ui::mono(name(a), 13.0, INK)]
+        row![marker(tone, filled), text(name(a)).font(SERIF_BOLD).size(13.0).color(INK)]
             .spacing(8)
             .align_y(Vertical::Center),
         ui::faint(sub),
     ]
-    .spacing(4);
+    .spacing(2);
     button(body)
         .on_press(Msg::Go(Id::Agent(a.cid)))
-        .style(theme::register_row(false))
-        .padding(10.0)
+        .style(tile_style)
+        .padding(12.0)
         .width(Length::FillPortion(1))
         .into()
+}
+
+/// A fleet tile: a ruled box on the surface, lifted on hover.
+fn tile_style(_: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: Some(Background::Color(if hovered { RULE_FAINT } else { theme::HOVER })),
+        text_color: INK,
+        border: Border { color: if hovered { INK_3 } else { RULE }, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
+}
+
+/// A card in the web's language: a mono head over a rule, the body below; a 1px rule frames it.
+/// The body is flush (no padding) when the content brings its own.
+fn card<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>, flush: bool) -> Element<'a, Msg> {
+    let head = container(head)
+        .padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 })
+        .width(Length::Fill);
+    let body = container(body).padding(if flush { 0.0 } else { 16.0 }).width(Length::Fill);
+    container(column![head, rule(RULE), body])
+        .width(Length::Fill)
+        .style(rule_box)
+        .into()
+}
+
+/// A card's title: mono, semibold, uppercase.
+fn card_title<'a>(title: &str) -> Element<'a, Msg> {
+    text(title.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(INK).into()
+}
+
+/// An empty state: an icon, a bold mono line, a faint serif sentence; centred.
+fn empty<'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, Msg> {
+    container(
+        column![
+            ui::icon::<Msg>(icon_name, 16.0, INK_3),
+            text(title.to_string()).font(MONO_BOLD).size(13.0).color(INK),
+            text(sentence.to_string()).font(theme::SERIF).size(14.0).color(INK_3),
+        ]
+        .spacing(10)
+        .align_x(iced::alignment::Horizontal::Center),
+    )
+    .padding(Padding { top: 40.0, right: 16.0, bottom: 40.0, left: 16.0 })
+    .width(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Center)
+    .into()
+}
+
+/// A status tag: a square marker and an uppercase mono label in its colour.
+fn marker_tag<'a>(label: &str, color: Color, filled: bool) -> Element<'a, Msg> {
+    row![marker(color, filled), text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(color)]
+        .spacing(7)
+        .align_y(Vertical::Center)
+        .into()
+}
+
+/// The web's 8px square mark: outlined, or filled when it stands for ok, info or a working agent.
+fn marker<'a>(color: Color, filled: bool) -> Element<'a, Msg> {
+    container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
+        .style(move |_: &Theme| container::Style {
+            background: filled.then_some(Background::Color(color)),
+            border: Border { color, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A text link: serif, underlined, as the web's links are.
+fn link<'a>(label: &str, size: f32, on_press: Msg) -> Element<'a, Msg> {
+    let spans: Vec<Span<'_, ()>> = vec![span(label.to_string()).underline(true).font(theme::SERIF).size(size).color(INK)];
+    button(rich_text(spans))
+        .on_press(on_press)
+        .padding(0)
+        .style(|_: &Theme, status: button::Status| button::Style {
+            background: None,
+            text_color: if matches!(status, button::Status::Hovered) { SIGNAL } else { INK },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A full-width ruled line.
+fn rule<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style { background: Some(Background::Color(color)), ..Default::default() })
+        .into()
+}
+
+/// A ruled box with no fill: the web's `.card` and `.stat` frame.
+fn rule_box(_: &Theme) -> container::Style {
+    container::Style {
+        border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
 }
 
 /// The name an agent chose for itself, or "Unnamed" while it has none.
@@ -390,7 +531,8 @@ fn clip(s: &str, max: usize) -> String {
 fn ago(now: u64, at: u64) -> String {
     let s = now.saturating_sub(at) / 1000;
     match s {
-        0..=59 => format!("{s}s ago"),
+        0..=4 => "just now".to_string(),
+        5..=59 => format!("{s}s ago"),
         60..=3599 => format!("{}m ago", s / 60),
         3600..=86399 => format!("{}h ago", s / 3600),
         _ => format!("{}d ago", s / 86400),
