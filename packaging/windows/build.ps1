@@ -75,6 +75,8 @@ try {
     Write-Output "Building $msi"
     wix build $wxs -arch $Arch -d "Version=$Version" -d "StageDir=$Stage" -o $msi
     if ($LASTEXITCODE -ne 0) { throw "wix build failed (exit $LASTEXITCODE)" }
+    # WiX also writes the MSI's debug symbols (.wixpdb) beside it: not a deliverable.
+    Remove-Item -LiteralPath ([IO.Path]::ChangeExtension($msi, '.wixpdb')) -Force -ErrorAction SilentlyContinue
 
     if ($signing) {
         Write-Output "Signing $msi"
