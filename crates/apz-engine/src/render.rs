@@ -566,22 +566,37 @@ impl FleetGpu {
     }
 }
 
-/// The GPU-animated batches (`hw_anim.wgsl`): fan spins and LED blinks, each batch one indexed draw in the main
-/// pass. The batches upload when the statics' version changes; the pipelines are built on first use.
+/// The GPU-animated batches (`hw_anim.wgsl`): fan spins and LED blinks, each batch an indexed draw in the main
+/// pass (lit, and its ink hull in the outline pass), and the spins also in the sun's shadow pass. The batches upload
+/// when the statics' version changes; the pipelines are built on first use. The globals are the floor's: the main
+/// pass binds them at group 0 and the shadow pass its own, so this holds no uniform.
 struct AnimGpu {
-    layout: wgpu::BindGroupLayout,
-    globals: wgpu::Buffer,
-    group: wgpu::BindGroup,
+    module: wgpu::ShaderModule,
+    scene_layout: wgpu::PipelineLayout,
+    shadow_layout: wgpu::PipelineLayout,
     /// The statics' version the batches were uploaded for.
     version: Option<u64>,
     batches: Vec<GpuAnimBatch>,
-    /// The spin and blink pipelines, for a sample count.
-    pipelines: Option<(u32, wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    /// The main pass's pipelines, for a sample count.
+    pipelines: Option<(u32, AnimPipelines)>,
+    /// The sun's shadow pipeline (position only), built once a batch casts a shadow.
+    shadow: Option<wgpu::RenderPipeline>,
 }
 
-/// One animated batch on the GPU: its `AnimVertex` stream (18 floats each), its indices and its kind.
+/// The main pass's pipelines of hw_anim.wgsl: lit spins and blinks, and their ink hulls.
+struct AnimPipelines {
+    spin: wgpu::RenderPipeline,
+    blink: wgpu::RenderPipeline,
+    spin_outline: wgpu::RenderPipeline,
+    blink_outline: wgpu::RenderPipeline,
+}
+
+/// One animated batch on the GPU: its `AnimVertex` stream (18 floats each), its indices, its kind, whether it is an
+/// ink hull, and whether it casts a shadow.
 struct GpuAnimBatch {
     kind: super::scene::AnimKind,
+    outline: bool,
+    shadow: bool,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     count: u32,
@@ -603,78 +618,85 @@ fn anim_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 impl AnimGpu {
-    fn new(device: &wgpu::Device) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    /// `globals` is the floor's globals layout (group 0 of the main pass); `shadow_globals` the shadow pass's.
+    fn new(device: &wgpu::Device, globals: &wgpu::BindGroupLayout, shadow_globals: &wgpu::BindGroupLayout) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hardware animation"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
+            source: wgpu::ShaderSource::Wgsl(crate::hardware::HW_ANIM_WGSL.into()),
         });
-        // hw_anim.wgsl's Globals is the same block as fleet_anim.wgsl's (view-projection, then the clock).
-        let globals = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hardware animation globals"),
-            size: std::mem::size_of::<FleetGlobals>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hardware animation"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
+            bind_group_layouts: &[globals],
+            push_constant_ranges: &[],
         });
-        AnimGpu { layout, globals, group, version: None, batches: Vec::new(), pipelines: None }
+        let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hardware animation shadow"),
+            bind_group_layouts: &[shadow_globals],
+            push_constant_ranges: &[],
+        });
+        AnimGpu { module, scene_layout, shadow_layout, version: None, batches: Vec::new(), pipelines: None, shadow: None }
     }
 
-    /// This frame: the globals (the clock wrapped at `WRAP_PERIOD`), the batches when the statics changed, and the
-    /// pipelines for `samples` (built once per sample count, and only when there is something to draw).
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, samples: u32, view_proj: Mat4, time: f32, version: u64, batches: &[super::scene::AnimBatch]) {
-        let globals = FleetGlobals { view_proj: view_proj.to_cols_array_2d(), time: [time % WRAP_PERIOD, 0.0, 0.0, 0.0] };
-        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+    /// This frame: the batches when the statics changed, and the pipelines for `samples` and the shadow pass (built
+    /// once, and only when there is something to draw).
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, samples: u32, version: u64, batches: &[super::scene::AnimBatch]) {
         if self.version != Some(version) {
-            // Outline hulls are not drawn here yet (no vs_outline in hw_anim.wgsl): only the Mesh batches.
             self.batches = batches
                 .iter()
-                .filter(|b| !b.vertices.is_empty() && matches!(b.draw.kind, DrawKind::Mesh))
+                .filter(|b| !b.vertices.is_empty() && matches!(b.draw.kind, DrawKind::Mesh | DrawKind::Outline))
                 .map(|b| upload_anim(device, queue, b))
                 .collect();
             self.version = Some(version);
         }
-        if !self.batches.is_empty() && self.pipelines.as_ref().map(|p| p.0) != Some(samples) {
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("hardware animation"),
-                source: wgpu::ShaderSource::Wgsl(crate::hardware::HW_ANIM_WGSL.into()),
-            });
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("hardware animation"),
-                bind_group_layouts: &[&self.layout],
-                push_constant_ranges: &[],
-            });
-            let spin = anim_pipeline(device, &module, &layout, format, samples, "vs_spin", "fs_color");
-            let blink = anim_pipeline(device, &module, &layout, format, samples, "vs_blink", "fs_emissive");
-            self.pipelines = Some((samples, spin, blink));
+        if self.batches.is_empty() {
+            return;
+        }
+        if self.pipelines.as_ref().map(|p| p.0) != Some(samples) {
+            let (m, layout) = (&self.module, &self.scene_layout);
+            let target = Some((format, samples));
+            let pipelines = AnimPipelines {
+                spin: anim_pipeline(device, m, layout, target, "vs_spin", Some("fs_color"), None),
+                blink: anim_pipeline(device, m, layout, target, "vs_blink", Some("fs_emissive"), None),
+                spin_outline: anim_pipeline(device, m, layout, target, "vs_spin_outline", Some("fs_outline"), Some(wgpu::Face::Front)),
+                blink_outline: anim_pipeline(device, m, layout, target, "vs_blink_outline", Some("fs_outline"), Some(wgpu::Face::Front)),
+            };
+            self.pipelines = Some((samples, pipelines));
+        }
+        if self.shadow.is_none() && self.batches.iter().any(|b| b.shadow) {
+            self.shadow = Some(anim_pipeline(device, &self.module, &self.shadow_layout, None, "vs_spin_shadow", None, None));
         }
     }
 
-    /// Draws each batch with its kind's pipeline: one indexed draw per batch. Returns the draws issued.
+    /// Draws each batch with its pipeline: one indexed draw per batch. Returns the draws issued. The floor's globals
+    /// are bound at group 0 by the caller.
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> usize {
-        let Some((_, spin, blink)) = &self.pipelines else { return 0 };
-        if self.batches.is_empty() {
-            return 0;
-        }
-        pass.set_bind_group(0, &self.group, &[]);
+        let Some((_, p)) = &self.pipelines else { return 0 };
         for b in &self.batches {
-            pass.set_pipeline(match b.kind {
-                super::scene::AnimKind::Spin => spin,
-                super::scene::AnimKind::Blink => blink,
+            pass.set_pipeline(match (b.kind, b.outline) {
+                (super::scene::AnimKind::Spin, false) => &p.spin,
+                (super::scene::AnimKind::Blink, false) => &p.blink,
+                (super::scene::AnimKind::Spin, true) => &p.spin_outline,
+                (super::scene::AnimKind::Blink, true) => &p.blink_outline,
             });
             pass.set_vertex_buffer(0, b.vertices.slice(..));
             pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..b.count, 0, 0..1);
         }
         self.batches.len()
+    }
+
+    /// The sun's shadow of the spinning parts that cast one. Returns the draws issued.
+    fn draw_shadow(&self, pass: &mut wgpu::RenderPass<'_>) -> usize {
+        let Some(shadow) = &self.shadow else { return 0 };
+        pass.set_pipeline(shadow);
+        let mut issued = 0;
+        for b in self.batches.iter().filter(|b| b.shadow) {
+            pass.set_vertex_buffer(0, b.vertices.slice(..));
+            pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..b.count, 0, 0..1);
+            issued += 1;
+        }
+        issued
     }
 }
 
@@ -706,39 +728,42 @@ fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::Ani
         mapped_at_creation: false,
     });
     queue.write_buffer(&index_buffer, 0, index_bytes);
-    GpuAnimBatch { kind: b.kind, vertices, indices: index_buffer, count: indices.len() as u32 }
+    let outline = matches!(b.draw.kind, DrawKind::Outline);
+    let shadow = !outline && b.draw.cast_shadow && b.kind == super::scene::AnimKind::Spin;
+    GpuAnimBatch { kind: b.kind, outline, shadow, vertices, indices: index_buffer, count: indices.len() as u32 }
 }
 
-/// One opaque, depth-tested pipeline of hw_anim.wgsl: the vertex entry `vs` and the fragment entry `fs`.
+/// One depth-tested pipeline of hw_anim.wgsl: the vertex entry `vs`, the fragment entry `fs` when the pass has
+/// colour (`scene`: the target format and sample count), and the face culled. The shadow pass has no colour target.
 fn anim_pipeline(
     device: &wgpu::Device,
     module: &wgpu::ShaderModule,
     layout: &wgpu::PipelineLayout,
-    format: wgpu::TextureFormat,
-    samples: u32,
+    scene: Option<(wgpu::TextureFormat, u32)>,
     vs: &str,
-    fs: &str,
+    fs: Option<&str>,
+    cull: Option<wgpu::Face>,
 ) -> wgpu::RenderPipeline {
     let buffers = [anim_layout()];
+    let format = scene.map_or(wgpu::TextureFormat::Rgba8Unorm, |s| s.0);
+    let targets = [Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+    let fragment = fs.map(|fs| wgpu::FragmentState { module, entry_point: Some(fs), compilation_options: Default::default(), targets: &targets });
+    let shadow = scene.is_none();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("hardware animation"),
         layout: Some(layout),
         vertex: wgpu::VertexState { module, entry_point: Some(vs), compilation_options: Default::default(), buffers: &buffers },
-        primitive: wgpu::PrimitiveState::default(),
+        primitive: wgpu::PrimitiveState { cull_mode: cull, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH,
             depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: Default::default(),
-            bias: Default::default(),
+            // The shadow pass takes the floor's shadow bias.
+            bias: if shadow { wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 } } else { Default::default() },
         }),
-        multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
-        fragment: Some(wgpu::FragmentState {
-            module,
-            entry_point: Some(fs),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-        }),
+        multisample: wgpu::MultisampleState { count: scene.map_or(1, |s| s.1), mask: !0, alpha_to_coverage_enabled: false },
+        fragment,
         multiview: None,
         cache: None,
     })
@@ -1132,7 +1157,7 @@ impl Pipeline {
             fade_alpha: HashMap::new(),
             fade_time: None,
             fleet: FleetGpu::new(device, queue),
-            anim: AnimGpu::new(device),
+            anim: AnimGpu::new(device, &globals_layout, &shadow_globals_layout),
             physical: Rect::default(),
             background: wgpu::Color::BLACK,
             clear_alpha: 1.0,
@@ -1725,11 +1750,11 @@ impl Primitive {
             sky_ground: v4(sky_ground, 0.0),
             point_pos,
             point_color,
-            counts: [f.lights.len().min(4) as f32, 1.0 / SHADOW_SIZE as f32, 0.0, 0.0],
+            counts: [f.lights.len().min(4) as f32, 1.0 / SHADOW_SIZE as f32, f.time % WRAP_PERIOD, 0.0],
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         p.fleet.prepare(device, queue, p.format, samples, proj * view, f.time, f.animated.as_ref());
-        p.anim.prepare(device, queue, p.format, samples, proj * view, f.time, f.statics_version, f.anim_batches.as_slice());
+        p.anim.prepare(device, queue, p.format, samples, f.statics_version, f.anim_batches.as_slice());
         let bg = w.background;
         // Premultiplied: the clear's alpha scales its colour, so a card's clear of 0 is fully transparent.
         let a = f64::from(p.clear_alpha);
@@ -2013,6 +2038,9 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                     pass.draw_indexed(0..mesh.count, 0, range.clone());
                 }
             }
+            for _ in 0..p.anim.draw_shadow(&mut pass) {
+                p.count(PASS_SHADOW);
+            }
         }
     {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2134,5 +2162,25 @@ mod plaza_fade_tests {
             a += (fade_target(&part, eye, focus, plaza) - a) * k;
         }
         assert!((a - 0.15).abs() < 1e-3, "settled at {a}");
+    }
+}
+
+#[cfg(test)]
+mod hw_anim_tests {
+    /// The text of WGSL function `name`, from its `fn` through the closing brace at column 0.
+    fn wgsl_fn<'a>(src: &'a str, name: &str) -> &'a str {
+        let start = src.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("no fn {name}"));
+        let close = src[start..].find("\n}\n").unwrap_or_else(|| panic!("fn {name} is not closed"));
+        &src[start..start + close + 3]
+    }
+
+    #[test]
+    fn the_anim_lighting_copies_match_the_floor() {
+        // hw_anim.wgsl copies the floor's lighting functions (WGSL has no includes): they must stay identical.
+        let floor = include_str!("floor.wgsl");
+        let anim = include_str!("shaders/hw_anim.wgsl");
+        for name in ["ramp", "sun_shadow", "attenuation", "fogged", "encode"] {
+            assert_eq!(wgsl_fn(anim, name), wgsl_fn(floor, name), "hw_anim.wgsl's {name} drifted from floor.wgsl");
+        }
     }
 }
