@@ -38,6 +38,13 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 .floor-stage-3d .floor-key.working { background: var(--signal); }
 .floor-key.idle { background: var(--ok); }
 .floor-key.offline { background: var(--ink-3); }
+/* The Machines view's status squares: online, draining amber, offline grey, revoked red. */
+.floor-key.online { background: var(--ok); }
+.floor-key.draining { background: var(--warn); }
+.floor-key.revoked { background: var(--crit); }
+/* The plaza's breadcrumb in the header: Machines › name. */
+.floor-crumb { display: inline-flex; align-items: center; gap: 6px; font: 400 11px/1.4 var(--mono); color: var(--ink-3); }
+.floor-crumb a { color: var(--ink-2); }
 .floor-card {
   position: absolute; z-index: 3; width: 300px; padding: 14px; box-sizing: border-box; border-radius: 0;
   background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--print);
@@ -47,3 +54,11 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 .floor-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s2); }
 .floor-card-head strong { font: 600 11.5px/1.35 var(--mono); }
 .floor-card-activity { font: 400 10px/1.5 var(--mono); color: var(--ink-3); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The Machines popup: the facts as a two-column list, the agents' names as links, ENTER at the foot. */
+.machine-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 0; font: 400 10px/1.5 var(--mono); }
+.machine-facts dt { color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+.machine-facts dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.machine-agents { display: flex; flex-direction: column; gap: 4px; }
+.machine-agent-names { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 400 10.5px/1.5 var(--mono); }
+.machine-agent-names a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.machine-card-foot { display: flex; justify-content: flex-end; }

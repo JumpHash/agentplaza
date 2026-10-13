@@ -7,35 +7,35 @@ import '../styles/floor.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-import { type Agent, type Conversation, type Entry } from '../api';
-import { go } from '../router';
+import { api, type Agent, type Conversation, type Entry, type FleetApple, type FleetMachine, type FleetResponse, type FleetStatus } from '../api';
+import { go, href } from '../router';
 import { agents, on } from '../store';
-import { button, clip } from '../ui/components';
+import { ago, button, clip } from '../ui/components';
 import { floorName, roleLabel } from '../roles';
 import { h } from '../ui/dom';
 import { makeRobot, ROBOT_PALETTE, robotVariant, type Robot, type RobotState } from './floor3d/robot';
-import { buildPaths, buildPlaza, buildPlazaFurniture } from './floor3d/props';
-import { buildBackdrop, buildScatter } from './floor3d/outskirts';
-import { buildRoom, roomStyle } from './floor3d/rooms';
+import { buildBackdrop } from './floor3d/outskirts';
+import { buildFleet } from './floor3d/fleet';
+import { buildRoom } from './floor3d/rooms';
 import { ground as groundTex, rng, slabSide } from './floor3d/textures';
 import { outline, sky, starfield, toonMat } from './floor3d/toon';
 import { bakeStatic } from './floor3d/bake';
 import { mountFloor2d } from './floor2d';
+import { boardHeightAt, layoutOnBoard, pathOnTraces, traceGraph, type BoardDistrict, type BoardLayout, type TraceGraph } from './floor3d/board-layout';
+import { buildModel, currentPulses, modelsFor, placeAtom, traceMeshes, type Built, type Model, type Params, type Pulses, type Trace } from './floor3d/hardware';
+import { MODELS } from './floor3d/hardware-index';
 import type { Cleanup } from './index';
 
 const PACKET_MS = 1500;
 const SPEED = 1.6; // grid units per second; one grid cell is one world unit
 const MAX_PACKETS = 60;
-const SLAB_H = 0.5; // district slab height
-const DAIS_H = 0.8; // orchestrator dais height
-const DAIS_R = 2.3;
-const RAMP = 1.5; // width of the sloped band around a district slab
-const DAIS_RAMP = 2.2; // width of the dais's sloped skirt
+const RAMP = 1; // the sloped band round a room: the same band boardHeightAt slopes over
 const GRAVITY = 9.8; // world units per second squared
 const POLAR = 0.95; // camera angle from vertical, about 55 degrees: isometric-ish
 const AZIMUTH = Math.PI / 4;
 const SOCIAL_NEAR = 9.5; // districts this close count as neighbours for a visit or a chat
-const STROLL_R = 3.1; // the stroll ring just outside the dais
+const BOARD_DROP = 14; // the night's ground sits this far under the board, so the board floats
+const GLOW_OPACITY = 0.4; // a working component's glow plate, at full strength
 const ROBOT_R = 0.55; // robot footprint radius for collisions
 const STEER = [0, 30, -30, 60, -60].map((d) => (d * Math.PI) / 180); // headings tried when a step is blocked
 const DUST_N = 90;
@@ -45,20 +45,13 @@ const LABEL_CSS =
   'font:600 10.5px/1.35 var(--mono);white-space:nowrap;' +
   'pointer-events:none;will-change:transform';
 const FIT_FILL = 0.85; // the plaza spans this share of the stage on its tighter axis
-const FIT_SEGMENTS = 48; // points round the plaza's ring that the default view must frame
 
-interface District {
-  role: string;
-  cx: number; // centre, grid units
-  cy: number;
-  r: number; // half-size (square) or radius (round), grid units
-  hue: number;
-  shape: 'square' | 'round';
-}
+/** A room on its component: its centre on the board (cx, cy), its slot's top (y) and its cell (w, d). */
+type District = BoardDistrict;
 
-/** A robot's visit, chat or stroll. In a `talk` the partner stands still, facing it. */
+/** A robot's visit or chat. In a `talk` the partner stands still, facing it. */
 interface Social {
-  phase: 'go' | 'talk' | 'stroll';
+  phase: 'go' | 'talk';
   partner: Bot | null;
   gx: number; // where it walks to, grid units
   gy: number;
@@ -74,6 +67,8 @@ interface Bot {
   tx: number; // wander target
   ty: number;
   heading: number; // radians about the vertical axis
+  route: [number, number][]; // the trace walkway still to walk to reach the goal (empty within a room)
+  routeKey: string; // the goal the route was found for
   moving: boolean;
   py: number; // height of the feet
   vy: number; // vertical speed (falling)
@@ -136,52 +131,48 @@ export function roleHue(role: string): number {
   return HUES[hash % HUES.length]!;
 }
 
-/** Districts by role around a central dais; each agent gets a console slot. */
-export function layoutDistricts(list: Agent[]): { districts: District[]; homes: Map<number, [District, number, number]> } {
-  const groups = new Map<string, Agent[]>();
-  for (const a of list) {
-    const key = a.tier === 'orchestrator' ? '' : a.role;
-    groups.set(key, [...(groups.get(key) ?? []), a]);
+/** A board's glow plate over one slot: lit while its rooms have working agents. */
+interface GlowPlate {
+  slot: string; // the slot id
+  on: string; // the part the slot lies on
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  level: number; // 0..1, eased toward whether a working agent sits in the slot
+}
+
+/** One machine's board as the plaza: the built model, its walkways, its current and its glow plates. */
+interface BoardScene {
+  key: string; // the model and its params, so a change in either rebuilds the board
+  model: Model;
+  params: Params;
+  group: THREE.Group;
+  built: Built;
+  graph: TraceGraph;
+  /** Pulses per component: the traces that start on each part (`on`); traces on no slot carry `on` ''. */
+  pulses: { on: string; pulses: Pulses }[];
+  plates: Map<string, GlowPlate>; // by the slot id
+  atom: ((t: number) => void) | null;
+}
+
+/** The board shown when no machine is known: the workstation, with its one GPU. */
+const DEFAULT_BOARD: { name: string; params: Params } = { name: 'board/workstation', params: { gpus: 1, studio: 0 } };
+
+/** The board a machine's plaza is built on, and the params its model takes (as the Machines view builds them). */
+export function boardOf(m: { kind: string; vendor?: string | null; model?: string | null; apple?: FleetApple | null; gpus: unknown[] }): { name: string; params: Params } {
+  const { board } = modelsFor(m);
+  const params: Params = { gpus: m.gpus.length, studio: m.model?.includes('Studio') ? 1 : 0 };
+  if (m.apple) {
+    params.p_cores = m.apple.p_cores;
+    params.e_cores = m.apple.e_cores;
+    params.gpu_cores = m.apple.gpu_cores;
+    params.memory_gib = m.apple.unified_memory_gib;
   }
-  const districts: District[] = [];
-  const homes = new Map<number, [District, number, number]>();
-  const place = (d: District, members: Agent[]) => {
-    districts.push(d);
-    const side = Math.max(1, Math.ceil(Math.sqrt(members.length)));
-    members.sort((a, b) => a.cid - b.cid).forEach((a, i) => {
-      const span = 1.5 * (side - 1); // homes sit 3 apart
-      const gx = d.cx - span + (i % side) * 3;
-      const gy = d.cy - span + Math.floor(i / side) * 3;
-      homes.set(a.cid, [d, gx, gy]);
-    });
-  };
-  const centre = groups.get('');
-  if (centre) place({ role: 'orchestrator', cx: 0, cy: 0, r: 2, hue: 25, shape: 'round' }, centre);
-  const roles = [...groups.keys()].filter((k) => k).sort();
-  // Each room is its style's size (bigger when crowded). Rooms share the ring by width: each gets
-  // an arc as wide as itself plus a gap, and the ring is as large as the arcs need.
-  const sizeOf = (role: string): number => {
-    const n = groups.get(role)!.length;
-    return Math.max(roomStyle(role).size, 1.5 * Math.max(1, Math.ceil(Math.sqrt(n))) + 1.5);
-  };
-  const GAP = 2.4;
-  const widths = roles.map((role) => 2 * (sizeOf(role) + RAMP) + GAP);
-  const total = widths.reduce((a, b) => a + b, 0);
-  const ringR = Math.max(10 + RAMP, total / (2 * Math.PI));
-  let arc = 0;
-  roles.forEach((role, i) => {
-    const members = groups.get(role)!;
-    const angle = ((arc + widths[i]! / 2) / total) * Math.PI * 2 - Math.PI / 2;
-    arc += widths[i]!;
-    const r = sizeOf(role);
-    // A square room's corners reach further out than its side: push it out so it clears its neighbours.
-    const out = roomStyle(role).shape === 'square' ? ringR + r * 0.3 : ringR;
-    place(
-      { role, cx: Math.cos(angle) * out, cy: Math.sin(angle) * out, r, hue: roleHue(role), shape: roomStyle(role).shape },
-      members,
-    );
-  });
-  return { districts, homes };
+  return { name: board, params };
+}
+
+/** The room whose cell holds the point (x, z), if any. */
+export function roomAt(layout: BoardLayout, x: number, z: number): BoardDistrict | null {
+  return layout.districts.find((d) => Math.abs(x - d.cx) <= d.w / 2 && Math.abs(z - d.cy) <= d.d / 2) ?? null;
 }
 
 function readPalette(): Palette {
@@ -224,7 +215,8 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-const topOf = (d: District): number => (d.role === 'orchestrator' ? DAIS_H : SLAB_H);
+/** A room's floor height: its slot's top. */
+const topOf = (d: District): number => d.y;
 
 /** A prop's ground footprint, in grid units. */
 interface Footprint {
@@ -280,8 +272,8 @@ function newRenderer(): THREE.WebGLRenderer | null {
   }
 }
 
-export function mount(root: HTMLElement): Cleanup {
-  // Without WebGL the 2.5D canvas floor takes over.
+/** The plaza of one machine (today's Floor). Without WebGL the 2.5D canvas floor takes over. */
+function mountPlaza(root: HTMLElement, machineId: string | null): Cleanup {
   const probe = document.createElement('canvas');
   const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
   const renderer = gl ? newRenderer() : null;
@@ -300,66 +292,21 @@ export function mount(root: HTMLElement): Cleanup {
   // The rooms keep their own light paper (documents, signs) under the night lighting.
   const roomPalette = { ...C, sheet: new THREE.Color(0xe9edf7), rule: new THREE.Color(0xa9b4cc) };
 
-  // Renderer, scene, camera, controls.
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFShadowMap; // crisp, cartoon shadows
-  const canvas = renderer.domElement;
-  canvas.classList.add('floor-canvas');
-  canvas.setAttribute('aria-label', 'The plaza floor');
-  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab';
+  // Renderer, scene, camera, controls: the night and the orbit are the same in every view.
+  const canvas = viewCanvas(renderer, 'The plaza floor');
+  const { scene, ground, backdrop, skyLayer } = nightScene();
+  const { camera, controls } = orbitView(canvas);
+  // The board floats on the night: no skyline, and a dark ground sheet well under it.
+  backdrop.visible = false;
+  (ground.material as THREE.Material).dispose();
+  ground.material = toonMat({ color: 0x0b0d1f });
+  ground.position.y = -BOARD_DROP;
 
-  const scene = new THREE.Scene();
-  // Night: a deep blue zenith banded down to a violet horizon glow, stars and a ringed planet.
-  const SKY_TOP = new THREE.Color(0x05071a);
-  const SKY_HORIZON = new THREE.Color(0x3a2275);
-  scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x090c18)));
-  scene.fog = new THREE.Fog(0x161236, 60, 230);
-  const skyLayer = starfield(900, 330, rng(31));
-  skyLayer.group.userData.dynamic = true; // turns every frame
-  scene.add(skyLayer.group);
-  const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
-  const controls = new OrbitControls(camera, canvas);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.enablePan = true;
-  controls.enableZoom = true;
-  controls.minPolarAngle = 0.2;
-  controls.maxPolarAngle = 1.3; // keeps the floor in view
-  controls.minDistance = 6;
-  controls.maxDistance = 300;
-
-  // Cool moonlight from above and a violet bounce from the deck; the neon does the rest.
-  scene.add(new THREE.HemisphereLight(0x9fb0ff, 0x2a1d52, 1.15));
-  const sun = new THREE.DirectionalLight(0xd2ddff, 2.0);
-  sun.position.set(22, 40, 16);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.bias = -0.0008;
-  sun.shadow.normalBias = 0.03;
-  const sc = sun.shadow.camera;
-  Object.assign(sc, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 140 });
-  sc.updateProjectionMatrix();
-  scene.add(sun);
-
-  // Ground: one smooth sheet out to the horizon, lighter round the plaza.
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: groundTex() }));
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.01;
-  ground.receiveShadow = true;
-  scene.add(ground);
-  const backdrop = buildBackdrop();
-  scene.add(backdrop);
-
-  // Shared resources.
+  // Shared resources: the rooms of the board, and the board itself once the machine is known.
   const districtGroup = new THREE.Group();
   scene.add(districtGroup);
-  const pathGroup = new THREE.Group();
-  scene.add(pathGroup);
-  const plaza = buildPlaza(C);
-  plaza.userData.dynamic = true; // the xenon atom and its rings animate
-  scene.add(plaza);
-  const plazaAnim = plaza.userData.animate as (t: number) => void;
+  let board: BoardScene | null = null;
+  let layoutNow: BoardLayout | null = null;
   const padGeo = new THREE.CircleGeometry(0.42, 28);
   const packetGeo = new THREE.SphereGeometry(0.13, 14, 10);
   const haloGeo = new THREE.SphereGeometry(0.34, 14, 10);
@@ -402,12 +349,24 @@ export function mount(root: HTMLElement): Cleanup {
   stage.prepend(canvas);
   root.classList.add('floor-view');
   document.body.classList.add('floor-mode');
+  // Inside a machine the header names it: "Machines › name", and Back returns to the Machines view.
+  const crumbName = h('span', null, machineId ?? ''); // the fleet names it once read (applyFleet)
   root.append(
-    h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { icon: 'refresh' }))),
+    h(
+      'div.view-head',
+      null,
+      h('h1', null, 'Floor'),
+      machineId === null ? null : h('nav.floor-crumb', { 'aria-label': 'Breadcrumb' }, h('a', { href: href('floor') }, 'Machines'), ' › ', crumbName),
+      h(
+        'div.actions',
+        null,
+        machineId === null ? null : button('Back to machines', () => go('floor')),
+        button('Reset view', () => resetView(), { icon: 'refresh' }),
+      ),
+    ),
     stage,
   );
 
-  let districts: District[] = [];
   let districtSig = '';
   let bots: Bot[] = [];
   const byCid = new Map<number, Bot>();
@@ -422,10 +381,14 @@ export function mount(root: HTMLElement): Cleanup {
   let selected: Bot | null = null;
   let cardSig = '';
   let fitted = false;
-  // The plaza's bounds (set by buildWorld) and whether the user has moved the camera; until they do, the default view refits.
-  const plazaBounds = new THREE.Sphere(new THREE.Vector3(0, 0.4, 0), 8);
-  let plazaTop = DAIS_H; // the top of the tallest district, the fit's upper ring
+  // The top of the rooms (set by buildWorld) and whether the user has moved the camera; until they do, the default view refits.
+  let roomsTop = 2;
   let userMoved = false;
+  // The machine this plaza shows: its members (null until the fleet says, meaning every agent), its status and its board.
+  let members: Set<number> | null = null;
+  let machineStatus: FleetStatus = 'online';
+  let lastList: Agent[] = [];
+  let alive = true;
   let settingView = false; // resetView's own camera moves are not the user's
   controls.addEventListener('change', () => {
     if (!settingView) userMoved = true;
@@ -439,7 +402,7 @@ export function mount(root: HTMLElement): Cleanup {
   const tiltQ = new THREE.Quaternion();
   const yawQ = new THREE.Quaternion();
 
-  // Plaques, slabs and the dais.
+  // Plaques and rooms.
   function plaqueTexture(text: string, orch: boolean): THREE.CanvasTexture {
     const cv = document.createElement('canvas');
     cv.width = 512;
@@ -470,96 +433,74 @@ export function mount(root: HTMLElement): Cleanup {
     return tex;
   }
 
-  function districtMesh(d: District): THREE.Group {
+  /**
+   * A room on its component: a terrace body from the PCB up to the slot's top (filling the cell, sloping down over
+   * RAMP as boardHeightAt does), the room's floor at the slot's top, and the role's plaque at its open front.
+   */
+  function districtMesh(d: District, pcb: number): THREE.Group {
     const g = new THREE.Group();
     const orch = d.role === 'orchestrator';
-    if (orch) {
-      const dais = new THREE.Mesh(
-        new THREE.CylinderGeometry(DAIS_R, DAIS_R + DAIS_RAMP, DAIS_H, 48),
-        toonMat({ color: 0x4a5690 }),
-      );
-      dais.position.set(d.cx, DAIS_H / 2, d.cy);
-      dais.castShadow = true;
-      dais.receiveShadow = true;
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(DAIS_R, 0.05, 8, 64), new THREE.MeshBasicMaterial({ color: C.signal, toneMapped: false }));
-      rim.rotation.x = Math.PI / 2;
-      rim.position.set(d.cx, DAIS_H + 0.01, d.cy);
-      // A cyan ring of light round the foot of the skirt.
-      const foot = new THREE.Mesh(new THREE.TorusGeometry(DAIS_R + DAIS_RAMP, 0.06, 8, 96), new THREE.MeshBasicMaterial({ color: C.info, toneMapped: false }));
-      foot.rotation.x = Math.PI / 2;
-      foot.position.set(d.cx, 0.04, d.cy);
-      foot.userData.outline = false;
-      g.add(dais, rim, foot);
-    } else {
-      // A terrace: the flat top plus a sloped band all round, so robots can walk on and off; its
-      // floor is the room's own, laid as a separate surface so the texture runs square to the room.
-      const round = d.shape === 'round';
-      const body = round
-        ? new THREE.CylinderGeometry(d.r, d.r + RAMP, SLAB_H, 48, 1)
-        : new THREE.CylinderGeometry(d.r * Math.SQRT2, (d.r + RAMP) * Math.SQRT2, SLAB_H, 4, 1).rotateY(Math.PI / 4);
-      const slab = new THREE.Mesh(body, slabSide(d.hue));
-      slab.position.set(d.cx, SLAB_H / 2, d.cy);
-      slab.castShadow = true;
-      slab.receiveShadow = true;
-      g.add(slab);
-      // Neon in the district's hue along the slab's top edge and round its foot.
-      const neon = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.95, 0.62, THREE.SRGBColorSpace), toneMapped: false });
-      for (const [rr, y] of [[d.r, SLAB_H + 0.01], [d.r + RAMP, 0.03]] as const) {
-        const edge = round
-          ? new THREE.Mesh(new THREE.TorusGeometry(rr, 0.045, 6, 72), neon)
-          : new THREE.Mesh(new THREE.TorusGeometry(rr * Math.SQRT2, 0.045, 6, 4), neon);
-        edge.rotation.set(Math.PI / 2, 0, round ? 0 : Math.PI / 4);
-        edge.position.set(d.cx, y, d.cy);
-        edge.userData.outline = false;
-        g.add(edge);
-      }
-      // The room faces the plaza: square rooms turn in quarter turns so they stay square to their slab.
-      const facing = Math.atan2(-d.cx, -d.cy);
-      const turn = round ? facing : Math.round(facing / (Math.PI / 2)) * (Math.PI / 2);
-      const room = buildRoom(d.role, d.r, d.hue, roomPalette);
-      const top = new THREE.Mesh(round ? new THREE.CircleGeometry(d.r, 48) : new THREE.PlaneGeometry(2 * d.r, 2 * d.r), room.floor);
-      top.rotation.set(-Math.PI / 2, 0, turn);
-      top.position.set(d.cx, SLAB_H + 0.004, d.cy);
-      top.receiveShadow = true;
-      g.add(top);
-      room.group.position.set(d.cx, SLAB_H, d.cy);
-      room.group.rotation.y = turn;
-      g.add(room.group);
-      room.group.updateMatrixWorld(true);
-      for (const part of room.group.children) {
-        if (part.userData.walk) continue; // rugs and floor markings
-        const box = new THREE.Box3().setFromObject(part);
-        if (box.isEmpty() || box.min.y > SLAB_H + 2.2) continue; // overhead pieces do not block the floor
-        propBoxes.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z });
-      }
-      litByRole.set(d.role, { screens: room.screens, lit: false });
-      propAnim.push(room.animate);
+    const round = d.shape === 'round';
+    const hs = Math.min(d.w, d.d) / 2; // the cell's half-size: the terrace's flat top
+    const rise = Math.max(0.05, d.y - pcb);
+    const body = round
+      ? new THREE.CylinderGeometry(hs, hs + RAMP, rise, 48)
+      : new THREE.CylinderGeometry(hs * Math.SQRT2, (hs + RAMP) * Math.SQRT2, rise, 4, 1).rotateY(Math.PI / 4);
+    const slab = new THREE.Mesh(body, slabSide(d.hue));
+    slab.position.set(d.cx, pcb + rise / 2, d.cy);
+    slab.castShadow = true;
+    slab.receiveShadow = true;
+    g.add(slab);
+    // Neon in the district's hue along the terrace's top edge and round its foot.
+    const neon = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(d.hue / 360, 0.95, 0.62, THREE.SRGBColorSpace), toneMapped: false });
+    for (const [rr, y] of [[hs, d.y + 0.01], [hs + RAMP, pcb + 0.03]] as const) {
+      const edge = round
+        ? new THREE.Mesh(new THREE.TorusGeometry(rr, 0.045, 6, 72), neon)
+        : new THREE.Mesh(new THREE.TorusGeometry(rr * Math.SQRT2, 0.045, 6, 4), neon);
+      edge.rotation.set(Math.PI / 2, 0, round ? 0 : Math.PI / 4);
+      edge.position.set(d.cx, y, d.cy);
+      edge.userData.outline = false;
+      g.add(edge);
     }
-    // Role plaque lies flat on the back edge of the slab (the dais for the orchestrator).
+    // The room faces the board's centre: square rooms turn in quarter turns so they stay square to their cell.
+    const facing = Math.atan2(-d.cx, -d.cy);
+    const turn = round ? facing : Math.round(facing / (Math.PI / 2)) * (Math.PI / 2);
+    const room = buildRoom(d.role, d.r, d.hue, roomPalette);
+    const top = new THREE.Mesh(round ? new THREE.CircleGeometry(d.r, 48) : new THREE.PlaneGeometry(2 * d.r, 2 * d.r), room.floor);
+    top.rotation.set(-Math.PI / 2, 0, turn);
+    top.position.set(d.cx, d.y + 0.004, d.cy);
+    top.receiveShadow = true;
+    g.add(top);
+    room.group.position.set(d.cx, d.y, d.cy);
+    room.group.rotation.y = turn;
+    g.add(room.group);
+    room.group.updateMatrixWorld(true);
+    for (const part of room.group.children) {
+      if (part.userData.walk) continue; // rugs and floor markings
+      const box = new THREE.Box3().setFromObject(part);
+      if (box.isEmpty() || box.min.y > d.y + 2.2) continue; // overhead pieces do not block the floor
+      propBoxes.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z });
+    }
+    litByRole.set(d.role, { screens: room.screens, lit: false });
+    propAnim.push(room.animate);
+    // Role plaque lies flat on the room's open front, readable from the board.
+    const holder = new THREE.Group();
+    holder.position.set(d.cx, d.y + 0.012, d.cy);
+    holder.rotation.y = Math.atan2(-d.cx, -d.cy);
     const plaque = new THREE.Mesh(
       new THREE.PlaneGeometry(2.6, 0.65),
       new THREE.MeshBasicMaterial({ map: plaqueTexture(d.role.toUpperCase(), orch), transparent: true, depthWrite: false }),
     );
-    if (orch) {
-      plaque.rotation.x = -Math.PI / 2;
-      plaque.position.set(d.cx, topOf(d) + 0.01, d.cy - 1.6);
-      g.add(plaque);
-    } else {
-      // Flat on the floor at the room's open front, readable from the plaza.
-      const holder = new THREE.Group();
-      holder.position.set(d.cx, topOf(d) + 0.012, d.cy);
-      holder.rotation.y = Math.atan2(-d.cx, -d.cy);
-      plaque.rotation.x = -Math.PI / 2;
-      plaque.position.set(0, 0, d.r - 0.5);
-      holder.add(plaque);
-      g.add(holder);
-    }
+    plaque.rotation.x = -Math.PI / 2;
+    plaque.position.set(0, 0, d.r - 0.5);
+    holder.add(plaque);
+    g.add(holder);
     outline(g);
     return g;
   }
 
-  /** Districts and their paths, rebuilt whenever the layout changes. */
-  function buildWorld(ds: District[]): void {
+  /** The rooms, rebuilt whenever the layout changes; the old ones are disposed first. */
+  function buildWorld(ds: District[], pcb: number): void {
     for (const child of [...districtGroup.children]) {
       districtGroup.remove(child);
       disposeTree(child);
@@ -567,28 +508,46 @@ export function mount(root: HTMLElement): Cleanup {
     litByRole.clear();
     propAnim.length = 0;
     propBoxes.length = 0;
-    for (const d of ds) districtGroup.add(districtMesh(d));
-    disposeTree(pathGroup);
-    pathGroup.clear();
-    pathGroup.add(buildPaths(ds.map((d) => new THREE.Vector3(d.cx, 0, d.cy)), C));
-    const fountain = buildPlazaFurniture(C, ds.map((d) => Math.atan2(d.cy, d.cx)));
-    fountain.group.userData.dynamic = true; // the water animates
-    pathGroup.add(fountain.group);
-    propAnim.push(fountain.animate);
-    for (const b of fountain.boxes) propBoxes.push(b);
-    const outside = buildScatter(ds, C);
-    pathGroup.add(outside.group);
-    for (const b of outside.boxes) propBoxes.push(b);
+    for (const d of ds) districtGroup.add(districtMesh(d, pcb));
     // The world was just rebuilt (the old one is disposed above), so bake only this fresh static subtree.
-    const stats = { districts: bakeStatic(districtGroup), paths: bakeStatic(pathGroup) };
+    const stats = { districts: bakeStatic(districtGroup) };
     console.debug('floor: baked', stats);
-    // What the default view frames is the plaza itself: the districts out to their reach (a square room's corners
-    // included), which holds the dais and every robot's home. The outskirts scatter and the skyline stay out of it.
     const box = new THREE.Box3().setFromObject(districtGroup);
-    plazaTop = box.isEmpty() ? DAIS_H : box.max.y;
-    let reach = DAIS_R + DAIS_RAMP;
-    for (const d of ds) reach = Math.max(reach, Math.hypot(d.cx, d.cy) + (d.r + RAMP) * (d.shape === 'square' ? Math.SQRT2 : 1));
-    plazaBounds.set(new THREE.Vector3(0, plazaTop / 2, 0), reach);
+    roomsTop = box.isEmpty() ? 2 : box.max.y;
+  }
+
+  /**
+   * A machine's board as the plaza: the model at the origin with its copper traces, the current running along each
+   * component's traces, the atom over its anchor, and a glow plate over each slot (lit while its rooms work).
+   */
+  function buildBoard(model: Model, params: Params, key: string): BoardScene {
+    const group = new THREE.Group();
+    const built = buildModel(model, params);
+    group.add(built.group, traceMeshes(model));
+    const plates = new Map<string, GlowPlate>();
+    for (const slot of model.slots ?? []) {
+      if (!built.parts.has(slot.on)) continue; // a slot whose part is hidden by its `when` does not exist
+      const [x0, z0, w, d] = slot.rect;
+      const mat = new THREE.MeshBasicMaterial({ color: C.info, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(x0 + w / 2, slot.top + 0.012, z0 + d / 2);
+      mesh.userData.outline = false;
+      mesh.visible = false;
+      group.add(mesh);
+      plates.set(slot.id, { slot: slot.id, on: slot.on, mesh, mat, level: 0 });
+    }
+    // Each part's traces carry their own current, so a component's walkways light up with it.
+    const walkways = new Map<string, Trace[]>();
+    for (const tr of model.traces ?? []) {
+      const on = tr.from ?? '';
+      walkways.set(on, [...(walkways.get(on) ?? []), tr]);
+    }
+    const pulses = [...walkways].map(([on, traces]) => ({ on, pulses: currentPulses({ ...model, traces }) }));
+    for (const p of pulses) group.add(p.pulses.group);
+    const atom = placeAtom(model, group);
+    scene.add(group);
+    return { key, model, params, group, built, graph: traceGraph(model), pulses, plates, atom: atom?.animate ?? null };
   }
 
   // Robots, labels, pads.
@@ -629,6 +588,8 @@ export function mount(root: HTMLElement): Cleanup {
       tx: hx,
       ty: hy,
       heading: 0,
+      route: [],
+      routeKey: '',
       moving: false,
       py: 0,
       vy: 0,
@@ -659,20 +620,24 @@ export function mount(root: HTMLElement): Cleanup {
     b.label.remove();
   }
 
+  /** Lays the agents on the board and places their robots: the rooms rebuild when the layout changes. */
   function sync(list: Agent[]): void {
-    const laid = layoutDistricts(list);
-    districts = laid.districts;
-    const sig = JSON.stringify(districts);
+    lastList = list;
+    if (!board) return; // the board comes with the machine (refresh); until then there is nothing to lay out
+    const mine = list.filter((a) => !members || members.has(a.cid));
+    const laid = layoutOnBoard(mine, board.model, board.params);
+    layoutNow = laid;
+    const sig = JSON.stringify(laid.districts);
     if (sig !== districtSig) {
       districtSig = sig;
-      buildWorld(districts);
+      buildWorld(laid.districts, laid.pcbTop);
       if (!userMoved) resetView();
     }
     const seen = new Set<number>();
-    for (const agent of list) {
+    for (const agent of mine) {
       const slot = laid.homes.get(agent.cid);
       if (!slot) continue;
-      const [district, hx, hy] = slot;
+      const [district, hx, hy] = slot as [District, number, number];
       seen.add(agent.cid);
       let bot = byCid.get(agent.cid);
       if (bot && bot.robotKey !== `${district.hue}|${agent.tier === 'orchestrator'}`) {
@@ -697,22 +662,111 @@ export function mount(root: HTMLElement): Cleanup {
     renderCard();
   }
 
+  /** Shows the named board with its params, building it unless it is the one already shown, then lays the agents on it. */
+  function showBoard(name: string, params: Params): void {
+    const key = `${name}|${JSON.stringify(params)}`;
+    if (board?.key !== key) {
+      if (board) {
+        scene.remove(board.group);
+        disposeTree(board.group);
+      }
+      board = buildBoard(MODELS[name] ?? MODELS[DEFAULT_BOARD.name]!, params, key);
+    }
+    sync(lastList);
+  }
+
+  /** Reads the fleet and shows its machine (the one named, else the hub) with its agents and status. */
+  function applyFleet(fleet: FleetResponse): void {
+    const m = fleet.machines.find((x) => x.id === machineId) ?? fleet.machines.find((x) => x.role === 'hub') ?? fleet.machines[0];
+    if (!m) return applyDefault();
+    if (machineId !== null) crumbName.textContent = m.name;
+    const { name, params } = boardOf(m);
+    members = new Set(m.agents);
+    machineStatus = m.status;
+    showBoard(name, params);
+  }
+
+  /** The workstation board, every agent on it: for when neither the fleet nor the machines list can be read. */
+  function applyDefault(): void {
+    members = null;
+    showBoard(DEFAULT_BOARD.name, DEFAULT_BOARD.params);
+  }
+
+  /**
+   * Reads the fleet every few seconds. When it cannot be read, the machines list's first node (n0, the hub) shows
+   * its board; when that fails too, the workstation board. The old ring is never shown.
+   */
+  async function refresh(): Promise<void> {
+    try {
+      const fleet = await api.fleet();
+      if (alive) applyFleet(fleet);
+      return;
+    } catch {
+      // the machines list below
+    }
+    try {
+      const nodes = await api.machines();
+      const node = nodes.find((n) => n.id === 'n0') ?? nodes[0];
+      if (alive && node) {
+        members = null;
+        const { name, params } = boardOf(node);
+        showBoard(name, params);
+        return;
+      }
+    } catch {
+      // the workstation board below
+    }
+    if (alive) applyDefault();
+  }
+
+  /** Each frame: the board's fans and lights follow the machine, glow plates ease toward their components' work, and a lit component's current runs faster. */
+  function updateBoard(dt: number, t: number): void {
+    if (!board) return;
+    const working = new Set<string>(); // the slots whose rooms have a working agent
+    let busy = 0;
+    for (const b of bots) {
+      if (b.agent.status !== 'working') continue;
+      busy++;
+      if (b.district.slot) working.add(b.district.slot);
+    }
+    const share = bots.length ? busy / bots.length : 0;
+    board.built.update(dt, { status: machineStatus, working: share, load: share });
+    const ease = 1 - Math.exp(-4 * dt);
+    for (const plate of board.plates.values()) {
+      plate.level += ((working.has(plate.slot) ? 1 : 0) - plate.level) * ease;
+      plate.mat.opacity = GLOW_OPACITY * plate.level;
+      plate.mesh.visible = plate.level > 0.01;
+    }
+    for (const p of board.pulses) {
+      let level = 0;
+      for (const plate of board.plates.values()) if (plate.on === p.on) level = Math.max(level, plate.level);
+      p.pulses.update(dt, level);
+    }
+    board.atom?.(t);
+  }
+
   /**
    * The default view: the camera distance at which the plaza fills FIT_FILL of the stage on its tighter axis, and the
-   * point it is aimed at. The plaza's ring (its reach, at the ground and at the tallest district's top) is projected;
+   * point it is aimed at. The board's footprint (its corners, at the floor and at the rooms' top) is projected;
    * the nearest distance where every point is in front of the lens and inside that share of the frame is found by
    * bisection. Perspective puts the near side of the ring lower on screen than the far side is high, so the aim moves
    * to the ring's projected middle and the fit is run again.
    */
-  function fitView(): { dist: number; target: THREE.Vector3 } {
-    const target = plazaBounds.center.clone();
-    const reach = plazaBounds.radius;
-    const dir = new THREE.Vector3().setFromSphericalCoords(1, POLAR, AZIMUTH);
+  /** The board's footprint (layout bounds) from the floor to the rooms' top, as its eight corners, and its centre. */
+  function fitBox(): { centre: THREE.Vector3; ring: THREE.Vector3[] } {
+    const b = layoutNow?.bounds ?? { cx: 0, cz: 0, w: 64, d: 56 };
+    const top = Math.max(roomsTop, (board?.model.anchors?.atom?.[1] ?? 0) + 1);
     const ring: THREE.Vector3[] = [];
-    for (let i = 0; i < FIT_SEGMENTS; i++) {
-      const a = (i / FIT_SEGMENTS) * Math.PI * 2;
-      for (const y of [0, plazaTop]) ring.push(new THREE.Vector3(target.x + Math.cos(a) * reach, y, target.z + Math.sin(a) * reach));
+    for (const x of [b.cx - b.w / 2, b.cx + b.w / 2]) {
+      for (const z of [b.cz - b.d / 2, b.cz + b.d / 2]) for (const y of [0, top]) ring.push(new THREE.Vector3(x, y, z));
     }
+    return { centre: new THREE.Vector3(b.cx, top / 2, b.cz), ring };
+  }
+
+  function fitView(): { dist: number; target: THREE.Vector3 } {
+    const { centre, ring } = fitBox();
+    const target = centre;
+    const dir = new THREE.Vector3().setFromSphericalCoords(1, POLAR, AZIMUTH);
     const place = (dist: number): void => {
       camera.position.copy(target).addScaledVector(dir, dist);
       camera.lookAt(target);
@@ -777,11 +831,6 @@ export function mount(root: HTMLElement): Cleanup {
 
   function startSocial(b: Bot, now: number): void {
     b.nextSocial = now + 8000 + Math.random() * 12000;
-    if (Math.random() < 0.3) {
-      const ang = Math.atan2(b.y, b.x);
-      b.social = { phase: 'stroll', partner: null, gx: Math.cos(ang) * STROLL_R, gy: Math.sin(ang) * STROLL_R, until: Infinity };
-      return;
-    }
     const pool = bots.filter((o) => o !== b && o.agent.status === 'idle' && !o.social && nearby(o.district, b.district));
     const partner = pool[Math.floor(Math.random() * pool.length)];
     if (!partner) return;
@@ -799,22 +848,29 @@ export function mount(root: HTMLElement): Cleanup {
     }
   }
 
-  /** The top of whatever lies under (x, y): a dais, a district slab, or the bare floor. */
+  /** The surface under (x, y): a room's floor, its ramp down to the PCB, or the PCB top (boardHeightAt). */
   function surfaceAt(x: number, y: number): number {
-    let top = 0;
-    for (const d of districts) {
-      const orch = d.role === 'orchestrator';
-      // Distance out from the walkable top: round for the dais and round rooms, square for the rest.
-      const out = orch
-        ? Math.hypot(x - d.cx, y - d.cy) - DAIS_R
-        : d.shape === 'round'
-          ? Math.hypot(x - d.cx, y - d.cy) - d.r
-          : Math.max(Math.abs(x - d.cx), Math.abs(y - d.cy)) - d.r;
-      const band = orch ? DAIS_RAMP : RAMP;
-      const h = out <= 0 ? topOf(d) : out < band ? topOf(d) * (1 - out / band) : 0;
-      top = Math.max(top, h);
+    return layoutNow ? boardHeightAt(x, y, layoutNow) : 0;
+  }
+
+  /**
+   * The point a robot walks to next on its way to (gx, gy). Within a room it is the goal itself; to another room it is
+   * the walk along the traces (pathOnTraces), point by point, when the traces join the two; else the goal.
+   */
+  function nextStop(b: Bot, gx: number, gy: number): [number, number] {
+    if (!board || !layoutNow) return [gx, gy];
+    const key = `${gx},${gy}`;
+    if (b.routeKey !== key) {
+      b.routeKey = key;
+      b.route = [];
+      const to = roomAt(layoutNow, gx, gy);
+      if (to && to !== roomAt(layoutNow, b.x, b.y)) {
+        const path = pathOnTraces(board.graph, [b.x, b.y], [gx, gy]);
+        if (path) b.route = path.slice(1);
+      }
     }
-    return top;
+    while (b.route.length && Math.hypot(b.route[0]![0] - b.x, b.route[0]![1] - b.y) < 0.05) b.route.shift();
+    return b.route[0] ?? [gx, gy];
   }
 
   /** Whether a robot centred at (x, y) would clash with a prop, leave its slab, or overlap another robot. */
@@ -858,11 +914,13 @@ export function mount(root: HTMLElement): Cleanup {
         gx = s ? s.gx : b.tx;
         gy = s ? s.gy : b.ty;
       }
-      const dx = gx - b.x;
-      const dy = gy - b.y;
+      // The next stop on the way: the goal, or the trace walkway's next point when the goal is in another room.
+      const [stopX, stopY] = nextStop(b, gx, gy);
+      const dx = stopX - b.x;
+      const dy = stopY - b.y;
       const dist = Math.hypot(dx, dy);
       b.moving = dist > 0.02;
-      // Step toward the goal. A blocked step tries nearby headings, else the robot waits this frame.
+      // Step toward the stop. A blocked step tries nearby headings, else the robot waits this frame.
       const checkProps = Math.hypot(b.home[0] - b.x, b.home[1] - b.y) > 0.9;
       let travel: number | null = null;
       if (b.moving) {
@@ -879,15 +937,13 @@ export function mount(root: HTMLElement): Cleanup {
           break;
         }
       }
-      // Social arrivals: a visitor that has reached its partner starts the chat; a stroller waits briefly at the ring.
+      // Social arrivals: a visitor that has reached its partner starts the chat.
       if (s && roaming) {
         if (s.phase === 'go' && !b.moving) {
           const until = now + 3000 + Math.random() * 2000;
           s.phase = 'talk';
           s.until = until;
           if (s.partner?.social) s.partner.social.until = until;
-        } else if (s.phase === 'stroll' && !b.moving && s.until === Infinity) {
-          s.until = now + 2000;
         }
         if (now >= s.until) endSocial(b, now);
       }
@@ -1148,7 +1204,9 @@ export function mount(root: HTMLElement): Cleanup {
     if (bot) go('agents', bot.agent.cid);
   });
 
-  // Live data.
+  // Live data: the machine's board and members first (refresh, then every few seconds), then the agents.
+  void refresh();
+  const poll = window.setInterval(() => void refresh(), FLEET_POLL_MS);
   const offAgents = agents.watch((list) => {
     sync(list);
     if (!fitted && list.length) {
@@ -1208,7 +1266,7 @@ export function mount(root: HTMLElement): Cleanup {
     updateBots(dt, now);
     updatePackets(now);
     updateDust(t);
-    plazaAnim(t);
+    updateBoard(dt, t);
     skyLayer.animate(t);
     for (const fn of propAnim) fn(t);
     controls.update();
@@ -1219,6 +1277,8 @@ export function mount(root: HTMLElement): Cleanup {
   renderer.setAnimationLoop(frame);
 
   return () => {
+    alive = false;
+    window.clearInterval(poll);
     ac.abort();
     renderer.setAnimationLoop(null);
     ro.disconnect();
@@ -1232,8 +1292,7 @@ export function mount(root: HTMLElement): Cleanup {
     byCid.clear();
     for (const p of packets.splice(0)) dropPacket(p);
     disposeTree(districtGroup);
-    disposeTree(pathGroup);
-    disposeTree(plaza);
+    if (board) disposeTree(board.group);
     disposeTree(ground);
     disposeTree(skyLayer.group);
     disposeTree(backdrop);
@@ -1249,4 +1308,469 @@ export function mount(root: HTMLElement): Cleanup {
     document.body.classList.remove('floor-mode');
     root.replaceChildren();
   };
+}
+
+/** The canvas every view draws into: pixel ratio, soft cartoon shadows, filling its stage. */
+function viewCanvas(renderer: THREE.WebGLRenderer, label: string): HTMLCanvasElement {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap; // crisp, cartoon shadows
+  const canvas = renderer.domElement;
+  canvas.classList.add('floor-canvas');
+  canvas.setAttribute('aria-label', label);
+  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab';
+  return canvas;
+}
+
+/** The night every view shares: sky and stars, moonlight, the ground sheet and the outskirts. */
+function nightScene(): { scene: THREE.Scene; ground: THREE.Mesh; backdrop: ReturnType<typeof buildBackdrop>; skyLayer: ReturnType<typeof starfield> } {
+  const scene = new THREE.Scene();
+  // Night: a deep blue zenith banded down to a violet horizon glow, stars and a ringed planet.
+  const SKY_TOP = new THREE.Color(0x05071a);
+  const SKY_HORIZON = new THREE.Color(0x3a2275);
+  scene.add(sky(SKY_TOP, SKY_HORIZON, new THREE.Color(0x090c18)));
+  scene.fog = new THREE.Fog(0x161236, 60, 230);
+  const skyLayer = starfield(900, 330, rng(31));
+  skyLayer.group.userData.dynamic = true; // turns every frame
+  scene.add(skyLayer.group);
+
+  // Cool moonlight from above and a violet bounce from the deck; the neon does the rest.
+  scene.add(new THREE.HemisphereLight(0x9fb0ff, 0x2a1d52, 1.15));
+  const sun = new THREE.DirectionalLight(0xd2ddff, 2.0);
+  sun.position.set(22, 40, 16);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0008;
+  sun.shadow.normalBias = 0.03;
+  const sc = sun.shadow.camera;
+  Object.assign(sc, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 140 });
+  sc.updateProjectionMatrix();
+  scene.add(sun);
+
+  // Ground: one smooth sheet out to the horizon, lighter round the plaza.
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), toonMat({ map: groundTex() }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.01;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  const backdrop = buildBackdrop();
+  scene.add(backdrop);
+  return { scene, ground, backdrop, skyLayer };
+}
+
+/** The camera and the orbit every view uses: damped, pan and zoom, held above the ground. */
+function orbitView(canvas: HTMLCanvasElement): { camera: THREE.PerspectiveCamera; controls: OrbitControls } {
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 1000);
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = true;
+  controls.enableZoom = true;
+  controls.minPolarAngle = 0.2;
+  controls.maxPolarAngle = 1.3; // keeps the floor in view
+  controls.minDistance = 6;
+  controls.maxDistance = 300;
+  return { camera, controls };
+}
+
+/** The Machines view polls the fleet this often, ms. */
+const FLEET_POLL_MS = 5000;
+/** The fleet's bounding sphere fills this share of the frame on its tighter axis. */
+const MACHINE_FILL = 0.8;
+/** How many agent names the popup lists before "+N more". */
+const FLEET_CARD_AGENTS = 6;
+const FLEET_KEYS = [
+  ['online', 'Online'],
+  ['draining', 'Draining'],
+  ['offline', 'Offline'],
+  ['revoked', 'Revoked'],
+] as const;
+
+/**
+ * The Floor's entry. `#/floor/<id>` is that machine's plaza (today's Floor). `#/floor` is the Machines view once the
+ * fleet loads, and the plaza itself when it does not.
+ */
+export function mount(root: HTMLElement, params: string[] = []): Cleanup {
+  const machineId = params[0];
+  if (machineId !== undefined) return mountPlaza(root, machineId);
+  let stop: Cleanup | undefined;
+  let alive = true;
+  api.fleet().then(
+    (fleet) => {
+      if (alive) stop = mountMachines(root, fleet);
+    },
+    () => {
+      if (alive) stop = mountPlaza(root, null);
+    },
+  );
+  return () => {
+    alive = false;
+    stop?.();
+  };
+}
+
+/** The Machines view: every machine of the plaza as its model (floor3d/fleet.ts), polled every few seconds. */
+function mountMachines(root: HTMLElement, first: FleetResponse): Cleanup {
+  const renderer = newRenderer();
+  if (!renderer) return mountFloor2d(root);
+  const canvas = viewCanvas(renderer, 'The machines');
+  const { scene, ground, backdrop, skyLayer } = nightScene();
+  const { camera, controls } = orbitView(canvas);
+  const fleetScene = buildFleet(first);
+  scene.add(fleetScene.group);
+  fleetScene.update(0, first); // builds the machines now, so the first fit frames them
+  let latest = first;
+  let fitSig = fleetSig(first);
+
+  // DOM: the stage with the canvas, the machine tags, the popup card and the legend.
+  const card = h('div.floor-card', { hidden: true });
+  const legend = h(
+    'div.floor-legend',
+    null,
+    ...FLEET_KEYS.map(([key, label]) => h('span', null, keyDot(key), label)),
+  );
+  const tags = document.createElement('div');
+  tags.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
+  const stage = h('div.floor-stage.floor-stage-3d', null, tags, card, legend);
+  stage.style.position = 'relative';
+  stage.prepend(canvas);
+  root.classList.add('floor-view');
+  document.body.classList.add('floor-mode');
+  root.append(
+    h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, button('Reset view', () => resetView(), { icon: 'refresh' }))),
+    stage,
+  );
+
+  let width = 0;
+  let height = 0;
+  let hoveredId: string | null = null;
+  let selectedId: string | null = null;
+  let cardSig = '';
+  let seenEl: HTMLElement | null = null; // the card's last-seen value, updated in place each frame
+  let userMoved = false; // until the user moves the camera, the view refits on resize and when the machines change
+  let settingView = false; // resetView's own camera moves are not the user's
+  controls.addEventListener('change', () => {
+    if (!settingView) userMoved = true;
+  });
+  let last = performance.now();
+  let lastRender = -Infinity;
+  const ndcVec = new THREE.Vector2();
+  const raycaster = new THREE.Raycaster();
+  const camDir = new THREE.Vector3();
+  const tagEls = new Map<string, { el: HTMLDivElement; key: HTMLElement; name: HTMLElement }>();
+  const ac = new AbortController();
+  let alive = true;
+
+  /** Where a point of the scene sits on the stage, and whether the camera sees it. */
+  const toScreen = (p: THREE.Vector3): { x: number; y: number; visible: boolean } => {
+    const ndc = p.clone().project(camera);
+    camera.getWorldDirection(camDir);
+    const inFront = p.clone().sub(camera.position).dot(camDir) > 0;
+    return { x: ((ndc.x + 1) / 2) * width, y: ((1 - ndc.y) / 2) * height, visible: inFront && ndc.z <= 1 };
+  };
+
+  /** The machine under a pointer event: the fleet's ray test. */
+  const pick = (ev: MouseEvent): string | null => {
+    const r = canvas.getBoundingClientRect();
+    ndcVec.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    raycaster.setFromCamera(ndcVec, camera);
+    return fleetScene.pick(raycaster.ray);
+  };
+
+  /** A machine's tag, made on first sight: a status square, then the name. */
+  function tagFor(id: string): { el: HTMLDivElement; key: HTMLElement; name: HTMLElement } {
+    let t = tagEls.get(id);
+    if (!t) {
+      const el = document.createElement('div');
+      el.style.cssText = LABEL_CSS;
+      const key = keyDot('');
+      const name = document.createElement('span');
+      name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;min-width:0';
+      el.append(key, name);
+      tags.append(el);
+      t = { el, key, name };
+      tagEls.set(id, t);
+    }
+    return t;
+  }
+
+  function updateTags(): void {
+    const seen = new Set<string>();
+    for (const tg of fleetScene.tags()) {
+      seen.add(tg.id);
+      const t = tagFor(tg.id);
+      const s = toScreen(new THREE.Vector3(...tg.pos));
+      t.el.style.display = s.visible ? 'flex' : 'none';
+      if (!s.visible) continue;
+      t.el.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%) translateY(-6px)`;
+      const key = `floor-key ${tg.status}`;
+      if (t.key.className !== key) t.key.className = key;
+      if (t.name.textContent !== tg.name) t.name.textContent = tg.name;
+    }
+    for (const [id, t] of tagEls) {
+      if (seen.has(id)) continue;
+      t.el.remove();
+      tagEls.delete(id);
+    }
+  }
+
+  /** An agent's name on the card: its floor name, or its cid when the agent list does not hold it. */
+  const nameOfCid = (cid: number): string => {
+    const a = agents.get().find((x) => x.cid === cid);
+    return a ? floorName(a) : `agent ${cid}`;
+  };
+
+  /** The popup: the selected machine's name and kind, its facts, its agents and ENTER. */
+  function renderCard(now: number): void {
+    const m: FleetMachine | undefined = selectedId === null ? undefined : latest.machines.find((x) => x.id === selectedId);
+    if (!m) {
+      selectedId = null;
+      card.hidden = true;
+      cardSig = '';
+      return;
+    }
+    card.hidden = false;
+    const facts = machineFacts(m);
+    const names = m.agents.map((cid) => ({ cid, name: nameOfCid(cid) }));
+    const tally = agentTally(m.agents.length, m.working, m.status);
+    const sig = JSON.stringify([m.id, m.name, m.status, machineSubtitle(m), facts, names, tally]);
+    if (sig !== cardSig) {
+      cardSig = sig;
+      seenEl = h('dd');
+      card.replaceChildren(
+        h('header.floor-card-head', null, h('strong', null, m.name), h('span.floor-tag', null, m.status)),
+        h('div.floor-card-activity', null, machineSubtitle(m)),
+        h(
+          'dl.machine-facts',
+          null,
+          ...facts.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)]),
+          h('dt', null, 'Last seen'),
+          seenEl,
+        ),
+        h(
+          'div.machine-agents',
+          null,
+          h('div.floor-card-activity', null, tally),
+          h(
+            'div.machine-agent-names',
+            null,
+            ...names.slice(0, FLEET_CARD_AGENTS).map(({ cid, name }) => h('a', { href: href('agents', cid) }, name)),
+            names.length > FLEET_CARD_AGENTS ? h('span', null, `+${names.length - FLEET_CARD_AGENTS} more`) : null,
+          ),
+        ),
+        h('footer.machine-card-foot', null, button('ENTER', () => go('floor', m.id), { kind: 'primary' })),
+      );
+    }
+    const seen = ago(m.last_seen_ms, now);
+    if (seenEl && seenEl.textContent !== seen) seenEl.textContent = seen;
+  }
+
+  /** The card sits beside its machine's tag, kept on the stage. */
+  function positionCard(): void {
+    if (selectedId === null || card.hidden) return;
+    const node = fleetScene.machines.get(selectedId);
+    if (!node) return;
+    const s = toScreen(new THREE.Vector3(...node.label));
+    const left = clamp(s.x + 24, 8, Math.max(8, width - 308));
+    const top = clamp(s.y - 120, 8, Math.max(8, height - card.offsetHeight - 8));
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
+  }
+
+  function select(id: string | null): void {
+    selectedId = id;
+    cardSig = '';
+    renderCard(Date.now());
+    positionCard();
+  }
+
+  /**
+   * The default view: the fleet's sphere fills MACHINE_FILL of the stage on its tighter axis, aimed at its centre
+   * (floor3d/fleet.ts frames it; fitDistance sizes the distance).
+   */
+  function resetView(): void {
+    const { center, radius } = fleetScene.frame();
+    const target = new THREE.Vector3(...center);
+    const dist = fitDistance(radius, camera.fov, camera.aspect, MACHINE_FILL);
+    controls.maxDistance = Math.max(300, dist * 2);
+    if (scene.fog instanceof THREE.Fog) {
+      // The haze keeps its look at the fitted distance, as the plaza's does.
+      scene.fog.near = dist * 0.8;
+      scene.fog.far = dist * 3;
+    }
+    controls.target.copy(target);
+    camera.position.copy(target).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
+    settingView = true;
+    controls.update();
+    settingView = false;
+    userMoved = false;
+  }
+
+  // Resize.
+  const resize = (): void => {
+    const box = stage.getBoundingClientRect();
+    width = box.width;
+    height = box.height;
+    if (!width || !height) return;
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    if (!userMoved) resetView(); // a view the user has not moved keeps the whole fleet in frame
+  };
+  const ro = new ResizeObserver(() => resize());
+  ro.observe(stage);
+  resize();
+  resetView();
+
+  // Pointer: drag to orbit and pan, hover lifts a machine and shows the pointer, a click opens its popup.
+  const listen = <K extends keyof HTMLElementEventMap>(type: K, fn: (ev: HTMLElementEventMap[K]) => void): void =>
+    canvas.addEventListener(type, fn, { signal: ac.signal });
+  let downAt: { x: number; y: number } | null = null;
+  listen('pointerdown', (ev) => {
+    downAt = { x: ev.clientX, y: ev.clientY };
+  });
+  listen('pointermove', (ev) => {
+    if (ev.buttons !== 0) return;
+    const id = pick(ev);
+    if (id !== hoveredId) {
+      hoveredId = id;
+      fleetScene.hover(id);
+    }
+    canvas.style.cursor = id ? 'pointer' : 'grab';
+  });
+  listen('pointerup', (ev) => {
+    if (!downAt) return;
+    const moved = Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y);
+    downAt = null;
+    if (moved < 4) select(pick(ev)); // an empty click closes the popup
+  });
+  listen('pointerleave', () => {
+    hoveredId = null;
+    fleetScene.hover(null);
+  });
+  // A click outside the stage, or Esc, closes the popup.
+  document.addEventListener(
+    'pointerdown',
+    (ev) => {
+      if (selectedId !== null && !stage.contains(ev.target as Node)) select(null);
+    },
+    { signal: ac.signal },
+  );
+  document.addEventListener(
+    'keydown',
+    (ev) => {
+      if (ev.key === 'Escape' && selectedId !== null) select(null);
+    },
+    { signal: ac.signal },
+  );
+
+  // Live data: the fleet is polled; the popup's agent names follow the agent list.
+  const offAgents = agents.watch(() => {
+    cardSig = '';
+  });
+  const poll = window.setInterval(() => {
+    api.fleet().then(
+      (f) => {
+        if (alive) latest = f;
+      },
+      () => undefined, // keep the last fleet until the next poll
+    );
+  }, FLEET_POLL_MS);
+
+  // Loop: capped at 60 fps, as the plaza's.
+  const frame = (now: number): void => {
+    if (now - lastRender < 1000 / 60 - 1) return;
+    lastRender = now;
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    fleetScene.update(dt, latest);
+    const sig = fleetSig(latest);
+    if (sig !== fitSig) {
+      fitSig = sig; // the machines changed: the default view refits
+      if (!userMoved) resetView();
+    }
+    skyLayer.animate(now / 1000);
+    controls.update();
+    renderer.render(scene, camera);
+    updateTags();
+    renderCard(Date.now());
+    positionCard();
+  };
+  renderer.setAnimationLoop(frame);
+
+  return () => {
+    alive = false;
+    ac.abort();
+    window.clearInterval(poll);
+    renderer.setAnimationLoop(null);
+    ro.disconnect();
+    offAgents();
+    controls.dispose();
+    for (const t of tagEls.values()) t.el.remove();
+    tagEls.clear();
+    disposeTree(fleetScene.group);
+    disposeTree(ground);
+    disposeTree(skyLayer.group);
+    disposeTree(backdrop);
+    renderer.dispose();
+    root.classList.remove('floor-view');
+    document.body.classList.remove('floor-mode');
+    root.replaceChildren();
+  };
+}
+
+// ---- Pure helpers (the Machines view's text and camera distance; tested) ----------------------
+
+/** A status square in the floor's key colour for the status. */
+function keyDot(status: string): HTMLElement {
+  const i = document.createElement('i');
+  i.className = status ? `floor-key ${status}` : 'floor-key';
+  return i;
+}
+
+/** The fleet's identity for refit decisions: the machines' ids in order. */
+export function fleetSig(f: FleetResponse): string {
+  return f.machines.map((m) => m.id).join(',');
+}
+
+/** The camera distance at which a bounding sphere of `radius`, aimed at its centre, fills `fill` of the frame on its tighter axis. */
+export function fitDistance(radius: number, fovDeg: number, aspect: number, fill: number): number {
+  const tanHalf = Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2) * Math.min(1, aspect); // the tighter half-field
+  // The sphere's angular radius a has tan a = fill * tanHalf, and sin a = radius / distance.
+  return radius * Math.sqrt(1 + 1 / (fill * tanHalf) ** 2);
+}
+
+/** A memory size in GiB: whole, or one decimal; a size the fleet does not know (null) reads as a dash. */
+export function gibText(mib: number | null | undefined): string {
+  if (mib == null) return '—';
+  return `${Math.round(mib / 102.4) / 10} GiB`;
+}
+
+/** The popup's subtitle: the kind and the model, "workstation · ASUS ROG …". */
+export function machineSubtitle(m: Pick<FleetMachine, 'kind' | 'model'>): string {
+  return m.model ? `${m.kind} · ${m.model}` : m.kind;
+}
+
+/** The facts the popup lists, in order. The last-seen time is live, so the card adds it itself. */
+export function machineFacts(m: FleetMachine): [string, string][] {
+  return [
+    ['CPU', m.cpu.model || '—'],
+    ['Cores', `${m.cpu.cores} cores · ${m.cpu.threads} threads`],
+    ['Memory', gibText(m.memory_mib)],
+    // A GPU's memory is null when the fleet does not know it: its name stands alone.
+    ['GPUs', m.gpus.length ? m.gpus.map((g) => (g.memory_mib == null ? g.name : `${g.name} · ${gibText(g.memory_mib)}`)).join('\n') : 'none'],
+    ['Arch', m.arch || '—'],
+    ['Backend', m.backend || '—'],
+    ['OS', m.os || '—'],
+    ['Role', m.role],
+    ['Status', m.status],
+  ];
+}
+
+/** The agents line: the working and idle split while the machine runs, otherwise its state. */
+export function agentTally(total: number, working: number, status: FleetMachine['status']): string {
+  if (total === 0) return 'No agents';
+  const noun = total === 1 ? 'agent' : 'agents';
+  if (status === 'online' || status === 'draining') return `${total} ${noun}: ${working} working, ${total - working} idle`;
+  return `${total} ${noun} on a machine that is ${status}`;
 }

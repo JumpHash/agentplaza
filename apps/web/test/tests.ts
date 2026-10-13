@@ -15,7 +15,8 @@ import { buildModel, currentPulses, evalWhen, modelsFor, parseWhen, placeAtom, r
 import { MODELS, PALETTE, PALETTE_FILE } from '../src/views/floor3d/hardware-index';
 import { boardHeightAt, layoutOnBoard, pathOnTraces, traceGraph, type BoardLayout } from '../src/views/floor3d/board-layout';
 import type { Model } from '../src/views/floor3d/hardware';
-import type { Agent } from '../src/api';
+import type { Agent, FleetMachine } from '../src/api';
+import { agentTally, boardOf, fitDistance, fleetSig, gibText, machineFacts, machineSubtitle, roomAt } from '../src/views/floor';
 
 let failures = 0;
 function eq(actual: unknown, expected: unknown, name: string): void {
@@ -365,6 +366,15 @@ eq(walk.nodes.length, 3, 'walkways: one node per distinct trace point');
 eq(pathOnTraces(walk, [1, 0.5], [9.5, 10]), [[1, 0.5], [0, 0], [10, 0], [10, 10], [9.5, 10]], 'walkways: a walk along an L-shaped trace goes by its corner');
 const apart = traceGraph({ ...boardFixture(), traces: [{ path: [[0, 0], [1, 0]], y: 0.42, width: 0.25 }, { path: [[5, 5], [6, 5]], y: 0.42, width: 0.25 }] });
 eq(pathOnTraces(apart, [0, 0], [6, 5]), null, 'walkways: no walk between traces that do not join');
+// The board plaza's machine mapping and room lookup (floor.ts).
+const wsBoard = boardOf({ kind: 'workstation', vendor: null, model: null, apple: null, gpus: [{}] });
+eq(wsBoard, { name: 'board/workstation', params: { gpus: 1, studio: 0 } }, 'board plaza: a workstation with one GPU shows the workstation board');
+const appleBoard = boardOf({ kind: 'laptop', vendor: 'apple', model: 'MacBook Pro', apple: { chip: 'M3', p_cores: 4, e_cores: 4, gpu_cores: 10, neural_cores: 16, unified_memory_gib: 16 }, gpus: [] });
+eq(appleBoard, { name: 'board/apple-soc', params: { gpus: 0, studio: 0, p_cores: 4, e_cores: 4, gpu_cores: 10, memory_gib: 16 } }, 'board plaza: an Apple laptop shows the Apple SoC with its cores and memory');
+eq(boardOf({ kind: 'workstation', vendor: 'apple', model: 'Mac Studio', apple: null, gpus: [] }).params.studio, 1, 'board plaza: a Studio is flagged');
+const roomsOnBoard = layoutOnBoard([boardAgent(1, 'orchestrator', 'orchestrator'), boardAgent(2, 'builder')], boardFixture());
+eq(roomAt(roomsOnBoard, 5, 0)?.role, 'builder', 'board plaza: a point inside a room cell finds that room');
+eq(roomAt(roomsOnBoard, 0, 25), null, 'board plaza: a point off every cell is no room');
 
 // The Machines scene's pure parts (fleet.ts; desktop mirrors the same numbers).
 import { cableCurvePoints, facingAngle, packetRate, ringLayout, rotateY } from '../src/views/floor3d/fleet';
@@ -396,6 +406,34 @@ eq(packetRate(3, 3, false), 0, 'fleet packets: an offline link carries none');
 const fp = rotateY([0, 0, -4.6], facingAngle(14, 0, [0, 0, -4.6]));
 eq([r3(fp[0]), r3(fp[2])], [-4.6, 0], 'fleet facing: the port turns to face the hub');
 eq(rotateY([1, 2, 0], Math.PI / 2).map(r3), [0, 2, -1], 'fleet facing: rotation about y, as three.js turns it');
+
+// The Machines view's pure parts (floor.ts): the camera distance, the popup's text.
+const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
+const d80 = fitDistance(10, 40, 1, 0.8);
+eq(near(Math.tan(Math.asin(10 / d80)), 0.8 * Math.tan(Math.PI / 9)), true, 'machines fit: the sphere fills 80% of the tighter half-field');
+eq(fitDistance(10, 40, 0.5, 0.8) > d80, true, 'machines fit: a narrow stage (the width is tighter) backs the camera off');
+eq(gibText(16384), '16 GiB', 'machines text: whole GiB');
+eq(gibText(16000), '15.6 GiB', 'machines text: one decimal when not whole');
+eq(machineSubtitle({ kind: 'laptop', model: 'MacBook Pro (M3 Max)' }), 'laptop · MacBook Pro (M3 Max)', 'machines subtitle: kind and model');
+eq(machineSubtitle({ kind: 'edge', model: null }), 'edge', 'machines subtitle: no model, the kind alone');
+eq(agentTally(0, 0, 'online'), 'No agents', 'machines agents: none');
+eq(agentTally(3, 2, 'online'), '3 agents: 2 working, 1 idle', 'machines agents: the split while online');
+eq(agentTally(1, 0, 'offline'), '1 agent on a machine that is offline', 'machines agents: offline machine states its status');
+const rig: FleetMachine = {
+  id: 'n0', name: 'zarathos-pc', role: 'hub', kind: 'workstation', vendor: 'asus', model: 'ASUS ROG', apple: null, status: 'online',
+  arch: 'x86_64', os: 'linux', backend: 'docker', cpu: { model: 'AMD Ryzen 9 5950X', cores: 16, threads: 32 }, memory_mib: 65536,
+  gpus: [{ name: 'NVIDIA GeForce RTX 3090', vendor: 'nvidia', memory_mib: 24576 }], storage_gib: 2000, agents: [1, 2], working: 1,
+  stats: null, last_seen_ms: 0,
+};
+const facts = machineFacts(rig);
+eq(facts[0], ['CPU', 'AMD Ryzen 9 5950X'], 'machines facts: the CPU model first');
+eq(facts[1], ['Cores', '16 cores · 32 threads'], 'machines facts: cores and threads');
+eq(facts[2], ['Memory', '64 GiB'], 'machines facts: memory in GiB');
+eq(facts[3], ['GPUs', 'NVIDIA GeForce RTX 3090 · 24 GiB'], 'machines facts: GPU name and memory');
+eq(machineFacts({ ...rig, gpus: [] })[3], ['GPUs', 'none'], 'machines facts: no GPU reads none');
+eq(machineFacts({ ...rig, gpus: [{ name: 'NVIDIA GeForce RTX 3090', vendor: 'NVIDIA', memory_mib: null as unknown as number }] })[3], ['GPUs', 'NVIDIA GeForce RTX 3090'], 'machines facts: a GPU of unknown memory shows its name alone');
+eq(gibText(null), '—', 'machines text: unknown memory is a dash');
+eq(fleetSig({ machines: [rig, { ...rig, id: 'n1' }], links: [] }), 'n0,n1', 'machines: the fleet signature is the ids in order');
 
 if (failures) {
   console.error(`${failures} failure(s)`);
