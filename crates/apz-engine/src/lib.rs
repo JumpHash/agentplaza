@@ -16,6 +16,7 @@ pub mod engine;
 pub mod entry;
 pub mod entry_scene;
 pub mod fleet;
+pub mod gpus;
 pub mod geometry;
 pub mod hardware;
 pub mod input;

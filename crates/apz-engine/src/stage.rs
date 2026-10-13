@@ -336,6 +336,9 @@ pub fn fit_machines(&mut self) {
     if let Some(fleet) = &self.fleet {
         let f = fleet.frame();
         self.machines.fit_sphere(f.center, f.radius, w / h);
+        if !self.machines.orbit.drifting() {
+            self.machines.orbit.start_drift(); // the framed view starts the idle sway
+        }
     }
 }
 
@@ -353,6 +356,7 @@ pub fn set_view(&mut self, view: View) {
     self.popup = None;
     self.moved = false;
     self.refresh_board();
+    self.machines.orbit.stop_drift(); // a new view starts its own sway
     self.fit_active();
 }
 
@@ -397,6 +401,7 @@ pub fn enter(&mut self, id: String) {
     if self.fleet.is_none() || self.entry.is_some() {
         return;
     }
+    self.machines.orbit.stop_drift(); // the ENTER flight takes the camera
     let (w, h) = self.size;
     let aspect = if h > 0.0 { w / h } else { 1.0 };
     let cam = self.machines.orbit.camera(aspect);
@@ -472,6 +477,7 @@ pub fn left(&mut self, back: Option<Orbit>) {
         Some(orbit) => {
             self.machines.orbit = orbit;
             self.moved = true;
+            self.machines.orbit.start_drift(); // the reverse flight's end restarts the idle sway
         }
         None => {
             self.moved = false;
@@ -491,18 +497,21 @@ pub fn resize(&mut self, w: f32, h: f32) {
 /// Orbits the shown view by a drag.
 pub fn rotate(&mut self, dx: f32, dy: f32, height: f32) {
     self.moved = true;
+    self.machines.orbit.stop_drift(); // input stops the idle sway
     self.active().orbit.rotate(dx, dy, height);
 }
 
 /// Pans the shown view by a drag.
 pub fn pan(&mut self, dx: f32, dy: f32, height: f32) {
     self.moved = true;
+    self.machines.orbit.stop_drift(); // input stops the idle sway
     self.active().orbit.pan(dx, dy, height, FOV_DEG);
 }
 
 /// Zooms the shown view by a wheel step count.
 pub fn dolly(&mut self, steps: f32) {
     self.moved = true;
+    self.machines.orbit.stop_drift(); // input stops the idle sway
     self.active().orbit.dolly(steps);
 }
 
@@ -510,13 +519,19 @@ pub fn dolly(&mut self, steps: f32) {
 pub fn reset_view(&mut self) {
     self.moved = false;
     match self.view {
-        View::Machines => self.fit_machines(),
+        View::Machines => {
+            self.machines.orbit.stop_drift();
+            self.fit_machines(); // the reset starts the idle sway again
+        }
         _ => self.reset_plaza(),
     }
 }
 
 /// The pointer hovers a machine (Machines view) or a board's part (other views); `None` leaves it.
 pub fn hover(&mut self, at: Option<(f32, f32)>) {
+    if at.is_some() {
+        self.machines.orbit.stop_drift(); // pointer movement over the stage stops the idle sway
+    }
     match self.view {
         View::Machines => {
             let hit = at.and_then(|p| machine_at(self, p));
@@ -535,6 +550,7 @@ pub fn hover(&mut self, at: Option<(f32, f32)>) {
 
 /// A click: opens the popup of the machine under the pointer (Machines view) or selects a board's part.
 pub fn select(&mut self, at: Option<(f32, f32)>) {
+    self.machines.orbit.stop_drift(); // a click stops the idle sway
     match self.view {
         View::Machines => {
             let id = at.and_then(|p| machine_at(self, p));
@@ -566,6 +582,9 @@ pub fn tick(&mut self, now: Instant) -> Motion {
         View::Machines => {
             if self.machines.orbit.update() {
                 motion = Motion::Active;
+            }
+            if self.machines.orbit.drift_to(now) {
+                motion = motion.max(Motion::Ambient); // the idle sway turns the camera on the clock
             }
             self.machines.step(dt, now_ms(now), ambient, ambient_dt);
             motion = motion.max(self.machines.motion());
@@ -775,5 +794,121 @@ mod tests {
             }
         }
         assert_eq!(s.tick(now + Duration::from_millis(16)), Motion::Ambient);
+    }
+
+    /// The online fleet, framed by a Reset view (which starts the idle sway).
+    fn framed_fleet_stage() -> Stage {
+        let mut s = online_fleet_stage();
+        s.reset_view();
+        s
+    }
+
+    /// Drags the view, then steps until its damping settles. The sway must not resume.
+    fn drag_and_settle(s: &mut Stage, now: &mut Instant) {
+        s.rotate(40.0, 0.0, 600.0);
+        for _ in 0..2_000 {
+            *now += Duration::from_millis(16);
+            if s.tick(*now) != Motion::Active {
+                return;
+            }
+        }
+        panic!("the drag never settled");
+    }
+
+    #[test]
+    fn the_idle_sway_turns_the_camera_on_the_clock_and_is_ambient() {
+        let mut s = framed_fleet_stage();
+        assert!(s.machines.orbit.drifting());
+        let t0 = Instant::now();
+        s.tick(t0);
+        let framed = s.machines.orbit.theta;
+        assert_eq!(s.tick(t0 + Duration::from_secs(1)), Motion::Ambient);
+        let turned = s.machines.orbit.theta;
+        assert!(turned != framed, "the sway did not turn the camera");
+        assert!((turned - framed).abs() <= crate::controls::DRIFT_AMP, "turned {turned} from {framed}");
+    }
+
+    #[test]
+    fn a_pointer_drag_stops_the_idle_sway() {
+        let mut s = framed_fleet_stage();
+        let t0 = Instant::now();
+        s.tick(t0);
+        let mut now = t0 + Duration::from_secs(1);
+        s.tick(now);
+        drag_and_settle(&mut s, &mut now);
+        assert!(!s.machines.orbit.drifting());
+        let held = s.machines.orbit.theta;
+        s.tick(now + Duration::from_secs(5));
+        assert!((s.machines.orbit.theta - held).abs() < 1e-3, "the view kept swaying");
+    }
+
+    #[test]
+    fn reset_view_restarts_the_idle_sway() {
+        let mut s = framed_fleet_stage();
+        let t0 = Instant::now();
+        s.tick(t0);
+        let mut now = t0 + Duration::from_secs(1);
+        s.tick(now);
+        drag_and_settle(&mut s, &mut now);
+        assert!(!s.machines.orbit.drifting());
+        s.reset_view();
+        assert!(s.machines.orbit.drifting());
+        now += Duration::from_millis(16);
+        s.tick(now);
+        let framed = s.machines.orbit.theta;
+        assert_eq!(s.tick(now + Duration::from_secs(1)), Motion::Ambient);
+        assert!(s.machines.orbit.theta != framed, "the reset view did not sway");
+    }
+
+    /// The sway's azimuth `at` seconds after a Reset view, stepped at `fps` ticks a second.
+    fn sway_after(fps: u32, at: f64) -> f32 {
+        let mut s = framed_fleet_stage();
+        let t0 = Instant::now();
+        let ticks = (at * f64::from(fps)).round() as u32;
+        for k in 0..=ticks {
+            s.tick(t0 + Duration::from_secs_f64(f64::from(k) / f64::from(fps)));
+        }
+        s.machines.orbit.theta
+    }
+
+    /// Steps the stage until its flight rests, checking the sway is off while an ENTER sequence is open.
+    fn settle_flight(s: &mut Stage, now: &mut Instant) {
+        for _ in 0..10_000 {
+            *now += Duration::from_millis(16);
+            let motion = s.tick(*now);
+            if s.entry.is_some() {
+                assert!(!s.machines.orbit.drifting(), "the sway runs during the ENTER sequence");
+            }
+            if motion != Motion::Active {
+                return;
+            }
+        }
+        panic!("the flight never settled");
+    }
+
+    #[test]
+    fn back_restarts_the_idle_sway_once_the_reverse_flight_is_done() {
+        let mut s = framed_fleet_stage();
+        let t0 = Instant::now();
+        s.tick(t0);
+        let mut now = t0;
+        s.enter("n0".to_string());
+        settle_flight(&mut s, &mut now);
+        assert!(!s.machines.orbit.drifting());
+        s.leave();
+        settle_flight(&mut s, &mut now);
+        assert!(s.entry.is_none(), "the reverse flight did not finish");
+        assert!(matches!(s.view, View::Machines));
+        assert!(s.machines.orbit.drifting(), "Back did not restart the sway");
+        now += Duration::from_millis(16);
+        assert_eq!(s.tick(now), Motion::Ambient);
+    }
+
+    #[test]
+    fn the_sway_angle_at_a_time_does_not_depend_on_the_frame_rate() {
+        for at in [0.5, 2.0] {
+            let (fast, slow) = (sway_after(60, at), sway_after(12, at));
+            assert!((fast - slow).abs() < 1e-6, "at {at} s: 60 fps {fast}, 12 fps {slow}");
+        }
     }
 }

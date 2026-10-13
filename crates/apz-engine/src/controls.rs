@@ -4,6 +4,7 @@
 use std::f32::consts::PI;
 
 use glam::Vec3;
+use web_time::Instant;
 
 use super::scene::Camera;
 
@@ -15,6 +16,17 @@ pub const FOV_DEG: f32 = 40.0;
 const SETTLED: f32 = 1e-4;
 /// three's zoom base: one wheel step scales the distance by 0.95.
 const ZOOM_BASE: f32 = 0.95;
+/// The idle sway's swing either way about the framed azimuth, radians (the web's DRIFT_AMP: 3 degrees).
+pub const DRIFT_AMP: f32 = 3.0 * PI / 180.0;
+/// The idle sway's rate, radians a second (the web's DRIFT_RATE: 0.35 degrees a second).
+pub const DRIFT_RATE: f32 = 0.35 * PI / 180.0;
+
+/// The idle sway's state: the azimuth it swings about, and when its clock started (`None` until the first tick).
+#[derive(Debug, Clone, Copy)]
+struct Drift {
+    start_theta: f32,
+    started: Option<Instant>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Orbit {
@@ -36,6 +48,8 @@ pub struct Orbit {
     pan: Vec3,
     /// three's scale: zoom factor still to be applied to the radius (1 = none).
     scale: f32,
+    /// The idle sway, while it runs (see `start_drift`).
+    drift: Option<Drift>,
 }
 
 impl Default for Orbit {
@@ -54,6 +68,7 @@ impl Default for Orbit {
             delta_phi: 0.0,
             pan: Vec3::ZERO,
             scale: 1.0,
+            drift: None,
         }
     }
 }
@@ -94,6 +109,36 @@ impl Orbit {
         self.scale = 1.0;
 
         self.delta_theta.abs() > SETTLED || self.delta_phi.abs() > SETTLED || self.pan.length() > SETTLED
+    }
+
+    /// Starts the idle sway from the current azimuth (the framed view). Its clock starts at the first
+    /// [`Orbit::drift_to`], so the angle depends on that tick's time, not on the frames before it.
+    pub fn start_drift(&mut self) {
+        self.drift = Some(Drift { start_theta: self.theta, started: None });
+    }
+
+    /// Stops the idle sway; the view stays where it is.
+    pub fn stop_drift(&mut self) {
+        self.drift = None;
+    }
+
+    /// Whether the idle sway is running.
+    pub fn drifting(&self) -> bool {
+        self.drift.is_some()
+    }
+
+    /// Sets the azimuth to the idle sway's angle at `now`: `start_theta` plus a triangle wave of [`DRIFT_AMP`]
+    /// either way, swinging at [`DRIFT_RATE`] (so the framed view stays in sight). The angle is a pure function of
+    /// the time since the sway started. Returns whether the sway runs.
+    pub fn drift_to(&mut self, now: Instant) -> bool {
+        let Some(drift) = self.drift.as_mut() else { return false };
+        let started = *drift.started.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(started).as_secs_f64();
+        let period = f64::from(4.0 * DRIFT_AMP / DRIFT_RATE);
+        let u = (elapsed / period).fract() as f32;
+        let swing = if u < 0.25 { 4.0 * u } else if u < 0.75 { 2.0 - 4.0 * u } else { 4.0 * u - 4.0 };
+        self.theta = drift.start_theta + DRIFT_AMP * swing;
+        true
     }
 
     /// Places the eye at `eye` looking at `target` (resets pending motion).

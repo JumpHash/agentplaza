@@ -104,6 +104,79 @@ const PASS_QUAD: usize = 2;
 const PASS_OVERLAY: usize = 3;
 const PASS_BLIT: usize = 4;
 
+/// The programs a draw can select, counted per draw in `Pipeline::programs` (the index of each: [`program_index`]).
+const PROGRAM_COUNT: usize = 7;
+
+fn program_index(prog: Prog) -> usize {
+    match prog {
+        Prog::Toon => 0,
+        Prog::Grass => 1,
+        Prog::Basic => 2,
+        Prog::ShadowCatcher => 3,
+        Prog::Outline => 4,
+        Prog::Sky => 5,
+        Prog::Points => 6,
+    }
+}
+
+/// The draw calls of a frame by category, for the performance pass. `shadow` is the shadow map's draws; `main` the
+/// scene's mesh draws that do not outline; `outline` the outline program's; `sprite_label` the point sprites and the
+/// labels; `other` the host's blit. `programs` counts the mesh and sprite draws by the program that selects their
+/// pipeline (the closest thing to a mesh kind the draw calls carry).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct DrawStats {
+    pub total: u32,
+    pub shadow: u32,
+    pub main: u32,
+    pub outline: u32,
+    pub sprite_label: u32,
+    pub other: u32,
+    pub programs: ProgramStats,
+}
+
+/// The mesh and sprite draws of a frame by program.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ProgramStats {
+    pub toon: u32,
+    pub grass: u32,
+    pub basic: u32,
+    pub shadow_catcher: u32,
+    pub outline: u32,
+    pub sky: u32,
+    pub points: u32,
+}
+
+impl DrawStats {
+    /// Builds the stats from the pass counts (in [`DRAW_PASSES`] order) and the program counts (in [`program_index`]
+    /// order). The outline program's draws are a part of the mesh pass, so `main` is the rest of it.
+    fn from_counts(passes: [u32; 5], programs: [u32; PROGRAM_COUNT]) -> Self {
+        let [shadow, mesh, quad, overlay, blit] = passes;
+        let outline = programs[program_index(Prog::Outline)];
+        DrawStats {
+            total: passes.iter().sum(),
+            shadow,
+            main: mesh.saturating_sub(outline),
+            outline,
+            sprite_label: quad + overlay,
+            other: blit,
+            programs: ProgramStats {
+                toon: programs[program_index(Prog::Toon)],
+                grass: programs[program_index(Prog::Grass)],
+                basic: programs[program_index(Prog::Basic)],
+                shadow_catcher: programs[program_index(Prog::ShadowCatcher)],
+                outline,
+                sky: programs[program_index(Prog::Sky)],
+                points: programs[program_index(Prog::Points)],
+            },
+        }
+    }
+
+    /// The stats as a JSON object.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
 impl Pipeline {
     /// Counts one draw call of pass `pass` (an index of [`DRAW_PASSES`]).
     fn count(&self, pass: usize) {
@@ -118,6 +191,17 @@ impl Pipeline {
     /// The draw calls of the frame so far, all passes.
     pub fn draw_calls(&self) -> u32 {
         self.draw_breakdown().iter().sum()
+    }
+
+    /// Counts one mesh or sprite draw by the program that selects its pipeline.
+    fn count_program(&self, prog: Prog) {
+        self.programs[program_index(prog)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The draw calls of the frame so far by category (see [`DrawStats`]).
+    pub fn draw_stats(&self) -> DrawStats {
+        let programs = std::array::from_fn(|i| self.programs[i].load(std::sync::atomic::Ordering::Relaxed));
+        DrawStats::from_counts(self.draw_breakdown(), programs)
     }
 }
 
@@ -365,6 +449,8 @@ pub struct Pipeline {
     /// The draw calls issued for this frame: the scene passes in `prepare`, then the host pass in `draw`.
     /// Draw calls of the frame so far, by pass (see [`DRAW_PASSES`]). Reset by each [`Primitive::prepare`].
     pub draws: [std::sync::atomic::AtomicU32; 5],
+    /// This frame's mesh and sprite draws by program (see [`program_index`]).
+    pub programs: [std::sync::atomic::AtomicU32; PROGRAM_COUNT],
 }
 
 impl Pipeline {
@@ -624,6 +710,7 @@ impl Pipeline {
             background: wgpu::Color::BLACK,
             clear_alpha: 1.0,
             draws: Default::default(),
+            programs: Default::default(),
             probe_corner: false,
         };
         // The white 1x1 map that unmapped materials sample (texture id 0).
@@ -1148,6 +1235,9 @@ impl Primitive {
         for count in &p.draws {
             count.store(0, std::sync::atomic::Ordering::Relaxed);
         }
+        for count in &p.programs {
+            count.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
         let started = web_time::Instant::now();
         let full = (((bounds.width * scale).round() as u32).max(1), ((bounds.height * scale).round() as u32).max(1));
         let light = light();
@@ -1525,11 +1615,13 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                         pass.set_vertex_buffer(1, rows.slice(..));
                         pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                         p.count(PASS_MESH);
+                        p.count_program(cmd.key.prog);
                         pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
                     }
                     None if cmd.key.prog == Prog::Points => {
                         pass.set_vertex_buffer(0, rows.slice(..));
                         p.count(PASS_QUAD);
+                        p.count_program(cmd.key.prog);
                         pass.draw(0..6, cmd.rows.clone());
                     }
                     None => {}
@@ -1549,6 +1641,23 @@ mod tests {
             0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255]);
         assert_eq!(levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(), vec![(4, 2), (2, 1), (1, 1)]);
         assert_eq!(levels[1].2[0], 127);
+    }
+
+    #[test]
+    fn draw_stats_split_the_passes_and_keep_outline_apart_from_the_main_pass() {
+        // Passes [shadow, mesh, quad, overlay, blit]; programs [toon, grass, basic, shadow catcher, outline, sky, points].
+        let stats = DrawStats::from_counts([1, 10, 4, 3, 1], [2, 1, 3, 0, 4, 0, 4]);
+        assert_eq!(stats.total, 19);
+        assert_eq!(stats.shadow, 1);
+        assert_eq!(stats.outline, 4);
+        assert_eq!(stats.main, 6);
+        assert_eq!(stats.sprite_label, 7);
+        assert_eq!(stats.other, 1);
+        assert_eq!(stats.programs.toon, 2);
+        assert_eq!(stats.programs.points, 4);
+        let json: serde_json::Value = serde_json::from_str(&stats.to_json()).unwrap();
+        assert_eq!(json["sprite_label"], 7);
+        assert_eq!(json["programs"]["shadow_catcher"], 0);
     }
 
     #[test]

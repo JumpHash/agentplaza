@@ -247,6 +247,12 @@ impl WebEngine {
         Uint32Array::from(&self.shared.borrow().engine.draw_breakdown()[..])
     }
 
+    /// The last drawn frame's draw calls by category, as JSON: `total`, `shadow`, `main`, `outline`, `sprite_label`,
+    /// `other`, and `programs` (the mesh and sprite draws by program). See `apz_engine::render::DrawStats`.
+    pub fn draw_stats(&self) -> String {
+        self.shared.borrow().engine.draw_stats().to_json()
+    }
+
     /// Stops the loop, disconnects the observers, removes every listener and drops the surface.
     pub fn destroy(&self) {
         self.teardown();

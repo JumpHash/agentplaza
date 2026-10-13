@@ -42,6 +42,9 @@ import { prewarmFx } from './floor3d/robots/fx';
 import { DIRECT_START, EntrySequence, beginEntry, ownRoomMaterials, prepareFade, setReturn, takeEntry, takeReturn, type EntryContext, type Exterior, type Handoff, type Pose } from './floor3d/entry';
 import type { Cleanup } from './index';
 import { engineWanted, mountEngine } from './engine-mount';
+import { LABEL_CSS, agentTally, machineCard, machineFacts, machineSubtitle } from './floor-popup';
+
+export { agentTally, gibText, gpuLines, machineFacts, machineSubtitle } from './floor-popup';
 
 const PACKET_MS = 1500;
 const MAX_PACKETS = 60;
@@ -52,11 +55,6 @@ const BIG_POLAR = 0.42; // a big board's default view, from vertical: about 24 d
 const BOARD_DROP = 14; // the night's ground sits this far under the board, so the board floats
 const GLOW_OPACITY = 0.4; // a working component's glow plate, at full strength
 const DUST_N = 90;
-const LABEL_CSS =
-  'position:absolute;left:0;top:0;display:none;align-items:center;gap:6px;max-width:200px;padding:3px 7px;' +
-  'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--print);color:var(--ink);' +
-  'font:600 10.5px/1.35 var(--mono);white-space:nowrap;' +
-  'pointer-events:none;will-change:transform';
 const FIT_FILL = 0.85;
 const DRIFT_AMP = (3 * Math.PI) / 180; // the settled plaza's idle sway: this far either way about the framed target (radians)
 const DRIFT_RATE = (0.35 * Math.PI) / 180; // at about 3.5 degrees per 10 s (radians a second)
@@ -2029,8 +2027,6 @@ const MACHINES_MAX_RATIO = 1;
 const MACHINES_ANTIALIAS = false;
 /** The fleet's bounding sphere fills this share of the frame on its tighter axis. */
 const MACHINE_FILL = 0.8;
-/** How many agent names the popup lists before "+N more". */
-const FLEET_CARD_AGENTS = 6;
 const FLEET_KEYS = [
   ['online', 'Online'],
   ['draining', 'Draining'],
@@ -2049,7 +2045,7 @@ export function mount(root: HTMLElement, params: string[] = []): Cleanup {
   const machineId = params[0];
   // A Back from a machine returns with the fleet it showed: the Machines view mounts at once, with no refetch.
   const back = takeReturn();
-  if (machineId === undefined && engineWanted()) return mountEngine(root); // ?engine=wasm: the Machines view on the wasm canvas
+  if (engineWanted()) return mountEngine(root, machineId ?? null); // ?engine=wasm: the Machines view, or a machine's board, on the wasm canvas
   if (back) return mountMachines(root, back.fleet, back.pose);
   if (machineId !== undefined) {
     const w = warmHandle;
@@ -2310,30 +2306,9 @@ function mountMachines(root: HTMLElement, first: FleetResponse, back: Pose | nul
     const sig = JSON.stringify([m.id, m.name, m.status, machineSubtitle(m), facts, names, tally]);
     if (sig !== cardSig) {
       cardSig = sig;
-      seenEl = h('dd');
-      card.replaceChildren(
-        h('header.floor-card-head', null, h('strong', null, m.name), h('span.floor-tag', null, m.status)),
-        h('div.floor-card-activity', null, machineSubtitle(m)),
-        h(
-          'dl.machine-facts',
-          null,
-          ...facts.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)]),
-          h('dt', null, 'Last seen'),
-          seenEl,
-        ),
-        h(
-          'div.machine-agents',
-          null,
-          h('div.floor-card-activity', null, tally),
-          h(
-            'div.machine-agent-names',
-            null,
-            ...names.slice(0, FLEET_CARD_AGENTS).map(({ cid, name }) => h('a', { href: href('agents', cid) }, name)),
-            names.length > FLEET_CARD_AGENTS ? h('span', null, `+${names.length - FLEET_CARD_AGENTS} more`) : null,
-          ),
-        ),
-        h('footer.machine-card-foot', null, button('ENTER', () => enterMachine(m), { kind: 'primary' })),
-      );
+      const built = machineCard(m, nameOfCid, () => enterMachine(m), now);
+      seenEl = built.seen;
+      card.replaceChildren(...built.children);
     }
     const seen = ago(m.last_seen_ms, now);
     if (seenEl && seenEl.textContent !== seen) seenEl.textContent = seen;
@@ -2672,50 +2647,3 @@ export function fitDistance(radius: number, fovDeg: number, aspect: number, fill
   return radius * Math.sqrt(1 + 1 / (fill * tanHalf) ** 2);
 }
 
-/** A memory size in GiB: whole, or one decimal; a size the fleet does not know (null) reads as a dash. */
-export function gibText(mib: number | null | undefined): string {
-  if (mib == null) return '—';
-  return `${Math.round(mib / 102.4) / 10} GiB`;
-}
-
-/** The popup's subtitle: the kind and the model, "workstation · ASUS ROG …". */
-export function machineSubtitle(m: Pick<FleetMachine, 'kind' | 'model'>): string {
-  return m.model ? `${m.kind} · ${m.model}` : m.kind;
-}
-
-/**
- * The GPUs as one line per kind: identical cards grouped, "8× NVIDIA H100 · 80 GiB". A GPU's memory is null when the
- * fleet does not know it: its name stands alone. The kinds keep the order their first card has in the fleet.
- */
-export function gpuLines(gpus: FleetMachine['gpus']): string {
-  if (gpus.length === 0) return 'none';
-  const kinds = new Map<string, number>();
-  for (const g of gpus) {
-    const label = g.memory_mib == null ? g.name : `${g.name} · ${gibText(g.memory_mib)}`;
-    kinds.set(label, (kinds.get(label) ?? 0) + 1);
-  }
-  return [...kinds].map(([label, n]) => (n > 1 ? `${n}× ${label}` : label)).join('\n');
-}
-
-/** The facts the popup lists, in order. The last-seen time is live, so the card adds it itself. */
-export function machineFacts(m: FleetMachine): [string, string][] {
-  return [
-    ['CPU', m.cpu.model || '—'],
-    ['Cores', `${m.cpu.cores} cores · ${m.cpu.threads} threads`],
-    ['Memory', gibText(m.memory_mib)],
-    ['GPUs', gpuLines(m.gpus)],
-    ['Arch', m.arch || '—'],
-    ['Backend', m.backend || '—'],
-    ['OS', m.os || '—'],
-    ['Role', m.role],
-    ['Status', m.status],
-  ];
-}
-
-/** The agents line: the working and idle split while the machine runs, otherwise its state. */
-export function agentTally(total: number, working: number, status: FleetMachine['status']): string {
-  if (total === 0) return 'No agents';
-  const noun = total === 1 ? 'agent' : 'agents';
-  if (status === 'online' || status === 'draining') return `${total} ${noun}: ${working} working, ${total - working} idle`;
-  return `${total} ${noun} on a machine that is ${status}`;
-}

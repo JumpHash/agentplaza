@@ -114,6 +114,11 @@ impl Renderer {
         self.pipeline.draw_breakdown()
     }
 
+    /// The draw calls of the prepared frame by category (see [`render::DrawStats`]).
+    pub fn draw_stats(&self) -> render::DrawStats {
+        self.pipeline.draw_stats()
+    }
+
 }
 
 /// The engine: the stage (the Floor's state), the pointer state, and the GPU side when there is one.
@@ -318,6 +323,11 @@ impl Engine {
     /// The draw calls of the last frame drawn with the GPU, by pass (see [`render::DRAW_PASSES`]); zeros without a GPU.
     pub fn draw_breakdown(&self) -> [u32; 5] {
         self.gpu.as_ref().map_or([0; 5], Renderer::draw_breakdown)
+    }
+
+    /// The draw calls of the last frame drawn with the GPU by category (zeros without a GPU).
+    pub fn draw_stats(&self) -> render::DrawStats {
+        self.gpu.as_ref().map_or_else(render::DrawStats::default, Renderer::draw_stats)
     }
 }
 
