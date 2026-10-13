@@ -14,6 +14,7 @@ use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::db::Db;
 use crate::role::Role;
 use crate::scheduler::Origin;
 use crate::settings::{tier_of, Tier};
@@ -47,12 +48,22 @@ pub struct Agent {
     pub kind: String,
 }
 
+/// The roster: the agents by CID, in memory. With a database, every change to a durable field (name,
+/// role, model, species) is written through to the `agents` row, and a remove is a soft delete there
+/// (db/roster.rs). Writes happen after the roster lock is released.
 #[derive(Default)]
 pub struct Roster {
     agents: Mutex<BTreeMap<u64, Agent>>,
+    /// Postgres, when this run has it; None keeps the roster in memory only.
+    store: Option<Arc<Db>>,
 }
 
 impl Roster {
+    /// A roster that writes through to `store`; None when this run has no database.
+    pub fn with_db(store: Option<Arc<Db>>) -> Self {
+        Self { agents: Mutex::default(), store }
+    }
+
     pub fn get(&self, cid: u64) -> Option<Agent> {
         // contract
         self.lock().get(&cid).cloned()
@@ -63,32 +74,81 @@ impl Roster {
         self.lock().values().cloned().collect()
     }
 
-    /// Applies `f` to the agent, if it exists; returns whether it did.
+    /// Applies `f` to the agent, if it exists; returns whether it did. A change to a durable field is
+    /// written through.
     pub fn update(&self, cid: u64, f: impl FnOnce(&mut Agent)) -> bool {
         // contract
-        match self.lock().get_mut(&cid) {
-            Some(agent) => {
-                f(agent);
-                true
-            }
-            None => false,
-        }
+        let written = {
+            let mut agents = self.lock();
+            let Some(agent) = agents.get_mut(&cid) else {
+                return false;
+            };
+            let before = durable(agent);
+            f(agent);
+            (durable(agent) != before).then(|| agent.clone())
+        };
+        self.persist(written.as_ref());
+        true
     }
 
-    /// Inserts or replaces an agent.
+    /// Inserts or replaces an agent, and writes it through.
     pub fn upsert(&self, agent: Agent) {
         // contract
+        self.persist(Some(&agent));
         self.lock().insert(agent.cid, agent);
     }
 
-    /// Takes the agent off the roster; returns whether it was there.
+    /// Takes the agent off the roster (a soft delete in the database); returns whether it was there.
     pub fn remove(&self, cid: u64) -> bool {
-        self.lock().remove(&cid).is_some()
+        let removed = self.lock().remove(&cid).is_some();
+        if let (true, Some(store)) = (removed, &self.store) {
+            store.retire_agent(cid);
+        }
+        removed
+    }
+
+    /// Puts agents loaded from the database on the roster; nothing is written back.
+    pub fn restore(&self, agents: Vec<Agent>) {
+        let mut roster = self.lock();
+        for agent in agents {
+            roster.insert(agent.cid, agent);
+        }
+    }
+
+    fn persist(&self, agent: Option<&Agent>) {
+        if let (Some(agent), Some(store)) = (agent, &self.store) {
+            store.write_agent(agent);
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Agent>> {
         self.agents.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// The fields the `agents` row holds; a change to one of them is written through.
+fn durable(agent: &Agent) -> (String, String, Option<String>, String) {
+    (agent.name.clone(), agent.role.clone(), agent.model_override.clone(), agent.species.clone())
+}
+
+/// Loads the active rows of the `agents` table onto the roster before reconcile runs; without a
+/// database nothing loads. A row with no name takes its name from names.json, the fallback until
+/// that file is retired.
+pub fn load_roster(app: &App) {
+    let agents = app
+        .db
+        .active_agents()
+        .into_iter()
+        .map(|row| {
+            let cid = row.cid;
+            let mut agent = row.into_agent();
+            if agent.name.is_empty() {
+                agent.name = app.names.get(cid).unwrap_or_default();
+            }
+            agent
+        })
+        .collect();
+    app.agents.restore(agents);
 }
 
 /// Agent names by CID, kept at `<state-dir>/names.json` and written atomically.
@@ -639,9 +699,13 @@ struct AssignBody {
     task_id: String,
 }
 
+/// Every agent's API view, in roster order.
+pub(crate) fn list_views(app: &App) -> Vec<Value> {
+    app.agents.list().iter().map(|a| view(app, a)).collect()
+}
+
 fn list(app: &App) -> Response {
-    let views: Vec<Value> = app.agents.list().iter().map(|a| view(app, a)).collect();
-    Response::json(200, &views)
+    Response::json(200, &list_views(app))
 }
 
 /// Spawns `count` runs of `role` via noded. `model` is validated against the

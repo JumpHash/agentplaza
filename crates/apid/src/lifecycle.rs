@@ -115,7 +115,7 @@ fn cid_of(p: &Params<'_>) -> Result<u64, Response> {
 }
 
 /// The run and VM index the agent sits on; 404 if unknown, 409 if it has no VM here.
-fn place(app: &App, cid: u64) -> Result<(String, u32), Response> {
+pub(crate) fn place(app: &App, cid: u64) -> Result<(String, u32), Response> {
     let Some(agent) = app.agents.get(cid) else {
         return Err(Response::error(404, &format!("no agent {cid}")));
     };
@@ -126,7 +126,7 @@ fn place(app: &App, cid: u64) -> Result<(String, u32), Response> {
 }
 
 /// Asks noded to run `action` on the VM; any failure becomes the response.
-fn noded_call(app: &App, cid: u64, run: &str, vm: u32, action: &str) -> Result<(), Response> {
+pub(crate) fn noded_call(app: &App, cid: u64, run: &str, vm: u32, action: &str) -> Result<(), Response> {
     let path = format!("/v1/runs/{run}/vms/{vm}/{action}");
     match crate::fleet::noded_for(app, cid, "POST", &path, Some(&json!({}))) {
         Ok((code, _)) if (200..300).contains(&code) => Ok(()),

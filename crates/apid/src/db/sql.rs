@@ -27,6 +27,31 @@ pub const MIGRATION_RECORD: &str = include_str!("../../sql/queries/migration_rec
 pub const MIGRATION_LOCK: &str = include_str!("../../sql/queries/migration_lock.sql");
 pub const MIGRATION_UNLOCK: &str = include_str!("../../sql/queries/migration_unlock.sql");
 
+// The data migration (`data_migrations`, docs/design/database.md section 4).
+pub const AGENTS_SOURCE: &str = include_str!("../../sql/queries/agents_source.sql");
+pub const AGENTS_DELETE: &str = include_str!("../../sql/queries/agents_delete.sql");
+pub const AGENTS_INSERT: &str = include_str!("../../sql/queries/agents_insert.sql");
+pub const AGENTS_COUNT: &str = include_str!("../../sql/queries/agents_count.sql");
+
+// The roster's write-through to the agents table (db/roster.rs).
+pub const AGENTS_UPSERT: &str = include_str!("../../sql/queries/agents_upsert.sql");
+pub const AGENTS_RETIRE: &str = include_str!("../../sql/queries/agents_retire.sql");
+pub const AGENTS_ACTIVE: &str = include_str!("../../sql/queries/agents_active.sql");
+pub const DATA_MIGRATION_STATUS: &str = include_str!("../../sql/queries/data_migration_status.sql");
+pub const DATA_MIGRATION_RECORD: &str = include_str!("../../sql/queries/data_migration_record.sql");
+pub const DATA_MIGRATION_FAIL: &str = include_str!("../../sql/queries/data_migration_fail.sql");
+
+// The hub's MCP server (hub_mcp_*: the tokens, the audit log and the settings row; docs/design/hub-mcp.md).
+pub const HUB_MCP_SETTINGS_GET: &str = include_str!("../../sql/queries/hub_mcp_settings_get.sql");
+pub const HUB_MCP_SETTINGS_PUT: &str = include_str!("../../sql/queries/hub_mcp_settings_put.sql");
+pub const HUB_MCP_TOKEN_INSERT: &str = include_str!("../../sql/queries/hub_mcp_token_insert.sql");
+pub const HUB_MCP_TOKEN_BY_DIGEST: &str = include_str!("../../sql/queries/hub_mcp_token_by_digest.sql");
+pub const HUB_MCP_TOKEN_LIST: &str = include_str!("../../sql/queries/hub_mcp_token_list.sql");
+pub const HUB_MCP_TOKEN_USE: &str = include_str!("../../sql/queries/hub_mcp_token_use.sql");
+pub const HUB_MCP_TOKEN_REVOKE: &str = include_str!("../../sql/queries/hub_mcp_token_revoke.sql");
+pub const HUB_MCP_CALL_INSERT: &str = include_str!("../../sql/queries/hub_mcp_call_insert.sql");
+pub const HUB_MCP_CALL_PAGE: &str = include_str!("../../sql/queries/hub_mcp_call_page.sql");
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

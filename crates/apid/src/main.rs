@@ -54,6 +54,7 @@ mod fleet;
 mod foundry;
 mod node_link;
 mod hub_auth;
+mod hub_mcp;
 mod transcript;
 mod upstream;
 mod usage;

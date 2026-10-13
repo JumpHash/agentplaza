@@ -45,7 +45,7 @@ pub fn run(cmd: Cmd, json_out: bool) -> Result<(), String> {
             let client = Client::new(&url, pin_bytes, token.clone());
             client.get("/v1/auth/check").map_err(|e| format!("{url} did not accept the sign-in: {e}"))?;
             let name = name.unwrap_or_else(|| host_of(&url));
-            config.hubs.insert(name.clone(), SavedHub { url: url.clone(), token, pin });
+            config.hubs.insert(name.clone(), SavedHub { url: url.clone(), token, pin, mcp_token: None });
             if config.default.is_none() {
                 config.default = Some(name.clone());
             }
@@ -103,7 +103,7 @@ pub fn run(cmd: Cmd, json_out: bool) -> Result<(), String> {
 }
 
 /// `https://plaza.example:7700` → `plaza.example`.
-fn host_of(url: &str) -> String {
+pub fn host_of(url: &str) -> String {
     let rest = url.split("://").nth(1).unwrap_or(url);
     let host = rest.split('/').next().unwrap_or(rest);
     let host = host.rsplit_once(':').map_or(host, |(h, _)| h);

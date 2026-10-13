@@ -216,6 +216,20 @@ impl Store {
         entries
     }
 
+    /// Stored versions whose name, description or a file path contains `query` (case-insensitive), newest first.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<Entry> {
+        let needle = query.to_lowercase();
+        self.all()
+            .into_iter()
+            .filter(|entry| {
+                entry.name.to_lowercase().contains(&needle)
+                    || entry.description.to_lowercase().contains(&needle)
+                    || entry.files.iter().any(|file| file.path.to_lowercase().contains(&needle))
+            })
+            .take(limit)
+            .collect()
+    }
+
     /// The newest version of each name that agent `cid` may see.
     pub fn offered(&self, cid: u64) -> Vec<Entry> {
         latest(&self.lock(), cid)

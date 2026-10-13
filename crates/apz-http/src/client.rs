@@ -26,6 +26,8 @@ pub struct Reply {
     pub status: u16,
     pub content_type: String,
     pub body: Vec<u8>,
+    /// The answer's headers (names as the server sent them, values as they came).
+    pub headers: Vec<(String, String)>,
 }
 
 impl Reply {
@@ -81,7 +83,8 @@ fn read_reply(mut reader: impl BufRead) -> io::Result<Reply> {
         Some(value) if !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) => value,
         _ => "application/octet-stream",
     };
-    Ok(Reply { status, content_type: content_type.to_string(), body })
+    let content_type = content_type.to_string();
+    Ok(Reply { status, content_type, body, headers })
 }
 
 /// `GET path`, answered with JSON.

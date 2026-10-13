@@ -80,6 +80,35 @@ struct Pending {
     socket: TcpStream,
 }
 
+/// The window in which evictions after the first are counted, not logged.
+const EVICTION_LOG_WINDOW: Duration = Duration::from_secs(10);
+
+/// Rate-limits the eviction log line: the first eviction is logged at once, then at most one line per
+/// `EVICTION_LOG_WINDOW`, which reports how many evictions were suppressed since the last line. The clock is the
+/// caller's `now`, so the limit is testable without sleeping.
+#[derive(Default)]
+struct EvictionLog {
+    last_logged: Option<Instant>,
+    suppressed: u64,
+}
+
+impl EvictionLog {
+    /// Records one eviction at `now`. Returns the line to log, or None when this eviction is suppressed.
+    fn record(&mut self, now: Instant) -> Option<String> {
+        if self.last_logged.is_some_and(|at| now.duration_since(at) < EVICTION_LOG_WINDOW) {
+            self.suppressed += 1;
+            return None;
+        }
+        let line = match self.suppressed {
+            0 => "closed the oldest unauthenticated relay connection to make room".to_string(),
+            n => format!("closed the oldest unauthenticated relay connection to make room; {n} more since the last log line"),
+        };
+        self.last_logged = Some(now);
+        self.suppressed = 0;
+        Some(line)
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -133,6 +162,8 @@ pub struct Egress {
     blocklist: RwLock<Vec<String>>,
     /// The verdicts already logged, so each host is logged once per server and verdict.
     logged: Mutex<BTreeSet<(String, String, bool)>>,
+    /// The rate limit on the eviction log line (one relay, so one limit).
+    eviction_log: Mutex<EvictionLog>,
 }
 
 /// A container's address on `apz-mcp`, held while its instance runs. Dropping it frees the address.
@@ -189,6 +220,7 @@ impl Egress {
             tenants: Mutex::new(BTreeMap::new()),
             blocklist: RwLock::new(Vec::new()),
             logged: Mutex::new(BTreeSet::new()),
+            eviction_log: Mutex::new(EvictionLog::default()),
         })
     }
 
@@ -244,7 +276,9 @@ impl Egress {
         if pending.len() >= self.handshake.max_pending {
             if let Some(oldest) = pending.pop_front() {
                 let _ = oldest.socket.shutdown(Shutdown::Both);
-                eprintln!("apid: mcp: closed the oldest unauthenticated relay connection to make room");
+                if let Some(line) = lock(&self.eviction_log).record(Instant::now()) {
+                    eprintln!("apid: mcp: {line}");
+                }
             }
         }
         pending.push_back(Pending { id, socket });
@@ -806,6 +840,22 @@ mod tests {
         let started = Instant::now();
         assert_eq!(relayed(addr, "forged", "172.29.250.9", "CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n"), "");
         assert!(started.elapsed() >= Duration::from_millis(350), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_burst_of_evictions_logs_once_then_reports_what_it_suppressed() {
+        let mut log = EvictionLog::default();
+        let t0 = Instant::now();
+        // 100 evictions within one second: the first is logged at once, the rest are suppressed.
+        let lines: Vec<String> = (0..100u64).filter_map(|k| log.record(t0 + Duration::from_millis(k * 10))).collect();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("closed the oldest"), "{}", lines[0]);
+        assert!(!lines[0].contains("more since"), "{}", lines[0]);
+        // The next eviction after the window is logged, and reports the 99 suppressed.
+        let next = log.record(t0 + EVICTION_LOG_WINDOW).expect("logged after the window");
+        assert!(next.contains("99 more since the last log line"), "{next}");
+        // And the count restarts from there.
+        assert!(log.record(t0 + EVICTION_LOG_WINDOW + Duration::from_secs(1)).is_none());
     }
 
     #[test]

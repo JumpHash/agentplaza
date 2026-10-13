@@ -1,0 +1,222 @@
+//! The operate tools: they act within the plaza's own rules. Each goes through the same service the HTTP API uses.
+
+use serde_json::{json, Value};
+
+use super::{Ctx, Tool};
+use crate::hub_mcp::auth::Scope;
+
+pub struct MessageOrchestrator;
+pub struct TellAgent;
+pub struct StopAgent;
+
+fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    args.get(key).and_then(Value::as_str).ok_or_else(|| format!("{key} must be a string"))
+}
+
+fn cid_arg(args: &Value) -> Result<u64, String> {
+    args.get("cid").and_then(Value::as_u64).ok_or_else(|| "cid must be a whole number".to_string())
+}
+
+impl Tool for MessageOrchestrator {
+    fn name(&self) -> &'static str {
+        "message_orchestrator"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Sends the owner's message to the orchestrator, as a chat in the owner's thread."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "text": { "type": "string", "minLength": 1 } },
+            "required": ["text"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "work": { "type": "integer" }, "cid": { "type": "integer" } },
+            "required": ["work", "cid"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        ctx.plaza.message_orchestrator(text_arg(args, "text")?)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("Message queued for the orchestrator as work {}.", out["work"])
+    }
+}
+
+impl Tool for TellAgent {
+    fn name(&self) -> &'static str {
+        "tell_agent"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Sends a note to one agent. The agent reads it with its next work."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "cid": { "type": "integer", "minimum": 0 },
+                "text": { "type": "string", "minLength": 1 },
+            },
+            "required": ["cid", "text"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({ "type": "object", "description": "the node's answer to the note" })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        ctx.plaza.tell_agent(cid_arg(args)?, text_arg(args, "text")?)
+    }
+
+    fn summary(&self, _out: &Value) -> String {
+        "Note sent to the agent.".to_string()
+    }
+}
+
+impl Tool for StopAgent {
+    fn name(&self) -> &'static str {
+        "stop_agent"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Stops one agent's current work. The agent stays on the roster."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "cid": { "type": "integer", "minimum": 0 },
+                "reason": { "type": "string", "minLength": 1 },
+            },
+            "required": ["cid", "reason"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({ "type": "object", "description": "the node's answer to the stop" })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        ctx.plaza.stop_agent(cid_arg(args)?, text_arg(args, "reason")?)
+    }
+
+    fn summary(&self, _out: &Value) -> String {
+        "The agent's work is stopped.".to_string()
+    }
+}
+
+pub struct RestartAgent;
+
+impl Tool for RestartAgent {
+    fn name(&self) -> &'static str {
+        "restart_agent"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Restarts one agent's VM. Its current work is cancelled first; the agent stays on the roster."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "cid": { "type": "integer", "minimum": 0 } },
+            "required": ["cid"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" }, "cid": { "type": "integer" } },
+            "required": ["ok"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        ctx.plaza.restart_agent(cid_arg(args)?)
+    }
+
+    fn summary(&self, _out: &Value) -> String {
+        "The agent's VM is restarting.".to_string()
+    }
+}
+
+pub struct CreateTask;
+
+impl Tool for CreateTask {
+    fn name(&self) -> &'static str {
+        "create_task"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        "Files a task, the same as the console's New task: the budget rule applies, and the task is open for the plaza to claim."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "minLength": 1 },
+                "acceptance": { "type": "string" },
+                "role": { "type": "string" },
+                "budget": { "type": "integer", "minimum": 0 },
+            },
+            "required": ["title"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({ "type": "object", "description": "the task as filed" })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let mut request = json!({ "goal": text_arg(args, "title")? });
+        for key in ["acceptance", "role", "budget"] {
+            if let Some(value) = args.get(key) {
+                request[key] = value.clone();
+            }
+        }
+        ctx.plaza.create_task(&request)
+    }
+
+    fn summary(&self, _out: &Value) -> String {
+        "Task filed.".to_string()
+    }
+}

@@ -364,7 +364,7 @@ fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
 /// assignee is checked first (so a refusal leaves the ledger untouched), the
 /// task is claimed for it, and the assignee's work queue gets the task. An
 /// absent `budget` gets `DEFAULT_TASK_BUDGET`; one under `MIN_TASK_BUDGET` is a 400.
-fn create_task(app: &App, body: &[u8]) -> Response {
+pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
     let request: CreateTask = match parse(body, "create").and_then(with_budget) {
         Ok(request) => request,
         Err(refused) => return refused,

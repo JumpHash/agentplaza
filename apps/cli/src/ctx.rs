@@ -89,6 +89,9 @@ pub struct SavedHub {
     /// The hub certificate's SHA-256 pin, hex (remote hubs use their own certificate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin: Option<String>,
+    /// The MCP token  uses (kept apart from the owner token above).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_token: Option<String>,
 }
 
 /// `cli.json` in the platform's config directory (private: it holds owner tokens).

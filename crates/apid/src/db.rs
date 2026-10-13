@@ -36,7 +36,10 @@ pub const COMPONENTS: &[&str] = &[
 ];
 
 pub mod files;
+pub mod data_migrate;
+pub mod hub_mcp;
 pub mod migrate;
+pub mod roster;
 pub mod sql;
 
 const MINUTE: Duration = Duration::from_secs(60);
@@ -181,6 +184,10 @@ impl Db {
             Ok(mut client) => {
                 if let Err(e) = migrate::migrate(&mut client) {
                     eprintln!("db: refusing to start: {e}");
+                    std::process::exit(1);
+                }
+                if let Err(e) = data_migrate::run(&mut client) {
+                    eprintln!("{e}");
                     std::process::exit(1);
                 }
                 Db::with(url, Some(client))

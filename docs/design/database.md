@@ -576,7 +576,7 @@ the code they read when they write each migration.
 
 ## 3. Migrations plan
 
-Numbering is by dependency, not by the examples in the brief. Example: vault must precede
+File numbers are given in landing order: 0004 went to the hub-MCP tables (2026-10-13), so every planned file from nodes on moves down by one (nodes is 0005, vault 0006, and so on); the table keeps the planned names with their original numbers below nodes. Numbering is by dependency, not by the examples in the brief. Example: vault must precede
 treasury, and nodes must precede vault (vault scopes reference nodes). So `0003_tasks_board.sql`
 from the brief becomes `0007_tasks_agora.sql` and `0008_board_conversations.sql`.
 
@@ -585,7 +585,8 @@ from the brief becomes `0007_tasks_agora.sql` and `0008_board_conversations.sql`
 | `0001_init.sql` | existing (plaza_state, transcript, infraction) | done | none |
 | `0002_common.sql` | data_migrations, forbid_mutation() | platform | 0001 |
 | `0003_agents.sql` | agents, roles, proposals | identity | 0002 |
-| `0004_nodes.sql` | nodes, join codes, commands, machine stats | infra | 0003 |
+| `0004_hub_mcp.sql` | the hub as an MCP server: tokens, call log, settings (`docs/design/hub-mcp.md`) | platform | 0002 |
+| `0005_nodes.sql` | nodes, join codes, commands, machine stats | infra | 0003 |
 | `0005_vault.sql` | vault (metadata, bytea ciphertext, audit) | vault | 0004 |
 | `0006_treasury.sql` | accounts, entries, postings, balances | ledger | 0003 |
 | `0007_tasks_agora.sql` | tasks, transitions, agora calls and bids; adds treasury_entries.task_id FK | ledger | 0006 |

@@ -291,6 +291,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "bytemuck",
+ "fancy-regex 0.14.0",
  "glam 0.30.10",
  "naga",
  "serde",

@@ -97,6 +97,9 @@ enum Command {
     /// Hubs: sign in to one, list and pick the saved ones.
     #[command(subcommand)]
     Hub(cmd::hub::Cmd),
+    /// The hub as an MCP server: turn it on, make tokens, and the stdio bridge for MCP clients.
+    #[command(subcommand)]
+    Mcp(cmd::mcp::Cmd),
 }
 
 fn main() {
@@ -122,6 +125,10 @@ fn run(cli: Cli) -> Result<(), String> {
     if let Command::Node(cmd) = cli.command {
         return cmd::node::run(cmd, cli.json);
     }
+    if let Command::Mcp(cmd) = cli.command {
+        let globals = cmd::mcp::Globals { hub: cli.hub, token: cli.token, pin: cli.pin, json: cli.json };
+        return cmd::mcp::run(cmd, globals);
+    }
     let ctx = ctx::resolve(cli.hub, cli.token, cli.pin, cli.json)?;
     match cli.command {
         Command::Overview => cmd::overview::run(&ctx),
@@ -146,6 +153,6 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),
         Command::Tui => tui::run(&ctx),
-        Command::Hub(_) | Command::Node(_) => unreachable!("handled above"),
+        Command::Hub(_) | Command::Node(_) | Command::Mcp(_) => unreachable!("handled above"),
     }
 }

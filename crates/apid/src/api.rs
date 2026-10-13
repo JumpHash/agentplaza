@@ -13,7 +13,7 @@ use crate::{agents, decisions, events, internal, memory, plaza, providers, setti
 
 pub fn router() -> Router<App> {
     let router = Router::<App>::new()
-        .get("/v1/overview", |app, _, _| overview(app))
+        .get("/v1/overview", |app, _, _| Response::json(200, &overview_value(app)))
         .get("/v1/machines", |app, _, _| machines(app))
         .get("/v1/machine", |app, _, _| app.noded.proxy("GET", "/v1/machine", b""))
         .get("/v1/hub", |app, _, _| app.hub.proxy("GET", "/v1/status", b""))
@@ -38,6 +38,7 @@ pub fn router() -> Router<App> {
     let router = crate::approvals::routes(router);
     let router = crate::sanctions::routes(router);
     let router = crate::vault::routes::routes(router);
+    let router = crate::hub_mcp::owner::routes(router);
     let router = crate::library::routes(router);
     let router = crate::deliverables::routes(router);
     let router = crate::toolbox::routes(router);
@@ -55,6 +56,7 @@ pub fn router() -> Router<App> {
     let router = crate::fleet::routes(router);
     let router = crate::node_link::routes(router);
     let router = crate::hub_auth::routes(router);
+    let router = crate::hub_mcp::routes(router);
     let router = memory::routes(router);
     let router = crate::foundry::routes::routes(router);
     let router = crate::foundry::registry::routes(router);
@@ -97,7 +99,7 @@ fn machines(app: &App) -> Response {
 }
 
 /// `GET /v1/overview`: counts and health at a glance.
-fn overview(app: &App) -> Response {
+pub(crate) fn overview_value(app: &App) -> Value {
     let agents = app.agents.list();
     let count = |s: Status| agents.iter().filter(|a| a.status == s).count();
     let mut tasks = serde_json::Map::new();
@@ -106,9 +108,7 @@ fn overview(app: &App) -> Response {
         *n = json!(n.as_u64().unwrap_or(0) + 1);
     }
     let settings = app.settings.get();
-    Response::json(
-        200,
-        &json!({
+    json!({
             "agents": {
                 "total": agents.len(),
                 "idle": count(Status::Idle),
@@ -121,8 +121,7 @@ fn overview(app: &App) -> Response {
             "dev_models": app.settings.dev_models(),
             "noded": app.noded.get("/v1/machine").map(|(s, _)| s == 200).unwrap_or(false),
             "hub": app.hub.get("/healthz").map(|(s, _)| s == 200).unwrap_or(false),
-        }),
-    )
+        })
 }
 
 /// One file under the console directory (no `..`, no absolute paths).

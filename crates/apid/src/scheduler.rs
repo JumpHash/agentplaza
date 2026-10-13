@@ -39,6 +39,9 @@ pub struct Origin {
     /// True for the owner's own chat (the owner chat route sets it); automated chats leave it false.
     #[serde(default)]
     pub owner: bool,
+    /// True when the owner's message came over the hub's MCP server; `message_orchestrator` sets it.
+    #[serde(default)]
+    pub mcp: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
