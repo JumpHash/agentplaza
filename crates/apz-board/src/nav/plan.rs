@@ -207,6 +207,12 @@ pub fn find_path(grid: &NavGrid, from: [f64; 2], to: [f64; 2], penalty: Option<&
                 continue;
             }
             let Some(kind) = move_kind(grid.y[n] - grid.y[c]) else { continue };
+            // A jump or a drop is taken square to a cell edge, never across a corner: a diagonal one would cross an
+            // orthogonal cell at another height, which the follower's sweep (nav-agents.ts invariant 1) refuses, so the
+            // web's robots stall there. Diagonal moves are level.
+            if diag && kind != 0 {
+                continue;
+            }
             let m = if diag { std::f64::consts::SQRT_2 } else { 1.0 };
             let pn = penalty.map_or(0.0, |p| p[n]);
             let extra = match kind {

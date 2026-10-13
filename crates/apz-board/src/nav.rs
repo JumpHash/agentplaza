@@ -7,7 +7,6 @@ pub mod drawn;
 pub mod height;
 pub mod lift;
 pub mod plan;
-#[allow(dead_code)]
 pub mod world;
 
 /// The robots' footprint half-size (nav-types.ts NAV_RADIUS).

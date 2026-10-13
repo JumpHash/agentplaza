@@ -237,7 +237,7 @@ impl NavWorld {
             stuck_t: 0.0,
             replan_at: REPLAN_AFTER,
             ref_path: None,
-            ref_next: 0,
+            ref_next: usize::MAX,
             ref_dist: f64::INFINITY,
             body: new_body(0.0),
             home_x: spec.x,
@@ -377,6 +377,9 @@ impl NavWorld {
         }
         for &id in &ids {
             self.vertical(id, h);
+        }
+        for &id in &ids {
+            self.audit1(id);
         }
     }
 

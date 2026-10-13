@@ -120,11 +120,19 @@ pub(super) fn sweep_cells(grid: &NavGrid, x0: f64, z0: f64, x1: f64, z1: f64) ->
 
 /// Invariant 1: the move lies on a portal edge (its ends within PORTAL_EDGE of the two cell centres).
 pub(super) fn on_portal_edge(grid: &NavGrid, x0: f64, z0: f64, x1: f64, z1: f64) -> bool {
-    let near = |px: f64, pz: f64, c: [f64; 2]| (px - c[0]).hypot(pz - c[1]) <= PORTAL_EDGE;
+    // Both ends on the segment between the portal's two cell centres (within PORTAL_EDGE). The web asks for the ends at
+    // the two centres, which a walk that crosses in partial steps never meets: its robots stall at the cell boundary of
+    // every ramp. A move along the portal's own segment is the transition, whatever its steps.
+    let on = |px: f64, pz: f64, a: [f64; 2], b: [f64; 2]| {
+        let (vx, vz) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = vx * vx + vz * vz;
+        let t = if len2 > 0.0 { (((px - a[0]) * vx + (pz - a[1]) * vz) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        (a[0] + t * vx - px).hypot(a[1] + t * vz - pz) <= PORTAL_EDGE
+    };
     grid.portals.iter().any(|p| {
         let a = grid.centre(p.a);
         let b = grid.centre(p.b);
-        (near(x0, z0, a) && near(x1, z1, b)) || (near(x0, z0, b) && near(x1, z1, a))
+        on(x0, z0, a, b) && on(x1, z1, a, b)
     })
 }
 
@@ -254,7 +262,6 @@ impl NavWorld {
 
     /// The ground audit of one robot (after its body step): a grounded body's feet are on its support, exactly.
     /// Not yet called by the step (the caller is in another part of the world).
-    #[allow(dead_code)]
     pub(super) fn audit1(&mut self, id: u32) {
         let (riding, x, z, body, floats) = {
             let r = &self.robots[&id];

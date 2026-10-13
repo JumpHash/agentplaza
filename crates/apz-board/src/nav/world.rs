@@ -11,6 +11,8 @@ mod api;
 mod crowd;
 mod follow;
 mod stuck;
+#[cfg(test)]
+mod tests;
 
 use std::collections::{BTreeMap, HashMap};
 
