@@ -3,6 +3,7 @@
  "roles": {
   "architect": {
    "role": "architect",
+   "slot": 0,
    "title": "Architect",
    "permits": [
     "statutes/S-009"
@@ -24,6 +25,7 @@
   },
   "auditor": {
    "role": "auditor",
+   "slot": 1,
    "title": "Auditor",
    "permits": [
     "statutes/S-015"
@@ -43,6 +45,7 @@
   },
   "builder": {
    "role": "builder",
+   "slot": 2,
    "title": "Builder",
    "permits": [
     "statutes/S-001"
@@ -67,6 +70,7 @@
   },
   "edge-operator": {
    "role": "edge-operator",
+   "slot": 3,
    "title": "Edge / device operator",
    "permits": [
     "statutes/S-016"
@@ -89,6 +93,7 @@
   },
   "finance": {
    "role": "finance",
+   "slot": 4,
    "title": "Finance",
    "permits": [
     "statutes/S-005"
@@ -110,6 +115,7 @@
   },
   "incident": {
    "role": "incident",
+   "slot": 5,
    "title": "Incident response",
    "permits": [
     "statutes/S-005"
@@ -129,6 +135,7 @@
   },
   "librarian": {
    "role": "librarian",
+   "slot": 6,
    "title": "Librarian",
    "permits": [
     "statutes/S-014"
@@ -146,6 +153,7 @@
   },
   "mayor": {
    "role": "mayor",
+   "slot": 7,
    "title": "Mayor",
    "permits": [
     "statutes/S-004"
@@ -169,6 +177,7 @@
   },
   "mayor-office": {
    "role": "mayor-office",
+   "slot": 8,
    "title": "Mayor Office",
    "permits": [
     "statutes/S-005"
@@ -185,6 +194,7 @@
   },
   "planner": {
    "role": "planner",
+   "slot": 10,
    "title": "Planner",
    "permits": [
     "statutes/S-003"
@@ -205,6 +215,7 @@
   },
   "qa": {
    "role": "qa",
+   "slot": 11,
    "title": "QA / test author",
    "permits": [
     "statutes/S-010"
@@ -229,6 +240,7 @@
   },
   "release": {
    "role": "release",
+   "slot": 12,
    "title": "Release / DevOps",
    "permits": [
     "statutes/S-012"
@@ -254,6 +266,7 @@
   },
   "researcher": {
    "role": "researcher",
+   "slot": 13,
    "title": "Researcher",
    "permits": [
     "statutes/S-013"
@@ -273,6 +286,7 @@
   },
   "reviewer": {
    "role": "reviewer",
+   "slot": 14,
    "title": "Reviewer",
    "permits": [
     "statutes/S-002"
@@ -294,6 +308,7 @@
   },
   "security-reviewer": {
    "role": "security-reviewer",
+   "slot": 15,
    "title": "Security reviewer",
    "permits": [
     "statutes/S-011"
@@ -316,6 +331,7 @@
   },
   "orchestrator": {
    "role": "orchestrator",
+   "slot": 9,
    "title": "Orchestrator",
    "permits": [],
    "toolsets": [],

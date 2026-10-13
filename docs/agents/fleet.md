@@ -79,7 +79,10 @@ v2 adds, on the same port and framing (JSON lines):
 - `noded --agents <manifest>` (default: none; the acceptance suites and the
   demo path are unchanged): at daemon start, the node boots **one
   long-running VM per role** — each with `plaza.role=<role>
-  plaza.keepalive=1`, its own guest CID (a `--agents-cid-base`, default 100),
+  plaza.keepalive=1`, its own guest CID (`--agents-cid-base`, default 100,
+  plus the role's `slot`: the manifest's `"slot"` field, unique per role, so a
+  role keeps its CID when roles are added; a manifest with no slots numbers the
+  roles alphabetically),
   `--agents-image` memory (default 128 MiB — the validated per-VM scale
   figure), 1 vCPU, no beats — and registers them as a run (state
   `running`, never `done` until stopped). The register's VM rows carry the

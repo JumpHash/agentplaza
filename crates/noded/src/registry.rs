@@ -919,7 +919,7 @@ impl Registry {
     }
 
     /// Boots the initial role fleet: one long-lived keepalive VM per role of
-    /// `fleet`, in the manifest's alphabetical role order, as one run whose VM
+    /// `fleet`, in the fleet's boot order (slot order), as one run whose VM
     /// rows carry the roles.
     ///
     /// This is the service's initial setup, so it is booted exactly like a

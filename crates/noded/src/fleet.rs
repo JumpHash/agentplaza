@@ -3,8 +3,10 @@
 //! `docs/agents/initial-roles.json` is the service's initial setup — one entry
 //! per role, with its title, permits, toolsets and budget. The daemon boots one
 //! long-lived VM per role from it (`noded --agents <manifest>`), in the
-//! manifest's alphabetical role order, each with its own guest CID and each
-//! with `plaza.role=<role> plaza.keepalive=1` on its kernel command line.
+//! manifest's slot order, each with its own guest CID and each with
+//! `plaza.role=<role> plaza.keepalive=1` on its kernel command line. A role's
+//! CID is `cid_base + slot`, so a role keeps its CID when others are added; a
+//! manifest with no slots falls back to alphabetical order (see [`Fleet::parse`]).
 //!
 //! Every check runs before a single VM is booted, so a manifest the daemon
 //! cannot stand up is an error at startup rather than a half-built fleet: the
@@ -56,6 +58,10 @@ struct Role {
     /// The role's variant, when it has one.
     #[serde(default)]
     variant: Option<String>,
+    /// The role's slot: its guest CID is `cid_base + slot`. Optional, but
+    /// either every role has one or none does (see [`place_roles`]).
+    #[serde(default)]
+    slot: Option<u32>,
 }
 
 /// Why a manifest could not be turned into a fleet.
@@ -117,12 +123,26 @@ pub enum FleetError {
         /// The first CID a guest may use.
         min: u64,
     },
-    /// {roles} agents from CID {cid_base} run past the last guest CID {max}
+    /// Two roles have the same slot: {first} and {second} both have slot {slot}
+    DuplicateSlot {
+        /// The slot both roles claim.
+        slot: u32,
+        /// The first role that claims it, in key order.
+        first: String,
+        /// The second role that claims it.
+        second: String,
+    },
+    /// Some roles have a slot and others do not, so the fleet has no order: {missing:?} have none
+    SlotsPartial {
+        /// The roles with no slot, in key order.
+        missing: Vec<String>,
+    },
+    /// The agents' guest CIDs run from {cid_base} to {last}, past the last guest CID {max}
     CidRange {
-        /// How many roles the manifest lists.
-        roles: usize,
         /// The first CID.
         cid_base: u64,
+        /// The highest CID the fleet would use.
+        last: u64,
         /// The last CID the transport has.
         max: u64,
     },
@@ -166,13 +186,25 @@ impl fmt::Display for FleetError {
                     "the first agent CID must be at least {min}, not {cid_base}"
                 )
             }
+            Self::DuplicateSlot {
+                slot,
+                first,
+                second,
+            } => write!(
+                formatter,
+                "roles {first:?} and {second:?} both have slot {slot}"
+            ),
+            Self::SlotsPartial { missing } => write!(
+                formatter,
+                "the roles {missing:?} have no slot, but others do: give every role a slot or none"
+            ),
             Self::CidRange {
-                roles,
                 cid_base,
+                last,
                 max,
             } => write!(
                 formatter,
-                "{roles} agents from CID {cid_base} run past the last guest CID {max}"
+                "the agents' guest CIDs run from {cid_base} to {last}, past the last guest CID {max}"
             ),
         }
     }
@@ -199,9 +231,12 @@ pub struct AgentVm {
 /// shape of their VMs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fleet {
-    /// The roles, alphabetical (the manifest's key order).
+    /// The roles, in boot order (slot order; alphabetical without slots).
     roles: Vec<String>,
-    /// The first agent's guest CID.
+    /// Each role's CID offset from `cid_base`, in boot order: its slot, or its
+    /// index when the manifest has no slots. Ascending, so the last is the highest.
+    offsets: Vec<u64>,
+    /// The first agent's guest CID (the base the offsets are added to).
     cid_base: u64,
     /// Guest memory per agent VM, in MiB.
     memory_mib: u32,
@@ -236,9 +271,10 @@ impl Fleet {
         let manifest: Manifest = serde_json::from_str(text).map_err(|err| FleetError::Json {
             reason: err.to_string(),
         })?;
-        // `BTreeMap` iterates in key order, which is the order the fleet boots
-        // in: alphabetical by role, and stable across runs and hosts.
-        let mut roles = Vec::with_capacity(manifest.roles.len());
+        // `BTreeMap` iterates in key order: alphabetical by role, and stable
+        // across runs and hosts. That is the boot order only when no role has
+        // a slot (see `place_roles`).
+        let mut entries = Vec::with_capacity(manifest.roles.len());
         for (key, role) in &manifest.roles {
             // A manifest that disagrees with itself would make the role the
             // hub sees depend on which of the two a reader believed.
@@ -257,17 +293,18 @@ impl Fleet {
             // The documented shape is required in full: the deserializer above
             // refuses a role that omits any of its fields, so reaching here
             // means the manifest documented this role completely.
-            roles.push(key.clone());
+            entries.push((key.clone(), role.slot));
         }
-        if roles.is_empty() {
+        if entries.is_empty() {
             return Err(FleetError::Empty);
         }
-        if roles.len() > MAX_VMS as usize {
+        if entries.len() > MAX_VMS as usize {
             return Err(FleetError::TooManyRoles {
-                roles: roles.len(),
+                roles: entries.len(),
                 max: MAX_VMS as usize,
             });
         }
+        let placed = place_roles(entries)?;
         if memory_mib < MIN_MEMORY_MIB {
             return Err(FleetError::BadMemory {
                 memory_mib,
@@ -290,16 +327,20 @@ impl Fleet {
                 min: MIN_GUEST_CID,
             });
         }
-        let last = cid_base.saturating_add(roles.len() as u64 - 1);
+        // The offsets ascend, so the last is the highest CID the fleet uses.
+        let (roles, offsets): (Vec<String>, Vec<u64>) = placed.into_iter().unzip();
+        let highest = offsets.last().copied().unwrap_or(0);
+        let last = cid_base.saturating_add(highest);
         if last > MAX_GUEST_CID {
             return Err(FleetError::CidRange {
-                roles: roles.len(),
                 cid_base,
+                last,
                 max: MAX_GUEST_CID,
             });
         }
         Ok(Self {
             roles,
+            offsets,
             cid_base,
             memory_mib,
             vcpus,
@@ -314,7 +355,7 @@ impl Fleet {
 
     /// The guest CID of the agent at `index` (boot order), if there is one.
     pub fn guest_cid(&self, index: usize) -> Option<u64> {
-        (index < self.roles.len()).then(|| self.cid_base + index as u64)
+        self.offsets.get(index).map(|offset| self.cid_base + offset)
     }
 
     /// The fleet's VMs, in boot order.
@@ -324,7 +365,7 @@ impl Fleet {
             .enumerate()
             .map(|(index, role)| AgentVm {
                 role: role.clone(),
-                guest_cid: self.cid_base + index as u64,
+                guest_cid: self.cid_base + self.offsets[index],
                 flags: agent_flags(role, index),
             })
             .collect()
@@ -352,6 +393,47 @@ impl Fleet {
     pub fn balloon_usable_mib(&self) -> Option<u32> {
         (self.balloon_mib > 0 && self.balloon_mib < self.memory_mib).then_some(self.balloon_mib)
     }
+}
+
+/// Orders the fleet's roles for boot and gives each its CID offset.
+///
+/// `entries` are the roles in key order, each with its slot when it has one.
+/// With every role slotted the fleet boots in slot order and each role's
+/// offset is its slot, so a role keeps its CID when roles are added. With no
+/// slot at all the fleet is the legacy one: key order, offset = index. A mix
+/// has no order that is not guesswork, so it is refused, and so is a slot two
+/// roles share.
+fn place_roles(entries: Vec<(String, Option<u32>)>) -> Result<Vec<(String, u64)>, FleetError> {
+    let mut by_slot: BTreeMap<u32, String> = BTreeMap::new();
+    let mut unslotted = Vec::new();
+    for (name, slot) in entries {
+        let Some(slot) = slot else {
+            unslotted.push(name);
+            continue;
+        };
+        if let Some(first) = by_slot.get(&slot) {
+            return Err(FleetError::DuplicateSlot {
+                slot,
+                first: first.clone(),
+                second: name,
+            });
+        }
+        by_slot.insert(slot, name);
+    }
+    if by_slot.is_empty() {
+        return Ok(unslotted
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| (name, index as u64))
+            .collect());
+    }
+    if !unslotted.is_empty() {
+        return Err(FleetError::SlotsPartial { missing: unslotted });
+    }
+    Ok(by_slot
+        .into_iter()
+        .map(|(slot, name)| (name, u64::from(slot)))
+        .collect())
 }
 
 /// The command-line flags that make VM `index` of a run a keepalive agent of
@@ -413,17 +495,157 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/agents/initial-roles.json")
     }
 
+    /// One role with a slot, or without one, in a manifest over `names`.
+    fn slotted(names: &[(&str, Option<u32>)]) -> String {
+        let entries: Vec<String> = names
+            .iter()
+            .map(|(name, slot)| {
+                let slot = slot.map(|slot| format!(r#","slot":{slot}"#)).unwrap_or_default();
+                format!(
+                    r#""{name}":{{"role":"{name}","title":"The {name}","permits":[],"toolsets":[],"budget":1,"variant":null{slot}}}"#
+                )
+            })
+            .collect();
+        format!(r#"{{"source":"test","roles":{{{}}}}}"#, entries.join(","))
+    }
+
+    /// Each role's guest CID in the fleet built from `text`.
+    fn cids_by_role(text: &str) -> BTreeMap<String, u64> {
+        fleet(text)
+            .expect("a fleet")
+            .vms()
+            .into_iter()
+            .map(|vm| (vm.role, vm.guest_cid))
+            .collect()
+    }
+
     #[test]
-    fn the_shipped_manifest_is_a_fleet_of_sixteen_roles() {
+    fn the_shipped_manifest_pins_each_role_to_its_slot() {
         let fleet = Fleet::load(&shipped_manifest(), 100, 128, 1).expect("the shipped manifest");
-        let roles = fleet.roles();
-        assert_eq!(roles.len(), 16, "{roles:?}");
-        // Alphabetical, and the manifest's own first and last keys.
-        assert_eq!(roles.first().map(String::as_str), Some("architect"));
-        assert_eq!(roles.last().map(String::as_str), Some("security-reviewer"));
+        // Slot order: the CIDs the sixteen roles have always had (alphabetical
+        // over those sixteen). A role added later takes the next slot, so no
+        // existing role's CID moves.
+        let pinned: [(&str, u64); 16] = [
+            ("architect", 0),
+            ("auditor", 1),
+            ("builder", 2),
+            ("edge-operator", 3),
+            ("finance", 4),
+            ("incident", 5),
+            ("librarian", 6),
+            ("mayor", 7),
+            ("mayor-office", 8),
+            ("orchestrator", 9),
+            ("planner", 10),
+            ("qa", 11),
+            ("release", 12),
+            ("researcher", 13),
+            ("reviewer", 14),
+            ("security-reviewer", 15),
+        ];
+        let booted: Vec<(String, u64)> = fleet
+            .vms()
+            .into_iter()
+            .map(|vm| (vm.role, vm.guest_cid))
+            .collect();
+        let expected: Vec<(String, u64)> = pinned
+            .iter()
+            .map(|(role, slot)| (role.to_string(), 100 + slot))
+            .collect();
+        assert_eq!(booted, expected);
+    }
+
+    #[test]
+    fn slots_set_the_cids_and_the_boot_order() {
+        let text = slotted(&[
+            ("reviewer", Some(0)),
+            ("builder", Some(5)),
+            ("auditor", Some(2)),
+        ]);
+        let fleet = fleet(&text).expect("a slotted fleet");
+        // Boot order is slot order, not key order, and the CID is base + slot.
+        assert_eq!(
+            fleet.roles().iter().map(String::as_str).collect::<Vec<_>>(),
+            ["reviewer", "auditor", "builder"]
+        );
+        assert_eq!(fleet.guest_cid(0), Some(100));
+        assert_eq!(fleet.guest_cid(1), Some(102));
+        assert_eq!(fleet.guest_cid(2), Some(105));
+        assert_eq!(fleet.guest_cid(3), None);
+        assert_eq!(
+            fleet.vms()[2].flags,
+            "plaza.role=builder plaza.keepalive=1 plaza.vm=2"
+        );
+    }
+
+    #[test]
+    fn a_role_added_later_keeps_the_cids_of_the_others() {
+        let before = slotted(&[("builder", Some(0)), ("reviewer", Some(1)), ("qa", Some(2))]);
+        // A new role that sorts first alphabetically, at the next free slot.
+        let after = slotted(&[
+            ("aaa-new", Some(3)),
+            ("builder", Some(0)),
+            ("reviewer", Some(1)),
+            ("qa", Some(2)),
+        ]);
+        let before = cids_by_role(&before);
+        let after = cids_by_role(&after);
+        assert_eq!(after["aaa-new"], 103);
+        for (role, cid) in &before {
+            assert_eq!(after[role], *cid, "{role} moved");
+        }
+    }
+
+    #[test]
+    fn a_role_added_without_slots_would_shift_the_others() {
+        // The legacy manifest's order: adding a role that sorts first moves
+        // every role after it. This is what slots exist to prevent.
+        let before = cids_by_role(&slotted(&[("builder", None), ("reviewer", None)]));
+        let after = cids_by_role(&slotted(&[
+            ("aaa-new", None),
+            ("builder", None),
+            ("reviewer", None),
+        ]));
+        assert_eq!(before["builder"], 100);
+        assert_eq!(after["builder"], 101);
+    }
+
+    #[test]
+    fn a_duplicate_slot_is_refused() {
+        let text = slotted(&[("builder", Some(4)), ("reviewer", Some(4))]);
+        let err = fleet(&text).expect_err("two roles cannot share a slot");
+        assert_eq!(
+            err,
+            FleetError::DuplicateSlot {
+                slot: 4,
+                first: "builder".to_string(),
+                second: "reviewer".to_string(),
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "roles \"builder\" and \"reviewer\" both have slot 4"
+        );
+    }
+
+    #[test]
+    fn a_manifest_where_only_some_roles_have_a_slot_is_refused() {
+        let text = slotted(&[("builder", Some(0)), ("reviewer", None), ("qa", None)]);
+        assert_eq!(
+            fleet(&text),
+            Err(FleetError::SlotsPartial {
+                missing: vec!["qa".to_string(), "reviewer".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_slot_past_the_transport_is_refused() {
+        let text = slotted(&[("builder", Some(u32::MAX))]);
+        let err = fleet(&text).expect_err("that slot is past every guest CID");
         assert!(
-            roles.windows(2).all(|pair| pair[0] < pair[1]),
-            "the roles are in alphabetical order: {roles:?}"
+            matches!(err, FleetError::CidRange { cid_base: 100, .. }),
+            "{err:?}"
         );
     }
 
@@ -458,7 +680,10 @@ mod tests {
         let text = manifest(&["builder"]);
         let plain = Fleet::parse(&text, 100, 128, 1).expect("a one-role fleet");
         assert_eq!(plain.balloon_usable_mib(), None);
-        assert_eq!(plain.clone().with_balloon(32).balloon_usable_mib(), Some(32));
+        assert_eq!(
+            plain.clone().with_balloon(32).balloon_usable_mib(),
+            Some(32)
+        );
         assert_eq!(plain.clone().with_balloon(0).balloon_usable_mib(), None);
         assert_eq!(plain.with_balloon(128).balloon_usable_mib(), None);
     }
@@ -556,10 +781,7 @@ mod tests {
         let text = manifest(&["builder", "reviewer"]);
         let err = Fleet::parse(&text, MAX_GUEST_CID, 128, 1)
             .expect_err("the second agent runs past the last CID");
-        assert!(
-            matches!(err, FleetError::CidRange { roles: 2, .. }),
-            "{err:?}"
-        );
+        assert!(matches!(err, FleetError::CidRange { .. }), "{err:?}");
         assert!(Fleet::parse(&text, MAX_GUEST_CID - 1, 128, 1).is_ok());
 
         // CIDs 0, 1 and 2 belong to the vsock stack, not to guests.

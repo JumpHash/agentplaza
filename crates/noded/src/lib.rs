@@ -53,7 +53,8 @@ pub const DEFAULT_INITRD: &str = "target/guest/initrd.x86_64.gz";
 pub const DEFAULT_UDS_DIR: &str = "/tmp/plaza-vsock";
 
 /// The first guest CID of the initial role fleet unless `--agents-cid-base`
-/// says otherwise; role `i` (alphabetical) gets `DEFAULT_AGENTS_CID_BASE + i`.
+/// says otherwise; a role with slot `s` gets `DEFAULT_AGENTS_CID_BASE + s`
+/// (in a manifest with no slots, `s` is the role's alphabetical index).
 pub const DEFAULT_AGENTS_CID_BASE: u64 = 100;
 
 /// Guest memory ceiling per agent VM unless `--agents-memory-mib` says

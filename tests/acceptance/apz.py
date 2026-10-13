@@ -597,8 +597,9 @@ class Lab:
         # The roles manifest the daemon boots its initial fleet from
         # (`noded --agents`), or `None` for a daemon with no fleet.
         self.agents = Path(agents) if agents is not None else None
-        # The first guest CID of that fleet (`noded --agents-cid-base`); role
-        # `i` (alphabetical) gets `agents_cid_base + i`.
+        # The first guest CID of that fleet (`noded --agents-cid-base`); a role
+        # with slot `s` gets `agents_cid_base + s` (its alphabetical index when
+        # the manifest has no slots).
         self.agents_cid_base = agents_cid_base
         # Where `noded` proxies the hub's status surface (`--hub-status`):
         # the literal `HOST:PORT`, the sentinel `"self"` for this lab's own
@@ -679,8 +680,9 @@ class Lab:
             # it serves, one long-lived keepalive VM per role.
             argv_noded += ["--agents", str(self.agents)]
             if self.agents_cid_base is not None:
-                # Role i (alphabetical) gets this base + i, so the caller knows
-                # which CID a role's guest connects as.
+                # A role's guest CID is this base plus its slot (its alphabetical
+                # index when the manifest has no slots), so the caller knows which
+                # CID a role's guest connects as.
                 argv_noded += ["--agents-cid-base", str(self.agents_cid_base)]
         if self.hub_status is not None:
             # `noded --hub-status` points the daemon's `/api/v0/hub` proxy at

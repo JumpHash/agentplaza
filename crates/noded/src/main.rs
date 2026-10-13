@@ -39,10 +39,11 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    (default: no block device in the guests)
   --agents MANIFEST  roles manifest (docs/agents/initial-roles.json): the
                    daemon boots one long-lived keepalive VM per role at
-                   startup, in alphabetical role order, and registers them as
+                   startup, in slot order (alphabetical if no role has a slot),
+                   and registers them as
                    one run (default: no fleet)
-  --agents-cid-base N   first guest CID of the fleet: role i gets N + i
-                        (default 100)
+  --agents-cid-base N   first guest CID of the fleet: a role with slot s gets
+                        N + s (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 1024)
   --agents-vcpus N      vCPUs per agent VM (default 1)
   --run-cids A-B   guest CIDs runs draw from, inclusive (default 20-99; A >= 3)
