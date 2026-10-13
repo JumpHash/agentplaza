@@ -40,10 +40,11 @@ const ROBOT_R = 0.55; // robot footprint radius for collisions
 const STEER = [0, 30, -30, 60, -60].map((d) => (d * Math.PI) / 180); // headings tried when a step is blocked
 const DUST_N = 90;
 const LABEL_CSS =
-  'position:absolute;left:0;top:0;display:none;max-width:220px;padding:5px 8px;' +
+  'position:absolute;left:0;top:0;display:none;align-items:center;gap:6px;max-width:200px;padding:3px 7px;' +
   'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--print);color:var(--ink);' +
-  'font:400 10px/1.35 var(--mono);white-space:nowrap;' +
+  'font:600 10.5px/1.35 var(--mono);white-space:nowrap;' +
   'pointer-events:none;will-change:transform';
+const FIT_MARGIN = 1.12; // the whole plaza in frame with a little air around it
 
 interface District {
   role: string;
@@ -88,10 +89,9 @@ interface Bot {
   padMat: THREE.MeshBasicMaterial;
   token: THREE.Mesh; // the glowing task token, shown while working
   highlighted: boolean;
-  label: HTMLDivElement;
+  label: HTMLDivElement; // compact: status square and name; idle agents show none unless selected or hovered
+  labelKey: HTMLElement;
   labelName: HTMLElement;
-  labelLine: HTMLElement;
-  labelRole: HTMLElement;
 }
 
 interface Packet {
@@ -396,7 +396,7 @@ export function mount(root: HTMLElement): Cleanup {
   );
   const tags = document.createElement('div');
   tags.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
-  const stage = h('div.floor-stage', null, tags, card, legend);
+  const stage = h('div.floor-stage.floor-stage-3d', null, tags, card, legend);
   stage.style.position = 'relative';
   stage.prepend(canvas);
   root.classList.add('floor-view');
@@ -421,6 +421,13 @@ export function mount(root: HTMLElement): Cleanup {
   let selected: Bot | null = null;
   let cardSig = '';
   let fitted = false;
+  // The plaza's bounds (set by buildWorld) and whether the user has moved the camera; until they do, the default view refits.
+  const plazaBounds = new THREE.Sphere(new THREE.Vector3(0, 0.4, 0), 8);
+  let userMoved = false;
+  let settingView = false; // resetView's own camera moves are not the user's
+  controls.addEventListener('change', () => {
+    if (!settingView) userMoved = true;
+  });
   let last = performance.now();
   const ndcVec = new THREE.Vector2();
   const raycaster = new THREE.Raycaster();
@@ -573,6 +580,18 @@ export function mount(root: HTMLElement): Cleanup {
     // The world was just rebuilt (the old one is disposed above), so bake only this fresh static subtree.
     const stats = { districts: bakeStatic(districtGroup), paths: bakeStatic(pathGroup) };
     console.debug('floor: baked', stats);
+    // Every district, path and outside prop: the bounds the default view frames. Each mesh contributes its own
+    // sphere, so the outside ring costs its radius rather than the corners of a box around it.
+    const bounds = new THREE.Sphere().makeEmpty();
+    for (const root of [districtGroup, pathGroup]) {
+      root.traverse((o) => {
+        const geo = (o as THREE.Mesh).geometry;
+        if (!geo) return;
+        geo.computeBoundingSphere();
+        bounds.union(geo.boundingSphere!.clone().applyMatrix4(o.matrixWorld));
+      });
+    }
+    if (!bounds.isEmpty()) plazaBounds.copy(bounds);
   }
 
   // Robots, labels, pads.
@@ -595,21 +614,14 @@ export function mount(root: HTMLElement): Cleanup {
     token.userData.dynamic = true; // bobs and spins while its robot works
     token.visible = false;
     scene.add(token);
+    // The label: a status square in the legend's colours, then the name. Activity and role live on the card.
     const label = document.createElement('div');
     label.style.cssText = LABEL_CSS;
-    const labelName = document.createElement('strong');
-    labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis';
-    const labelLine = document.createElement('div');
-    labelLine.style.cssText = 'color:var(--ink-3);font:400 10px/1.35 var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    // The role, as a small coloured tag beside the name.
-    const labelRole = document.createElement('span');
-    labelRole.className = 'floor-tag';
-    labelRole.style.borderLeftColor = `hsl(${district.hue} 55% 34%)`;
-    labelRole.textContent = roleLabel(agent.role);
-    labelName.style.cssText = 'display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 11.5px/1.35 var(--mono)';
-    const nameText = document.createElement('span');
-    labelName.append(nameText, labelRole);
-    label.append(labelName, labelLine);
+    const labelKey = document.createElement('i');
+    labelKey.className = 'floor-key';
+    const labelName = document.createElement('span');
+    labelName.style.cssText = 'overflow:hidden;text-overflow:ellipsis;min-width:0';
+    label.append(labelKey, labelName);
     tags.append(label);
     return {
       agent,
@@ -636,9 +648,8 @@ export function mount(root: HTMLElement): Cleanup {
       token,
       highlighted: false,
       label,
-      labelName: nameText,
-      labelLine,
-      labelRole,
+      labelKey,
+      labelName,
     };
   }
 
@@ -658,6 +669,7 @@ export function mount(root: HTMLElement): Cleanup {
     if (sig !== districtSig) {
       districtSig = sig;
       buildWorld(districts);
+      if (!userMoved) resetView();
     }
     const seen = new Set<number>();
     for (const agent of list) {
@@ -688,14 +700,26 @@ export function mount(root: HTMLElement): Cleanup {
     renderCard();
   }
 
-  /** Where the camera sits for the default view, fitted to the districts. */
+  /**
+   * Where the camera sits for the default view: the plaza's bounding sphere in frame. The tighter of the vertical and
+   * horizontal half-angles decides the distance, so the outer ring is never cropped on any canvas aspect.
+   */
   function resetView(): void {
-    let extent = 6;
-    for (const d of districts) extent = Math.max(extent, Math.abs(d.cx) + d.r, Math.abs(d.cy) + d.r);
-    const dist = extent * 2.6 + 6;
-    controls.target.set(0, 0.4, 0);
-    camera.position.copy(controls.target).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
+    const vHalf = THREE.MathUtils.degToRad(camera.fov) / 2;
+    const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+    const dist = (plazaBounds.radius * FIT_MARGIN) / Math.sin(Math.min(vHalf, hHalf));
+    controls.maxDistance = Math.max(300, dist * 2); // the orbit limit never pulls a large plaza in
+    if (scene.fog instanceof THREE.Fog) {
+      // The haze keeps its look at the fitted distance: the plaza stays clear and the far horizon still fades.
+      scene.fog.near = dist * 0.8;
+      scene.fog.far = dist * 3;
+    }
+    controls.target.copy(plazaBounds.center);
+    camera.position.copy(plazaBounds.center).add(new THREE.Vector3().setFromSphericalCoords(dist, POLAR, AZIMUTH));
+    settingView = true;
     controls.update();
+    settingView = false;
+    userMoved = false;
   }
 
   // Social behaviour: an idle robot may visit a neighbour, chat, or stroll to the ring.
@@ -944,19 +968,22 @@ export function mount(root: HTMLElement): Cleanup {
     return { x: ((ndc.x + 1) / 2) * width, y: ((1 - ndc.y) / 2) * height, visible: inFront && ndc.z <= 1 };
   }
 
+  /** Idle agents carry no label; working and offline ones do, and so does the selected or hovered agent. */
+  const labelShown = (b: Bot): boolean => b === selected || b === hovered || b.agent.status !== 'idle';
+
   function updateLabels(): void {
     for (const b of bots) {
-      const s = toScreen(b.robot.labelAnchor(new THREE.Vector3()));
-      if (!s.visible) {
-        b.label.style.display = 'none';
+      const s = labelShown(b) ? toScreen(b.robot.labelAnchor(new THREE.Vector3())) : null;
+      if (!s?.visible) {
+        if (b.label.style.display !== 'none') b.label.style.display = 'none';
         continue;
       }
-      b.label.style.display = 'block';
+      b.label.style.display = 'flex';
       b.label.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%) translateY(-6px)`;
       const name = floorName(b.agent);
       if (b.labelName.textContent !== name) b.labelName.textContent = name;
-      const line = shown(b);
-      if (b.labelLine.textContent !== line) b.labelLine.textContent = line;
+      const key = `floor-key ${b.agent.status}`;
+      if (b.labelKey.className !== key) b.labelKey.className = key;
     }
   }
 
@@ -1037,6 +1064,7 @@ export function mount(root: HTMLElement): Cleanup {
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
+    if (!userMoved) resetView(); // a view the user has not moved keeps the whole plaza in frame
   };
   const ro = new ResizeObserver(() => resize());
   ro.observe(stage);

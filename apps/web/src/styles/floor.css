@@ -31,8 +31,10 @@ body.floor-mode .view {
   color: var(--ink-2);
 }
 .floor-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.floor-key { width: 6px; height: 6px; border-radius: 0; display: inline-block; }
+.floor-key { width: 6px; height: 6px; border-radius: 0; display: inline-block; flex: none; }
 .floor-key.working { background: var(--info); }
+/* The 3D floor's working colour is the signal orange, on its labels and its legend alike. */
+.floor-stage-3d .floor-key.working { background: var(--signal); }
 .floor-key.idle { background: var(--ok); }
 .floor-key.offline { background: var(--ink-3); }
 .floor-card {
