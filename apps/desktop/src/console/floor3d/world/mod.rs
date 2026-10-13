@@ -18,6 +18,16 @@ use super::props::{Anim, Box2};
 use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
 use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
 
+/// The name the floor shows (`floorName` in roles.ts): the agent's own name, or "agent <cid>" while
+/// it has not chosen one (the hub returns an empty name until then).
+pub fn display_name(cid: u64, name: &str) -> String {
+    if name.trim().is_empty() {
+        format!("agent {cid}")
+    } else {
+        name.to_string()
+    }
+}
+
 /// What the floor needs of an agent (from `GET /v1/agents`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentInfo {
@@ -274,5 +284,23 @@ impl Floor {
 impl Default for Floor {
     fn default() -> Self {
         Floor::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_name;
+
+    #[test]
+    fn floor_name_falls_back_to_the_cid_when_empty_or_blank() {
+        assert_eq!(display_name(7, ""), "agent 7");
+        assert_eq!(display_name(7, "   "), "agent 7");
+        assert_eq!(display_name(7, "\t\n"), "agent 7");
+    }
+
+    #[test]
+    fn floor_name_keeps_a_chosen_name() {
+        assert_eq!(display_name(7, "Ada"), "Ada");
+        assert_eq!(display_name(7, " Ada "), " Ada ");
     }
 }

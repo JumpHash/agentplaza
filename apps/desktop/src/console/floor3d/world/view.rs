@@ -7,7 +7,7 @@ use glam::Vec3;
 use iced::widget::shader;
 use iced::{mouse, Point, Rectangle};
 
-use super::{Bot, Floor, Phase};
+use super::{display_name, Bot, Floor, Phase};
 use crate::console::floor3d::render;
 use crate::console::floor3d::scene::Frame;
 use crate::console::screens::floor::Msg;
@@ -51,7 +51,7 @@ impl Floor {
             let cid = bot.agent.cid;
             out.push(Label {
                 cid,
-                name: bot.agent.name.clone(),
+                name: display_name(cid, &bot.agent.name),
                 role: bot.agent.role.clone(),
                 line: shown(bot),
                 hue: self.districts.get(bot.district).map_or(0.0, |d| d.hue),

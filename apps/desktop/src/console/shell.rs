@@ -1,5 +1,5 @@
 //! The shell around every screen: the sidebar (brand, sections, an icon + label per screen, counts;
-//! resizable, collapsible to a rail, hideable), the top bar (sidebar toggle, the screen title, hub
+//! resizable, collapsible to a rail), the top bar (sidebar toggle, the screen title, hub
 //! health, STOP ALL / RESUME) and the held banner — as on the web console.
 
 use std::collections::BTreeMap;
@@ -17,7 +17,6 @@ pub enum Mode {
     #[default]
     Open,
     Rail,
-    Hidden,
 }
 
 #[derive(Debug)]
@@ -96,8 +95,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
         Msg::ToggleSidebar => {
             state.mode = match state.mode {
                 Mode::Open => Mode::Rail,
-                Mode::Rail => Mode::Hidden,
-                Mode::Hidden => Mode::Open,
+                Mode::Rail => Mode::Open,
             };
             (Task::none(), None)
         }
@@ -135,10 +133,7 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
     }
     main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
     let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
-    match state.mode {
-        Mode::Hidden => main.into(),
-        _ => row![sidebar(state, wrap), main].height(Length::Fill).into(),
-    }
+    row![sidebar(state, wrap), main].height(Length::Fill).into()
 }
 
 pub fn subscription(_state: &State) -> Subscription<Msg> {
@@ -338,15 +333,15 @@ mod tests {
     }
 
     #[test]
-    fn toggle_cycles_the_three_modes() {
+    fn toggle_flips_between_open_and_rail() {
         let ctx = ctx();
         let mut s = State::default();
         let mut seen = vec![s.mode];
-        for _ in 0..3 {
+        for _ in 0..2 {
             let _ = update(&mut s, Msg::ToggleSidebar, &ctx);
             seen.push(s.mode);
         }
-        assert_eq!(seen, vec![Mode::Open, Mode::Rail, Mode::Hidden, Mode::Open]);
+        assert_eq!(seen, vec![Mode::Open, Mode::Rail, Mode::Open]);
     }
 
     #[test]

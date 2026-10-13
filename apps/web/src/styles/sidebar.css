@@ -1,5 +1,5 @@
 /* The sidebar: the brand, the screen index with its counts, the connection foot and the
-   resize handle. The state is a mode class on .app (sb-open, sb-rail, sb-hidden) and
+   resize handle. The state is a mode class on .app (sb-open, sb-rail) and
    --sidebar-w on the root. Under 900px it is an overlay drawer (.app.sb-drawer). */
 
 .app {
@@ -63,7 +63,7 @@
 .sb-toggle { flex: none; }
 .sb-backdrop { display: none; }
 
-/* Desktop: the rail and the hidden state. */
+/* Desktop: the rail. */
 @media (min-width: 900px) {
   .app.sb-open .sb-resize { display: block; }
 
@@ -81,13 +81,11 @@
   }
   .app.sb-rail .sidebar-foot { justify-items: center; }
   .app.sb-rail .sidebar-foot .lbl { display: none; }
-
-  .app.sb-hidden .sidebar { overflow: hidden; border-right-width: 0; }
 }
 
 /* Under 900px: an overlay drawer, closed by default. */
 @media (max-width: 899px) {
-  .app, .app.sb-open, .app.sb-rail, .app.sb-hidden { grid-template-columns: minmax(0, 1fr); }
+  .app, .app.sb-open, .app.sb-rail { grid-template-columns: minmax(0, 1fr); }
   .sidebar {
     position: fixed; top: 0; bottom: 0; left: 0; z-index: 40; width: 280px; height: auto;
     box-shadow: var(--shadow);

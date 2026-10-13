@@ -10,7 +10,7 @@ use super::super::props::Box2;
 use super::super::robot::RobotState;
 use super::super::scene::Obj;
 use super::super::textures::Rng;
-use super::{Bot, District, Floor, Packet, Phase, Social};
+use super::{display_name, Bot, District, Floor, Packet, Phase, Social};
 
 const PACKET_MS: f64 = 1500.0;
 const SPEED: f32 = 1.6; // grid units per second; one grid cell is one world unit
@@ -210,7 +210,8 @@ impl Floor {
     /// `nameOf(cid)`: the agent's name, else the raw value ("?" when absent).
     fn name_of(&self, v: Option<&Value>) -> String {
         if let Some(bot) = v.and_then(Value::as_u64).and_then(|c| self.index_of(c)) {
-            return self.bots[bot].agent.name.clone();
+            let agent = &self.bots[bot].agent;
+            return display_name(agent.cid, &agent.name);
         }
         match v {
             None | Some(Value::Null) => "?".to_string(),

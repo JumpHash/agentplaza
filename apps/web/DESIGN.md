@@ -10,7 +10,7 @@ One visual language for every screen, the 3D floor's overlays and the agent view
 
 ## Shell
 - Sidebar: icon + label per screen, grouped by section; no numbers, no dotted leaders. Counts are small mono badges on the right. Active item: `--hover` background, a 3px `--signal` bar on the left, ink text, icon in `--signal`.
-- The sidebar resizes (drag its right edge, 200–420px), collapses to a 60px icon rail (labels become tooltips) and hides completely; a button at the left of the top bar toggles it, `[` toggles it from the keyboard, and the choice and width persist. Under 900px it is an overlay drawer.
+- The sidebar resizes (drag its right edge, 200–420px), collapses to a 60px icon rail (labels become tooltips); a button at the left of the top bar switches between the two, `[` toggles it from the keyboard, and the choice and width persist. Under 900px it is an overlay drawer.
 - Top bar: sidebar toggle · screen title · health · STOP ALL.
 
 ## Pages

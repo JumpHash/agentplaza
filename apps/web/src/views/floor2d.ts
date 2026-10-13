@@ -3,6 +3,7 @@
 import '../styles/floor.css';
 
 import { type Agent, type Conversation, type Entry } from '../api';
+import { floorName } from '../roles';
 import { go } from '../router';
 import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
@@ -864,9 +865,9 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
       ctx.lineJoin = 'round';
       ctx.lineWidth = 3;
       ctx.strokeStyle = palette.paper;
-      ctx.strokeText(b.agent.name, fx, fy + 14);
+      ctx.strokeText(floorName(b.agent), fx, fy + 14);
       ctx.fillStyle = palette.ink;
-      ctx.fillText(b.agent.name, fx, fy + 14);
+      ctx.fillText(floorName(b.agent), fx, fy + 14);
     }
   }
 
@@ -985,7 +986,7 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
 
   const nameOf = (cid: unknown): string => {
     const b = typeof cid === 'number' ? byCid.get(cid) : undefined;
-    return b ? b.agent.name : String(cid ?? '?');
+    return b ? floorName(b.agent) : String(cid ?? '?');
   };
 
   function setActivity(bot: Bot, text: string): void {
@@ -1022,10 +1023,11 @@ export function mountFloor2d(root: HTMLElement): Cleanup {
     const a = selected.agent;
     card.hidden = false;
     const line = shown(selected);
-    const sig = [a.name, line].join('|');
+    const name = floorName(a);
+    const sig = [name, line].join('|');
     if (sig === cardSig) return;
     cardSig = sig;
-    card.replaceChildren(h('header.floor-card-head', null, h('strong', null, a.name)), h('div.floor-card-activity', null, line));
+    card.replaceChildren(h('header.floor-card-head', null, h('strong', null, name)), h('div.floor-card-activity', null, line));
   }
 
   function positionCard(): void {

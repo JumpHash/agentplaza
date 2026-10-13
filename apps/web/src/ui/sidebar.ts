@@ -1,7 +1,7 @@
 // The sidebar: the brand, the screen index with its counts, the connection foot and the
-// resize handle. Three states (open, rail, hidden) kept in localStorage; under 900px it is
-// an overlay drawer instead. `sidebarToggle()` is the button at the left of the top bar,
-// `[` the key. The state lives on the root (--sidebar-w) and on .app (sb-open/sb-rail/sb-hidden).
+// resize handle. Two states (open, rail) kept in localStorage; under 900px it is an overlay
+// drawer instead. `sidebarToggle()` is the button at the left of the top bar, `[` the key. The
+// state lives on the root (--sidebar-w) and on .app (sb-open/sb-rail).
 
 import '../styles/sidebar.css';
 
@@ -13,14 +13,14 @@ import { dot } from './components';
 import { h, icon, replace } from './dom';
 import { themeSwitch } from './theme';
 
-type Mode = 'open' | 'rail' | 'hidden';
+type Mode = 'open' | 'rail';
 interface State {
   mode: Mode;
   width: number;
 }
 
 const KEY = 'apz.sidebar';
-const MODES: Mode[] = ['open', 'rail', 'hidden'];
+const MODES: Mode[] = ['open', 'rail'];
 const DEFAULT_WIDTH = 248;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 420;
@@ -35,7 +35,9 @@ function clampWidth(w: unknown): number {
 function load(): State {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-    if (raw && MODES.includes(raw.mode)) return { mode: raw.mode, width: clampWidth(raw.width) };
+    // 'hidden' was a state the toggle no longer reaches; a stored one comes back as the rail.
+    const mode = raw?.mode === 'hidden' ? 'rail' : raw?.mode;
+    if (raw && MODES.includes(mode)) return { mode, width: clampWidth(raw.width) };
   } catch {
     // Storage refused or corrupt: the defaults.
   }
@@ -57,14 +59,12 @@ let backdrop: HTMLElement | null = null;
 const links: { label: string; el: HTMLElement }[] = [];
 
 function widthPx(): number {
-  return state.mode === 'open' ? state.width : state.mode === 'rail' ? RAIL_WIDTH : 0;
+  return state.mode === 'open' ? state.width : RAIL_WIDTH;
 }
 
 function nextLabel(): string {
   if (small.matches) return drawerOpen ? 'Close the menu' : 'Open the menu';
-  if (state.mode === 'open') return 'Collapse the sidebar to icons';
-  if (state.mode === 'rail') return 'Hide the sidebar';
-  return 'Show the sidebar';
+  return state.mode === 'open' ? 'Collapse the sidebar' : 'Expand the sidebar';
 }
 
 /** Puts the state on the page: --sidebar-w on the root, the mode class and drawer on .app. */
@@ -73,7 +73,7 @@ export function applySidebar(): void {
   const app = document.querySelector<HTMLElement>('.app');
   const isSmall = small.matches;
   if (app) {
-    app.classList.remove('sb-open', 'sb-rail', 'sb-hidden');
+    app.classList.remove('sb-open', 'sb-rail');
     app.classList.add(`sb-${state.mode}`);
     app.classList.toggle('sb-drawer', isSmall && drawerOpen);
     if (backdrop && backdrop.parentElement !== app) app.appendChild(backdrop);
@@ -93,12 +93,12 @@ function closeDrawer(): void {
   applySidebar();
 }
 
-/** One step: open to rail to hidden to open; on small screens, the drawer. */
+/** Open and rail flip; on small screens, the drawer. */
 function cycle(): void {
   if (small.matches) {
     drawerOpen = !drawerOpen;
   } else {
-    state.mode = MODES[(MODES.indexOf(state.mode) + 1) % MODES.length]!;
+    state.mode = state.mode === 'open' ? 'rail' : 'open';
     save();
   }
   applySidebar();

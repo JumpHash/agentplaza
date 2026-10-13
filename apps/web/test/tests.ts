@@ -1,6 +1,7 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href } from '../src/router';
 import { ago, clip, compact } from '../src/ui/components';
+import { floorName } from '../src/roles';
 
 let failures = 0;
 function eq(actual: unknown, expected: unknown, name: string): void {
@@ -16,6 +17,9 @@ eq(href('tasks', 't 1'), '#/tasks/t%201', 'href encodes params');
 eq(ago(1000, 31_000), '30s ago', 'ago seconds');
 eq(clip('abcdef', 4), 'abc…', 'clip');
 eq(compact(12_345), '12k', 'compact thousands');
+eq(floorName({ cid: 7, name: '' }), 'agent 7', 'floor name falls back to the cid');
+eq(floorName({ cid: 7, name: '  ' }), 'agent 7', 'floor name: whitespace counts as empty');
+eq(floorName({ cid: 7, name: 'Ada' }), 'Ada', 'floor name keeps a chosen name');
 
 if (failures) {
   console.error(`${failures} failure(s)`);

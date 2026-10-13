@@ -11,7 +11,7 @@ import { type Agent, type Conversation, type Entry } from '../api';
 import { go } from '../router';
 import { agents, on } from '../store';
 import { button, clip } from '../ui/components';
-import { roleLabel } from '../roles';
+import { floorName, roleLabel } from '../roles';
 import { h } from '../ui/dom';
 import { makeRobot, ROBOT_PALETTE, robotVariant, type Robot, type RobotState } from './floor3d/robot';
 import { buildPaths, buildPlaza, buildPlazaFurniture } from './floor3d/props';
@@ -928,7 +928,7 @@ export function mount(root: HTMLElement): Cleanup {
 
   const nameOf = (cid: unknown): string => {
     const b = typeof cid === 'number' ? byCid.get(cid) : undefined;
-    return b ? b.agent.name : String(cid ?? '?');
+    return b ? floorName(b.agent) : String(cid ?? '?');
   };
 
   function setActivity(bot: Bot, text: string): void {
@@ -953,7 +953,8 @@ export function mount(root: HTMLElement): Cleanup {
       }
       b.label.style.display = 'block';
       b.label.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px) translate(-50%, -100%) translateY(-6px)`;
-      if (b.labelName.textContent !== b.agent.name) b.labelName.textContent = b.agent.name;
+      const name = floorName(b.agent);
+      if (b.labelName.textContent !== name) b.labelName.textContent = name;
       const line = shown(b);
       if (b.labelLine.textContent !== line) b.labelLine.textContent = line;
     }
@@ -977,11 +978,12 @@ export function mount(root: HTMLElement): Cleanup {
     const a = selected.agent;
     card.hidden = false;
     const line = shown(selected);
-    const sig = [a.name, line].join('|');
+    const name = floorName(a);
+    const sig = [name, line].join('|');
     if (sig === cardSig) return;
     cardSig = sig;
     card.replaceChildren(
-      h('header.floor-card-head', null, h('strong', null, a.name), roleTag(a.role, selected.district.hue)),
+      h('header.floor-card-head', null, h('strong', null, name), roleTag(a.role, selected.district.hue)),
       h('div.floor-card-activity', null, line),
     );
   }

@@ -60,3 +60,8 @@ export function roleLabel(role: string): string {
 export function agentName(a: { name: string }): string {
   return a.name.trim() === '' ? 'Unnamed' : a.name;
 }
+
+/** The name the floor shows: the agent's own name, or "agent <cid>" until it chooses one (as the Tasks screen does). */
+export function floorName(a: { cid: number; name: string }): string {
+  return a.name.trim() === '' ? `agent ${a.cid}` : a.name;
+}
