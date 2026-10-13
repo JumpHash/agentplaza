@@ -1391,6 +1391,11 @@ impl Built {
         }
     }
 
+    /// The live nodes this model animates or tags: each one is a draw the CPU moves every frame.
+    pub fn animated_parts(&self) -> usize {
+        self.live.len()
+    }
+
     /// Advances the tags and animations by `dt` seconds.
     ///
     /// Tags: `status` LEDs take the status colour; `activity` LEDs blink while the machine is busy

@@ -17,7 +17,7 @@ use serde::Deserialize;
 use super::geometry;
 use super::hardware::{self, Built, Params, State, Status};
 use super::props::{self, PropPalette};
-use super::scene::{self, Color, Geo, Mat, Material, Obj, Shading};
+use super::scene::{self, Color, Geo, Mat, Material, Obj};
 
 /// The Machines view's animated draws (cable packets, status rings, LEDs): instanced, animated in
 /// the vertex shader from a  uniform.  checks it for WebGL2.
@@ -416,26 +416,13 @@ pub struct MachineScene {
     anim: Option<props::Anim>,
 }
 
-struct Packet {
-    obj: Obj,
-    /// Progress along the cable, 0..1, or `None` when the packet is free.
-    p: Option<f32>,
-}
-
-/// The packets going one way along a cable.
-struct Flow {
-    acc: f32,
-    reversed: bool,
-    packets: Vec<Packet>,
-}
-
+/// A cable: its ends, its material and its sampled points. Its packets are instanced (see
+/// `FleetScene::instances`), so a cable holds no packet objects and nothing steps them on the CPU.
 struct LinkScene {
     a: String,
     b: String,
     cable: Mat,
     points: Vec<[f32; 3]>,
-    forward: Flow,
-    backward: Flow,
 }
 
 /// The scene: the group, the machines by id, and the cables. Build it with [`build_fleet`].
@@ -550,33 +537,6 @@ fn prepare(m: &Machine) -> Option<(&'static hardware::Model, Built)> {
     Some((model, hardware::build(model, &params)))
 }
 
-fn flow(geo: &Geo, color: Color, reversed: bool) -> Flow {
-    let mat = Mat::new(Material {
-        shading: Shading::Basic,
-        color,
-        emissive: color,
-        emissive_intensity: 2.0,
-        additive: true,
-        transparent: true,
-        depth_write: false,
-        ..Material::default()
-    });
-    let packets = (0..PACKET_POOL)
-        .map(|_| {
-            let obj = Obj::mesh(geo, &mat);
-            obj.set_visible(false);
-            obj.set_dynamic(true); // a packet moves along its cable every frame
-            // Drawn instanced (fleet_anim.wgsl): the object stays out of the scene graph.
-            Packet { obj, p: None }
-        })
-        .collect();
-    Flow {
-        acc: 0.0,
-        reversed,
-        packets,
-    }
-}
-
 /// A cable: its segments, and its two flows of packets.
 fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene {
     let cable = Mat::toon(named("cable"));
@@ -599,50 +559,7 @@ fn build_link(group: &Obj, a: &str, b: &str, points: Vec<[f32; 3]>) -> LinkScene
         seg.set_dynamic(true); // its cable's colour follows the link every frame
         group.add(&seg);
     }
-    let packet = geometry::sphere(0.14, 8, 6);
-    LinkScene {
-        a: a.to_string(),
-        b: b.to_string(),
-        cable,
-        forward: flow(&packet, named("copper-live"), false),
-        backward: flow(&packet, named("led-info"), true),
-        points,
-    }
-}
-
-/// Moves one flow's packets: spawns at its rate, advances them, and hides the ones that arrive.
-fn step_flow(flow: &mut Flow, dt: f32, rate: f32, points: &[[f32; 3]]) {
-    if rate <= 0.0 {
-        flow.acc = 0.0;
-        for pk in flow.packets.iter_mut() {
-            pk.p = None;
-            pk.obj.set_visible(false);
-        }
-        return;
-    }
-    flow.acc += rate * dt;
-    while flow.acc >= 1.0 {
-        flow.acc -= 1.0;
-        if let Some(pk) = flow.packets.iter_mut().find(|pk| pk.p.is_none()) {
-            pk.p = Some(0.0);
-        }
-    }
-    for pk in flow.packets.iter_mut() {
-        let Some(p) = pk.p else {
-            pk.obj.set_visible(false);
-            continue;
-        };
-        let p = p + PACKET_SPEED * dt;
-        if p >= 1.0 {
-            pk.p = None;
-            pk.obj.set_visible(false);
-            continue;
-        }
-        pk.p = Some(p);
-        let at = if flow.reversed { 1.0 - p } else { p };
-        let q = point_on(points, at);
-        pk.obj.set_position(q[0], q[1], q[2]).set_visible(true);
-    }
+    LinkScene { a: a.to_string(), b: b.to_string(), cable, points }
 }
 
 /// One cable packet slot's instance data (`PacketIn` in fleet_anim.wgsl): the cable's ends, then
@@ -836,7 +753,7 @@ impl FleetScene {
 
     /// Advances the scene by `dt` seconds with the fleet's latest snapshot. Rebuilds when the
     /// machines or the links change; otherwise it updates status colours, fan spin, activity LEDs,
-    /// the status rings, the hover lift, the atoms and the packets.
+    /// the status rings, the hover lift and the atoms. Packets are instanced, not stepped here.
     /// Advances the scene. Returns whether a machine is still lifting (its baked pose changes), so
     /// the Machines view re-bakes its statics.
     pub fn update(&mut self, dt: f32, ambient: f32, ambient_dt: f32, fleet: &FleetResponse) -> bool {
@@ -890,11 +807,9 @@ impl FleetScene {
         }
 
         for link in self.links.iter_mut() {
-            let (online, rate) = link_state(fleet, &link.a, &link.b);
+            let (online, _) = link_state(fleet, &link.a, &link.b);
             let base = named("cable");
             link.cable.get().color = if online { base } else { base.scale(0.5) };
-            step_flow(&mut link.forward, ambient_dt, rate, &link.points);
-            step_flow(&mut link.backward, ambient_dt, rate, &link.points);
         }
         lifting
     }
@@ -1032,7 +947,8 @@ mod tests {
     }
 
     /// The fleet's draw items on the 15-machine feed, measured when the budget test was written (its statics
-    /// merged by material, its dynamic packets, cables and status rings unmerged). A ratchet: it must not grow.
+    /// merged by material; its cables, status rings and animated hardware unmerged; its packets instanced, so
+    /// they hold no objects). A ratchet: it must not grow.
     const FLEET_DRAW_ITEMS: usize = 999;
 
     fn fleet_draw_items() -> (usize, usize) {
@@ -1040,6 +956,8 @@ mod tests {
         let scene = build_fleet(&fleet, &plaza_palette());
         let statics = crate::scene::bake(&scene.group).len();
         let dynamic = crate::scene::flatten(&scene.group, crate::scene::Filter::Dynamic).0.len();
+        let animated: usize = scene.machines.values().map(|m| m.built.animated_parts()).sum();
+        eprintln!("fleet breakdown: {} cables, {} machines, {} animated hardware nodes", scene.links.len(), scene.machines.len(), animated);
         (statics, dynamic)
     }
 
