@@ -113,12 +113,35 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::path();
+        self.save_to(&Self::path())
+    }
+
+    /// Writes cli.json to `path`, keeping each saved hub's `pinned` entry. The desktop writes `pinned`
+    /// (the identity first seen on a connection) and `SavedHub` does not model it, so a plain
+    /// serialize would drop it: the pins are read from the file first and written back by name.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
+        let pins: Vec<(String, serde_json::Value)> = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|doc| {
+                doc.get("hubs").and_then(serde_json::Value::as_object).map(|hubs| {
+                    hubs.iter().filter_map(|(name, hub)| Some((name.clone(), hub.get("pinned")?.clone()))).collect()
+                })
+            })
+            .unwrap_or_default();
+        let mut doc = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        if let Some(hubs) = doc.get_mut("hubs").and_then(serde_json::Value::as_object_mut) {
+            for (name, pinned) in pins {
+                if let Some(hub) = hubs.get_mut(&name).and_then(serde_json::Value::as_object_mut) {
+                    hub.insert("pinned".into(), pinned);
+                }
+            }
+        }
         if let Some(dir) = path.parent() {
             apz_os::private::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        apz_os::private::write(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+        let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        apz_os::private::write(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -365,6 +388,22 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_save_keeps_the_pinned_identity() {
+        let dir = std::env::temp_dir().join(format!("apz-cli-pins-{}", std::process::id()));
+        let path = dir.join("cli.json");
+        let before = r#"{"default":"home","hubs":{"home":{"url":"https://home.example:7700","token":"tok","pinned":{"fingerprint":"ab","since":"2026-10-13"}}}}"#;
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, before).unwrap();
+        let mut config: Config = serde_json::from_str(before).unwrap();
+        config.hubs.insert("work".into(), SavedHub { url: "https://work.example:7700".into(), token: None, pin: None, mcp_token: None });
+        config.save_to(&path).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(after["hubs"]["home"]["pinned"]["fingerprint"], "ab");
+        assert_eq!(after["hubs"]["work"]["url"], "https://work.example:7700");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn times_read_as_utc_with_a_z_without_a_local_offset() {

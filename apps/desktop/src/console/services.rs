@@ -105,6 +105,7 @@ pub fn join(token: &str) -> Result<String, String> {
 
 /// This machine as a node: whether it has joined a hub, what the hub gave it, and whether its
 /// forwarder (apz-link) runs.
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeStatus {
     pub joined: bool,
@@ -118,6 +119,7 @@ pub struct NodeStatus {
 }
 
 /// The node's identity (`node/node.json` under the data directory) and whether apz-link runs.
+#[cfg(test)]
 pub fn node_status() -> NodeStatus {
     let node: Option<serde_json::Value> = fs::read_to_string(data_dir().join("node/node.json"))
         .ok()
@@ -137,29 +139,6 @@ pub fn node_status() -> NodeStatus {
         running: !pids.is_empty(),
         pid: pids.first().copied(),
     }
-}
-
-/// Stops this machine's node services; with `forget`, also removes the node's identity directory
-/// (its key and CID range), so a later join starts afresh.
-pub fn leave(forget: bool) -> Result<(), String> {
-    // With a local plaza running here (its own apid), noded and vsockd serve it too: only the link
-    // to the other network stops. Without one, the whole node goes down.
-    if find_pids("apid").is_empty() {
-        stop(Mode::Node)?;
-    } else {
-        for svc in plan(Mode::Node, None).iter().filter(|svc| svc.name == "apz-link") {
-            stop_one(svc);
-        }
-    }
-    if forget {
-        let dir = data_dir().join("node");
-        match fs::remove_dir_all(&dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", dir.display())),
-        }
-    }
-    Ok(())
 }
 
 fn start_with(mode: Mode, hub: Option<(&str, &str)>) -> Result<Vec<String>, String> {

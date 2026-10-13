@@ -529,7 +529,8 @@ fn node_run(state: &mut State, start: bool) -> Task<Msg> {
     )
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+    let local = ctx.client.base() == crate::console::boot::LOCAL_HUB;
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error.as_str()));
@@ -544,7 +545,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(detail) = detail_view(state) {
         parts.push(detail);
     }
-    parts.push(network_view(state));
+    parts.push(network_view(state, local));
     parts.push(ui::card("Join codes", codes_view(&state.codes)));
     parts.push(ui::card("This hub", hub_view(&state.hub)));
 
@@ -797,7 +798,7 @@ fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
 
 /// The "Join a network" card: the join form while this machine is no node, else the network it
 /// joined, with its services and Leave. Progress and errors show under either.
-fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
+fn network_view<'a>(state: &'a State, local: bool) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![ui::prose(
         "Make this hub's machine a node of another network: it lends its machine to that network's agents. Its own plaza keeps running.",
     )
@@ -805,7 +806,7 @@ fn network_view<'a>(state: &'a State) -> Element<'a, Msg> {
     parts.push(match &state.node {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load the network link.", ""),
-        Load::Ready(node) if node.joined => joined_view(node, state),
+        Load::Ready(node) if node.joined => joined_view(node, state, local),
         Load::Ready(_) => join_form(state),
     });
     for line in &state.progress {
@@ -837,10 +838,12 @@ fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// The joined network: its hub, node and CIDs, the node service's state with Start or Stop, and
 /// Leave (confirmed, with the choice to forget the network).
-fn joined_view<'a>(node: &'a NodeLink, state: &'a State) -> Element<'a, Msg> {
+fn joined_view<'a>(node: &'a NodeLink, state: &'a State, local: bool) -> Element<'a, Msg> {
     let busy = state.node_busy;
     let (badge_text, tone) = if node.running { ("running", ui::Tone::Ok) } else { ("stopped", ui::Tone::Muted) };
-    let toggle: Element<'a, Msg> = if node.running {
+    let toggle: Element<'a, Msg> = if !local {
+        ui::faint("Start and stop run on the node's own machine.").into()
+    } else if node.running {
         ui::btn("Stop", None, ui::Kind::Secondary, (!busy).then_some(Msg::NodeStop))
     } else {
         ui::btn("Start", None, ui::Kind::Secondary, (!busy).then_some(Msg::NodeStart))
