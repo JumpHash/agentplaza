@@ -179,7 +179,7 @@ JSON over HTTP/1.1 on `127.0.0.1:7700`. Errors are `{"error": "..."}` with a
 | `GET /v1/treasury` · `GET /v1/treasury/journal` | balances · the double-entry journal |
 | `GET /v1/agora` | open calls, bids, awards |
 | `GET/POST /v1/board` | the public board |
-| `GET /v1/conversations` · `GET /v1/conversations/{id}` | agent↔agent and operator↔agent threads |
+| `GET /v1/conversations` · `GET /v1/conversations/{a}/{b}` | agent↔agent threads; newest-first pages (`limit` ≤ 256, `before=<c-id>`, `q=<text>`), `next_before` names the next older page; retention in `settings.retention` drops the oldest |
 | `GET/POST /v1/motions` · `POST /v1/motions/{id}/{vote,decide}` | the council and the owner's decision |
 | `GET /v1/runs` · `POST /v1/runs` · `GET/DELETE /v1/runs/{id}` · `POST /v1/runs/{id}/input` | VMs (proxied to noded) |
 | `GET /v1/machine` · `GET /v1/hub` | machine facts · hub sessions (proxied) |

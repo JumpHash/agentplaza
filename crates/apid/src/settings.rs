@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use apz_gateway::ModelRef;
 use apz_http::{Response, Router};
+use apz_plaza::social::{self, Prune};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -83,6 +84,8 @@ pub struct Settings {
     pub outreach_minutes: u32,
     /// Whether apid resizes agents' VM memory with their work (through the balloon).
     pub memory_autoscale: bool,
+    /// How much of the plaza's conversations and board is kept, and for how long.
+    pub retention: Retention,
 }
 
 impl Default for Settings {
@@ -99,6 +102,60 @@ impl Default for Settings {
             prices: BTreeMap::new(),
             outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
             memory_autoscale: true,
+            retention: Retention::default(),
+        }
+    }
+}
+
+/// The fewest a retention count may be, so the plaza keeps a usable window.
+pub const RETENTION_MIN: u32 = 100;
+/// The most a retention count may be: the store's absolute ceiling.
+pub const RETENTION_MAX: u32 = 100_000;
+/// The most days a retention age may be.
+pub const RETENTION_DAYS_MAX: u32 = 3650;
+
+// A retention count may never ask for more than the store holds.
+const _: () = assert!(RETENTION_MAX as usize <= social::MAX_POSTS);
+const _: () = assert!(RETENTION_MAX as usize <= social::MAX_CONVERSATIONS);
+
+/// What the plaza keeps of its conversations and board: a count of each (the
+/// oldest go first past it) and an age in days (`0` keeps them whatever their
+/// age). Logs are kept until these say otherwise; the store never refuses a new
+/// one for room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Retention {
+    /// The most exchanges the conversation record keeps (`RETENTION_MIN..=RETENTION_MAX`).
+    pub conversations_max: u32,
+    /// Exchanges older than this many days go; `0` keeps them whatever their age.
+    pub conversations_days: u32,
+    /// The most posts the board keeps (`RETENTION_MIN..=RETENTION_MAX`).
+    pub posts_max: u32,
+    /// Posts older than this many days go; `0` keeps them whatever their age.
+    pub posts_days: u32,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self {
+            conversations_max: 4096,
+            conversations_days: 30,
+            posts_max: 1024,
+            posts_days: 0,
+        }
+    }
+}
+
+impl Retention {
+    /// The retention as the plaza store applies it.
+    pub fn policy(&self) -> Prune {
+        const DAY_MS: u64 = 86_400_000;
+        let age = |days: u32| (days > 0).then(|| u64::from(days) * DAY_MS);
+        Prune {
+            conversations_max: usize::try_from(self.conversations_max).unwrap_or(usize::MAX),
+            conversations_older_than_ms: age(self.conversations_days),
+            posts_max: usize::try_from(self.posts_max).unwrap_or(usize::MAX),
+            posts_older_than_ms: age(self.posts_days),
         }
     }
 }
@@ -214,6 +271,27 @@ impl Store {
         }
         if let Some(bad) = new.fetch_allow.iter().find(|h| !is_bare_host(h)) {
             return Err(format!("fetch_allow entry {bad:?} is not a bare hostname"));
+        }
+        let retention = &new.retention;
+        for (name, max) in [
+            ("conversations_max", retention.conversations_max),
+            ("posts_max", retention.posts_max),
+        ] {
+            if !(RETENTION_MIN..=RETENTION_MAX).contains(&max) {
+                return Err(format!(
+                    "retention.{name} must be {RETENTION_MIN}..={RETENTION_MAX}, got {max}"
+                ));
+            }
+        }
+        for (name, days) in [
+            ("conversations_days", retention.conversations_days),
+            ("posts_days", retention.posts_days),
+        ] {
+            if days > RETENTION_DAYS_MAX {
+                return Err(format!(
+                    "retention.{name} must be 0..={RETENTION_DAYS_MAX} (0 keeps everything), got {days}"
+                ));
+            }
         }
         Ok(())
     }
@@ -400,6 +478,46 @@ mod tests {
         // A fresh store reads the same values back from disk.
         let reloaded = Store::load(&dir, false).unwrap();
         assert_eq!(reloaded.get(), s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_is_validated_and_settings_saved_without_it_load_the_defaults() {
+        let dir = temp_dir("retention");
+        let store = Store::load(&dir, false).unwrap();
+        for bad in [
+            Retention { conversations_max: RETENTION_MIN - 1, ..Retention::default() },
+            Retention { conversations_max: RETENTION_MAX + 1, ..Retention::default() },
+            Retention { posts_max: 0, ..Retention::default() },
+            Retention { conversations_days: RETENTION_DAYS_MAX + 1, ..Retention::default() },
+            Retention { posts_days: 4000, ..Retention::default() },
+        ] {
+            let mut s = Settings::default();
+            s.retention = bad;
+            assert!(store.put(s).is_err(), "{bad:?} should be refused");
+        }
+        let mut ok = Settings::default();
+        ok.retention = Retention {
+            conversations_max: RETENTION_MIN,
+            conversations_days: 0,
+            posts_max: RETENTION_MAX,
+            posts_days: RETENTION_DAYS_MAX,
+        };
+        assert_eq!(store.put(ok.clone()).unwrap(), ok);
+
+        // Settings saved before retention existed carry no such key: they load the defaults.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("retention");
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.retention, Retention::default());
+        assert_eq!(loaded.retention.conversations_max, 4096);
+
+        // The default keeps a month of exchanges and every post until its count goes.
+        let policy = Retention::default().policy();
+        assert_eq!(policy.conversations_max, 4096);
+        assert_eq!(policy.conversations_older_than_ms, Some(30 * 86_400_000));
+        assert_eq!(policy.posts_max, 1024);
+        assert_eq!(policy.posts_older_than_ms, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

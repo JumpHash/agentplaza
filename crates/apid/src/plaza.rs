@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use apz_http::{Response, Router};
+use apz_http::{Request, Response, Router};
 use apz_plaza::agora::{self, Agora};
 use apz_plaza::council::{self, Council, DecideRequest, ProposeRequest, VoteRequest};
 use apz_plaza::events::EventBus;
@@ -93,9 +93,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
         .post("/v1/board/{id}/comments", |app, req, p| board_comment(app, p.get("id"), &req.body))
         .post("/v1/board/read", |app, req, _| board_read(app, &req.body))
-        .get("/v1/conversations", |app, _, _| conversations_view(app))
-        .get("/v1/conversations/{a}/{b}", |app, _, p| {
-            conversation_thread(app, p.get("a"), p.get("b"))
+        .get("/v1/conversations", |app, req, _| conversations_view(app, req))
+        .get("/v1/conversations/{a}/{b}", |app, req, p| {
+            conversation_thread(app, p.get("a"), p.get("b"), req)
         })
         .get("/v1/motions", |app, _, _| motions_view(app))
         .post("/v1/motions", |app, req, _| motion_propose(app, &req.body))
@@ -526,13 +526,18 @@ fn board_read(app: &App, body: &[u8]) -> Response {
     }
 }
 
-/// `GET /v1/conversations`: the pairs that have spoken.
-fn conversations_view(app: &App) -> Response {
-    Response::json(200, &app.plaza.social.conversations(social::CONVERSATIONS_LIMIT))
+/// `GET /v1/conversations`: the pairs that have spoken, and one page of their
+/// exchanges, newest first (`?limit=`, `?before=`, `?q=`).
+fn conversations_view(app: &App, req: &Request) -> Response {
+    match conversation_query(app, req) {
+        Ok(query) => Response::json(200, &app.plaza.social.conversations(&query)),
+        Err(refused) => refused,
+    }
 }
 
-/// `GET /v1/conversations/{a}/{b}`: the thread between two guest CIDs.
-fn conversation_thread(app: &App, a: &str, b: &str) -> Response {
+/// `GET /v1/conversations/{a}/{b}`: one page of the thread between two guest
+/// CIDs, oldest first within the page (`?limit=`, `?before=`, `?q=`).
+fn conversation_thread(app: &App, a: &str, b: &str, req: &Request) -> Response {
     let a = match guest_cid(a) {
         Ok(cid) => cid,
         Err(refused) => return refused,
@@ -541,7 +546,99 @@ fn conversation_thread(app: &App, a: &str, b: &str) -> Response {
         Ok(cid) => cid,
         Err(refused) => return refused,
     };
-    Response::json(200, &app.plaza.social.thread(a, b, social::CONVERSATIONS_LIMIT))
+    match conversation_query(app, req) {
+        Ok(query) => Response::json(200, &app.plaza.social.thread(a, b, &query)),
+        Err(refused) => refused,
+    }
+}
+
+/// The paging and search a conversations read asks for. `limit` is `1..=256`
+/// (default [`social::CONVERSATIONS_PAGE`]); `before` is an exchange id (`c<n>`
+/// or `<n>`), and the page is the exchanges older than it; `q` is a search over
+/// the exchanges' text and roles, and over the exchanges of any agent whose
+/// name or role contains it.
+fn conversation_query(app: &App, req: &Request) -> Result<social::ConversationQuery, Response> {
+    let limit = match req.query_param("limit") {
+        None => social::CONVERSATIONS_PAGE,
+        Some(raw) => match raw.parse::<usize>() {
+            Ok(n) if n >= 1 => n.min(social::CONVERSATIONS_LIMIT),
+            _ => {
+                return Err(Response::error(
+                    400,
+                    &format!("limit must be 1..={}, not {raw:?}", social::CONVERSATIONS_LIMIT),
+                ))
+            }
+        },
+    };
+    let before = match req.query_param("before") {
+        None => None,
+        Some(raw) => match raw.strip_prefix('c').unwrap_or(raw).parse::<u64>() {
+            Ok(seq) => Some(seq),
+            Err(_) => {
+                return Err(Response::error(400, &format!("before must name an exchange (c<n>), not {raw:?}")))
+            }
+        },
+    };
+    let text = match req.query_param("q").map(percent_decode) {
+        Some(q) if q.trim().is_empty() => None,
+        Some(q) if q.trim().len() > social::MAX_QUERY => {
+            return Err(Response::error(400, &format!("q is longer than {} bytes", social::MAX_QUERY)))
+        }
+        Some(q) => Some(q.trim().to_string()),
+        None => None,
+    };
+    let cids = match &text {
+        Some(needle) => {
+            let needle = needle.to_lowercase();
+            app.agents
+                .list()
+                .iter()
+                .filter(|agent| {
+                    agent.role.to_lowercase().contains(&needle)
+                        || app.names.get(agent.cid).is_some_and(|name| name.to_lowercase().contains(&needle))
+                })
+                .map(|agent| agent.cid)
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    Ok(social::ConversationQuery { text, cids, before, limit })
+}
+
+/// A query-string value, percent-decoded (`+` is a space). A malformed escape
+/// is kept as it is.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'+' {
+            out.push(b' ');
+        } else if byte == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .ok()
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+            match hex {
+                Some(value) => {
+                    out.push(value);
+                    index += 2;
+                }
+                None => out.push(byte),
+            }
+        } else {
+            out.push(byte);
+        }
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Applies the owner's retention to the conversations and the board: the count
+/// caps, then the age limits. Runs on the scheduler's tick, so a change to the
+/// retention takes effect within a tick.
+pub fn retain(app: &App) {
+    app.plaza.social.prune(app.settings.get().retention.policy());
 }
 
 /// `GET /v1/motions`: the council's motions.
@@ -684,5 +781,18 @@ mod tests {
         assert_eq!(guest_cid("3").ok(), Some(3));
         assert!(guest_cid("2").is_err());
         assert!(guest_cid("abc").is_err());
+    }
+}
+
+#[cfg(test)]
+mod conversation_paging_tests {
+    use super::percent_decode;
+
+    #[test]
+    fn a_search_value_decodes_escapes_and_plus_and_keeps_malformed_ones() {
+        assert_eq!(percent_decode("budget+report"), "budget report");
+        assert_eq!(percent_decode("a%20b%3Fc"), "a b?c");
+        assert_eq!(percent_decode("100%"), "100%", "a trailing % is kept");
+        assert_eq!(percent_decode("%zz"), "%zz", "a non-hex escape is kept");
     }
 }

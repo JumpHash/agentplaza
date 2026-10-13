@@ -474,6 +474,7 @@ pub fn spawn(app: Arc<App>) {
                 offer_motions(&app, &mut motions_seen);
             }
             crate::llm_proxy::drain_usage(&app);
+            crate::plaza::retain(&app);
             thread::sleep(Duration::from_secs(2));
         }
     });
