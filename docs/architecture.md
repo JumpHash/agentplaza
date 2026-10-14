@@ -1,8 +1,8 @@
 # AgentPlaza architecture (v1: models in the loop)
 
 This is the contract every crate and console builds against. When code and
-this page disagree, fix one of them in the same change. The README's
-"Repository layout" lists every crate and app; this page covers how they fit.
+this page disagree, fix one of them in the same change. The
+[repository layout](repository-layout.md) lists every crate and app; this page covers how they fit.
 
 ## Processes
 
