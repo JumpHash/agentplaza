@@ -1092,14 +1092,11 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_with_its_runtime_and_cdi_is_docker_nvidia() {
-        let docker = runtimes(&["runc", "nvidia"]);
-        let trainer = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&docker)));
+    fn nvidia_is_docker_nvidia_and_ready_only_with_its_runtime_and_cdi() {
+        let nvidia = runtimes(&["runc", "nvidia"]);
+        let trainer = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&nvidia)));
         assert_eq!((trainer.runtime, trainer.ok), (Some("docker-nvidia"), true));
-    }
 
-    #[test]
-    fn nvidia_without_the_runtime_or_without_cdi_is_not_ready() {
         let plain = runtimes(&["runc"]);
         let missing = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&plain)));
         assert_eq!(
@@ -1107,7 +1104,6 @@ mod tests {
             (Some("docker-nvidia"), false)
         );
         assert!(missing.detail.contains("nvidia runtime"));
-        let nvidia = runtimes(&["runc", "nvidia"]);
         let no_cdi = Inputs {
             cdi: false,
             ..trainer_inputs("linux", NVIDIA_HOST, Some(&nvidia))

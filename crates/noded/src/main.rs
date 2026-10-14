@@ -270,7 +270,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_are_the_contracts_defaults() {
+    fn no_arguments_gives_the_contract_defaults_and_no_fleet() {
         let config = parse_args(Vec::new()).expect("no arguments is the default");
         assert_eq!(config.port, 8899);
         assert_eq!(config.kernel, PathBuf::from("/boot/vmlinuz-linux"));
@@ -279,6 +279,12 @@ mod tests {
             PathBuf::from("target/guest/initrd.x86_64.gz")
         );
         assert_eq!(config.run_cids, 20..=99);
+        // The fleet is off unless the manifest is named.
+        assert_eq!(config.agents, None);
+        assert_eq!(config.agents_cid_base, 100);
+        assert_eq!(config.agents_memory_mib, 1024);
+        assert_eq!(config.agents_vcpus, 1);
+        assert_eq!(config.agents_balloon_mib, 32);
     }
 
     #[test]
@@ -305,16 +311,6 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_is_off_unless_the_manifest_is_named() {
-        let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(config.agents, None);
-        assert_eq!(config.agents_cid_base, 100);
-        assert_eq!(config.agents_memory_mib, 1024);
-        assert_eq!(config.agents_vcpus, 1);
-        assert_eq!(config.agents_balloon_mib, 32);
-    }
-
-    #[test]
     fn the_fleet_flags_override_their_defaults() {
         let config = parse_args(
             [
@@ -326,6 +322,8 @@ mod tests {
                 "256",
                 "--agents-vcpus",
                 "2",
+                "--agents-balloon-mib",
+                "48",
             ]
             .map(String::from)
             .to_vec(),
@@ -338,12 +336,6 @@ mod tests {
         assert_eq!(config.agents_cid_base, 200);
         assert_eq!(config.agents_memory_mib, 256);
         assert_eq!(config.agents_vcpus, 2);
-    }
-
-    #[test]
-    fn the_balloon_flag_sets_the_agents_usable_memory() {
-        let config = parse_args(["--agents-balloon-mib", "48"].map(String::from).to_vec())
-            .expect("a well-formed flag");
         assert_eq!(config.agents_balloon_mib, 48);
     }
 

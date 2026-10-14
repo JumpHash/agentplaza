@@ -338,37 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tell_is_trusted_and_its_tool_is_dispatched_with_the_answer_returned() {
-        let surface = surface(hub_with(None).1);
-        let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
-        let agent = thread::spawn(move || {
-            let mut dispatched = Vec::new();
-            while let Ok(Command::Call { name, reply, .. }) =
-                steering.recv_timeout(Duration::from_millis(500))
-            {
-                if let Some(reply) = reply {
-                    let _ = reply.send(ToolReply {
-                        ok: true,
-                        output: format!("ran {name}"),
-                    });
-                }
-                dispatched.push(name);
-            }
-            dispatched
-        });
-        assert_eq!(
-            post(&surface, "/v1/agents/10/tell", r#"{"name":"write_file"}"#),
-            (
-                200,
-                serde_json::json!({ "ok": true, "output": "ran write_file" })
-            )
-        );
-        assert_eq!(agent.join().unwrap(), ["write_file"]);
-    }
-
-    #[test]
-    fn the_owners_ide_tools_pass_the_hub_whatever_the_role() {
-        // The owner's `ide_*` tools go to the agent as any operator tool does, with their arguments.
+    fn a_tell_is_trusted_and_its_tool_is_dispatched_with_its_args_and_answer_returned() {
         let surface = surface(hub_with(None).1);
         let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
         let agent = thread::spawn(move || {
@@ -386,6 +356,14 @@ mod tests {
             }
             dispatched
         });
+        // Any tool goes to the agent, the owner's `ide_*` ones included, with its arguments (`{}` when absent).
+        assert_eq!(
+            post(&surface, "/v1/agents/10/tell", r#"{"name":"write_file"}"#),
+            (
+                200,
+                serde_json::json!({ "ok": true, "output": "ran write_file {}" })
+            )
+        );
         assert_eq!(
             post(
                 &surface,
@@ -397,16 +375,7 @@ mod tests {
                 serde_json::json!({ "ok": true, "output": r#"ran ide_list {"path":"src"}"# })
             )
         );
-        assert_eq!(
-            post(
-                &surface,
-                "/v1/agents/10/tell",
-                r#"{"name":"ide_run_poll","args":{"run":"run-1"}}"#
-            )
-            .0,
-            200
-        );
-        assert_eq!(agent.join().unwrap(), ["ide_list", "ide_run_poll"]);
+        assert_eq!(agent.join().unwrap(), ["write_file", "ide_list"]);
     }
 
     #[test]
