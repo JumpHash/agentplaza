@@ -1053,6 +1053,7 @@ export interface PromptCreate {
   id?: string; kind: PromptKind; title: string; description?: string; tags?: string[]; binding?: string | null;
   body: string; note?: string;
 }
+/** The editable parts of a prompt (PUT /v1/prompts/{id}): the kind and body are fixed by versions. */
 export interface PromptMeta { title: string; description: string; tags: string[]; binding: string | null }
 
 const promptPath = (id: string) => `/v1/prompts/${encodeURIComponent(id)}`;
@@ -1098,6 +1099,8 @@ export interface SkillSummary {
   active_version: number | null; latest_version: number; best_version: number | null; score: number | null;
   source: SkillSource; created_ms: number; updated_ms: number; archived_ms: number | null;
 }
+/** The editable parts of a skill (PUT /v1/skills/{id}): its title and tags. */
+export interface SkillMeta { title: string; tags: string[] }
 export interface SkillFile { path: string; sha256: string; size: number; executable: boolean }
 export interface SkillVersionMeta {
   version: number; note: string; author: string; created_ms: number; score: number; errors: number; warnings: number;
@@ -1132,7 +1135,7 @@ export const skillsApi = {
   get: (id: string) => get<SkillDetail>(skillPath(id)),
   create: (body: { id?: string; title: string; tags?: string[]; bindings?: string[]; skill_md: string; files?: SkillFileIn[]; note?: string }) =>
     post<{ skill: SkillSummary }>('/v1/skills', body),
-  saveMeta: (id: string, meta: { title: string; tags: string[] }) => put<{ skill: SkillSummary }>(skillPath(id), meta),
+  saveMeta: (id: string, meta: SkillMeta) => put<{ skill: SkillSummary }>(skillPath(id), meta),
   setBindings: (id: string, bindings: string[]) => put<{ skill: SkillSummary }>(`${skillPath(id)}/bindings`, { bindings }),
   version: (id: string, v: number) => get<SkillVersion>(`${skillPath(id)}/versions/${v}`),
   /** One file's bytes, for a download link or a fetch. */

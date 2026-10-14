@@ -21,12 +21,14 @@ import {
   type SkillVersion,
   type SkillVersionMeta,
 } from '../api';
+import { on } from '../store';
 import { ago, badge, button, field, input, modal, select, table, tabs, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 const CHECK_MS = 400;
+const LIVE_MS = 250;
 const SKILL_MD = 'SKILL.md';
 const PLAZA = 'plaza';
 type TabKey = 'edit' | 'versions' | 'history' | 'rules';
@@ -143,6 +145,19 @@ const sourceName = (source: SkillDetail['skill']['source']): string =>
   source.kind === 'built' ? 'Built in' : source.kind === 'upload' ? 'Uploaded' : 'GitHub';
 const bindingName = (b: string): string => (b === PLAZA ? 'Every agent' : b.startsWith('role:') ? `Role ${b.slice(5)}` : b);
 
+/** Tags as typed: comma-separated, each trimmed, empty ones dropped. */
+export function splitTags(text: string): string[] {
+  return text.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+/** The hub's rules for a skill's title and tags, as a sentence for the first failure, or null. */
+export function skillMetaProblem(title: string, tags: string[]): string | null {
+  const len = (s: string): number => [...s].length;
+  if (len(title) === 0 || len(title) > 120) return 'The title must be 1 to 120 characters.';
+  if (tags.length > 16 || tags.some((t) => len(t) > 32)) return 'Use at most 16 tags, each of 1 to 32 characters.';
+  return null;
+}
+
 /** Renders the editor for skill `id` into `root`; `onBack` returns to the list. */
 export function mountEditor(root: HTMLElement, id: string, onBack: () => void): Cleanup {
   let alive = true;
@@ -170,6 +185,8 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   let summaryEl: HTMLElement | null = null;
   let findingsEl: HTMLElement | null = null;
   let dirtyFlag: HTMLElement | null = null;
+  let stale = false; // the hub changed this skill while the editor holds unsaved edits
+  let liveTimer: number | undefined;
 
   const headEl = h('div.se-head');
   const tabsEl = h('div.se-tabs');
@@ -1064,6 +1081,76 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     );
   }
 
+  /** The details dialog: title and tags, saved with PUT /v1/skills/{id}. */
+  function openDetails(): void {
+    if (!detail) return;
+    const s = detail.skill;
+    const titleIn = input({ type: 'text', required: true, autocomplete: 'off', value: s.title });
+    const tagsIn = input({ type: 'text', autocomplete: 'off', value: s.tags.join(', '), placeholder: 'comma, separated' });
+    const err = h('div.se-error', { role: 'alert', hidden: true });
+    const save: HTMLButtonElement = button('Save details', () => void saveDetails(), { kind: 'primary' });
+
+    async function saveDetails(): Promise<void> {
+      const title = titleIn.value.trim();
+      const tags = splitTags(tagsIn.value);
+      const problem = skillMetaProblem(title, tags);
+      if (problem) {
+        showErr(err, problem);
+        return;
+      }
+      save.disabled = true;
+      try {
+        await skillsApi.saveMeta(id, { title, tags });
+        if (!alive) return;
+        closeModal?.();
+        toast('Details saved');
+        await refreshDetail();
+      } catch (e) {
+        if (!alive) return;
+        showErr(err, messageOf(e));
+        save.disabled = false;
+      }
+    }
+
+    openModal(
+      'Details',
+      h(
+        'div.se-form',
+        null,
+        field('Title', titleIn, 'Shown in the list and the header.'),
+        field('Tags', tagsIn, 'Separate them with commas.'),
+        err,
+        h('div.se-actions', null, save),
+      ),
+    );
+  }
+
+  /** Reloads the latest version from the hub; unsaved edits are replaced only after a confirm. */
+  function reloadFromHub(): void {
+    if (dirty() && !window.confirm('Replace your unsaved edits with the latest version from the hub?')) return;
+    loadLatest().catch((err: unknown) => toast(messageOf(err), 'error'));
+  }
+
+  /** The hub changed this skill: reload when nothing is unsaved, otherwise say so and keep the edits. */
+  function onHubChange(): void {
+    if (!alive || !detail) return;
+    if (!dirty()) {
+      reloadFromHub();
+      return;
+    }
+    if (!stale) {
+      stale = true;
+      drawHead();
+    }
+  }
+
+  // The hub publishes a `skill` frame for every change to a skill; only this skill's frames matter here.
+  const offSkill = on('skill', (raw) => {
+    if ((raw as { id?: unknown } | null)?.id !== id) return;
+    window.clearTimeout(liveTimer);
+    liveTimer = window.setTimeout(onHubChange, LIVE_MS);
+  });
+
   async function checkGithub(): Promise<void> {
     try {
       const res = await skillsApi.githubCheck(id);
@@ -1129,6 +1216,7 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     if (!hasFile(selected)) selected = SKILL_MD;
     github = null;
     history = null;
+    stale = false;
     drawHead();
     drawTabs();
     drawTab();
@@ -1171,10 +1259,14 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
         ),
         sourceLine(s),
       ),
+      stale
+        ? h('div.se-stale', { role: 'status' }, badge('Changed on the hub', 'warn', true), ' ', button('Reload', reloadFromHub, { size: 'sm' }))
+        : null,
       h(
         'div.se-actions',
         null,
         button('Save version', openSave, { kind: 'primary' }),
+        button('Details…', openDetails),
         button('Publish…', openPublish),
         s.active_version != null ? button('Unpublish', () => void act(() => skillsApi.unpublish(id), 'Unpublished')) : null,
         button('Bindings…', openBindings),
@@ -1264,6 +1356,8 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   return () => {
     alive = false;
     window.clearTimeout(checkTimer);
+    window.clearTimeout(liveTimer);
+    offSkill();
     window.removeEventListener('beforeunload', onBeforeUnload);
     closeModal?.();
     root.replaceChildren();

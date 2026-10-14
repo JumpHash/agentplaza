@@ -10,18 +10,21 @@ import {
   type PromptEvent,
   type PromptFinding,
   type PromptKind,
+  type PromptMeta,
   type PromptReport,
   type PromptRules,
   type PromptSeverity,
   type PromptVersion,
   type PromptVersionMeta,
 } from '../api';
+import { on } from '../store';
 import { ago, badge, button, field, input, modal, select, table, tabs, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
 const CHECK_MS = 400;
+const LIVE_MS = 250;
 type TabKey = 'edit' | 'versions' | 'history' | 'rules';
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'edit', label: 'Edit' },
@@ -62,6 +65,41 @@ function lineBounds(text: string, n: number): { start: number; end: number } {
   return { start, end: nl < 0 ? text.length : nl };
 }
 
+/** A tag list as typed: comma-separated, each trimmed, empty ones dropped. */
+export function parseTags(text: string): string[] {
+  return text.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+/** The binding box for `kind`, set to `binding`: a role for system prompts, Every agent for AGENTS.md, none for fragments. */
+export function bindingField(kind: PromptKind, binding: string | null): { node: HTMLElement; value: () => string | null } {
+  if (kind === 'system') {
+    const roleIn = input({ type: 'text', autocomplete: 'off', placeholder: 'e.g. planner' });
+    roleIn.value = binding?.startsWith('role:') ? binding.slice('role:'.length) : '';
+    return {
+      node: field('Role', roleIn, 'The agent role this prompt is bound to. Leave empty for none.'),
+      value: () => (roleIn.value.trim() ? `role:${roleIn.value.trim()}` : null),
+    };
+  }
+  if (kind === 'agents_md') {
+    const sharedIn = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    sharedIn.checked = binding === 'plaza';
+    return { node: h('label.prompts-check', null, sharedIn, ' Apply to every agent'), value: () => (sharedIn.checked ? 'plaza' : null) };
+  }
+  return { node: h('p.prompts-hint', null, 'Fragments are not bound to a role or to the plaza.'), value: () => null };
+}
+
+/** The hub's rules for a prompt's details (title, description, tags, binding), as a sentence for the first failure, or null. */
+export function metaProblem(kind: PromptKind, meta: PromptMeta): string | null {
+  const len = (s: string): number => [...s].length;
+  if (len(meta.title) === 0 || len(meta.title) > 120) return 'The title must be 1 to 120 characters.';
+  if (len(meta.description) > 500) return 'The description is longer than 500 characters.';
+  if (meta.tags.length > 16 || meta.tags.some((t) => len(t) > 32)) return 'Use at most 16 tags, each of 1 to 32 characters.';
+  if (kind === 'system' && meta.binding != null && !/^role:[a-z0-9-]{1,64}$/.test(meta.binding)) {
+    return 'A role is lower-case letters, digits and dashes, at most 64 characters.';
+  }
+  return null;
+}
+
 /** Renders the editor for prompt `id` into `root`; `onBack` returns to the list. */
 export function mountEditor(root: HTMLElement, id: string, onBack: () => void): Cleanup {
   let alive = true;
@@ -83,6 +121,8 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   let diff: PromptDiff | null = null;
   let edit: EditView | null = null;
   let dirtyFlag: HTMLElement | null = null;
+  let stale = false; // the hub changed this prompt while the editor holds unsaved edits
+  let liveTimer: number | undefined;
 
   const headEl = h('div.pe-head');
   const tabsEl = h('div.pe-tabs');
@@ -596,6 +636,86 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     );
   }
 
+  /** The details dialog: title, description, tags and binding, saved with PUT /v1/prompts/{id}. */
+  function openDetails(): void {
+    if (!detail) return;
+    const p = detail.prompt;
+    const titleIn = input({ type: 'text', required: true, autocomplete: 'off', value: p.title });
+    const descIn = input({ type: 'text', autocomplete: 'off', value: p.description, placeholder: 'A line on what it is for' });
+    const tagsIn = input({ type: 'text', autocomplete: 'off', value: p.tags.join(', '), placeholder: 'comma, separated' });
+    const bind = bindingField(p.kind, p.binding);
+    const err = h('div.pe-error', { role: 'alert', hidden: true });
+    const save: HTMLButtonElement = button('Save details', () => void saveDetails(), { kind: 'primary' });
+
+    async function saveDetails(): Promise<void> {
+      const meta: PromptMeta = {
+        title: titleIn.value.trim(),
+        description: descIn.value.trim(),
+        tags: parseTags(tagsIn.value),
+        binding: bind.value(),
+      };
+      const problem = metaProblem(p.kind, meta);
+      if (problem) {
+        err.hidden = false;
+        err.textContent = problem;
+        return;
+      }
+      save.disabled = true;
+      try {
+        await promptsApi.saveMeta(id, meta);
+        if (!alive) return;
+        closeModal?.();
+        toast('Details saved');
+        await refreshDetail();
+      } catch (e) {
+        if (!alive) return;
+        err.hidden = false;
+        err.textContent = e instanceof ApiError && e.status === 409 ? `${messageOf(e)} (the binding is already taken)` : messageOf(e);
+        save.disabled = false;
+      }
+    }
+
+    openModal(
+      'Details',
+      h(
+        'div.pe-form',
+        null,
+        field('Title', titleIn),
+        field('Description', descIn),
+        field('Tags', tagsIn, 'Separate them with commas.'),
+        bind.node,
+        err,
+        h('div.pe-actions', null, save),
+      ),
+    );
+  }
+
+  /** Reloads the latest version from the hub; unsaved edits are replaced only after a confirm. */
+  function reloadFromHub(): void {
+    if (dirty() && !window.confirm('Replace your unsaved edits with the latest version from the hub?')) return;
+    loadLatest().catch((err: unknown) => toast(messageOf(err), 'error'));
+  }
+
+  /** The hub changed this prompt: reload when nothing is unsaved, otherwise say so and keep the edits. */
+  function onHubChange(): void {
+    if (!alive || !detail) return;
+    if (!dirty()) {
+      reloadFromHub();
+      return;
+    }
+    if (!stale) {
+      stale = true;
+      drawHead();
+    }
+  }
+
+  // The hub publishes a `prompt` frame for every change to a prompt; only this prompt's frames matter here.
+  const offPrompt = on('prompt', (raw) => {
+    if ((raw as { id?: unknown } | null)?.id !== id) return;
+    window.clearTimeout(liveTimer);
+    liveTimer = window.setTimeout(onHubChange, LIVE_MS);
+  });
+
   /** Runs a prompt action, then reloads the prompt's detail. */
   async function act(run: () => Promise<unknown>, done: string): Promise<void> {
     try {
@@ -627,6 +747,7 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     body = latest.body;
     savedBody = latest.body;
     history = null;
+    stale = false;
     drawHead();
     drawTabs();
     drawTab();
@@ -665,10 +786,14 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
           dirtyFlag,
         ),
       ),
+      stale
+        ? h('div.pe-stale', { role: 'status' }, badge('Changed on the hub', 'warn', true), ' ', button('Reload', reloadFromHub, { size: 'sm' }))
+        : null,
       h(
         'div.pe-actions',
         null,
         button('Save version', openSave, { kind: 'primary' }),
+        button('Details…', openDetails),
         button('Publish…', openPublish),
         p.active_version != null ? button('Unpublish', () => void act(() => promptsApi.unpublish(id), 'Unpublished')) : null,
         button(archived ? 'Restore' : 'Archive', () =>
@@ -731,6 +856,8 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   return () => {
     alive = false;
     window.clearTimeout(checkTimer);
+    window.clearTimeout(liveTimer);
+    offPrompt();
     window.removeEventListener('beforeunload', onBeforeUnload);
     closeModal?.();
     root.replaceChildren();

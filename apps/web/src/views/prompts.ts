@@ -4,11 +4,14 @@
 
 import '../styles/prompts.css';
 import { promptsApi, ApiError, type PromptCreate, type PromptKind, type PromptSummary } from '../api';
+import { on } from '../store';
 import { go, href } from '../router';
 import { ago, badge, button, field, input, modal, select, table, textarea, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { mountEditor } from './prompt-editor';
+import { bindingField, metaProblem, mountEditor, parseTags } from './prompt-editor';
+
+const LIVE_MS = 250;
 
 type Status = 'loading' | 'ready' | 'error';
 type KindFilter = 'all' | PromptKind;
@@ -72,6 +75,7 @@ function mountList(root: HTMLElement): Cleanup {
   let showArchived = false;
   let query = '';
   let closeDialog: (() => void) | null = null;
+  let liveTimer: number | undefined;
 
   const search = input({ type: 'search', placeholder: 'Search by title, id, description or tag', 'aria-label': 'Search prompts', autocomplete: 'off' });
   const archivedIn = h('input', { type: 'checkbox' }) as HTMLInputElement;
@@ -213,9 +217,8 @@ function mountList(root: HTMLElement): Cleanup {
     );
     const titleIn = input({ type: 'text', required: true, autocomplete: 'off', placeholder: 'What the prompt is for' });
     const idIn = input({ type: 'text', autocomplete: 'off', placeholder: 'generated from the title' });
-    const roleIn = input({ type: 'text', autocomplete: 'off', placeholder: 'e.g. planner' });
-    const sharedIn = h('input', { type: 'checkbox' }) as HTMLInputElement;
     const bindingBox = h('div.prompts-binding');
+    let bind = bindingField(kindSel.value as PromptKind, null);
     const descIn = input({ type: 'text', autocomplete: 'off', placeholder: 'A line on what it is for' });
     const tagsIn = input({ type: 'text', autocomplete: 'off', placeholder: 'comma, separated' });
     const bodyIn = textarea({ rows: 12, required: true, placeholder: 'Loading the starter text…' }) as HTMLTextAreaElement;
@@ -232,25 +235,24 @@ function mountList(root: HTMLElement): Cleanup {
     }
 
     function renderBinding(): void {
-      const kind = kindSel.value as PromptKind;
-      if (kind === 'system') replace(bindingBox, field('Role', roleIn, 'The agent role this prompt is bound to. Leave empty for none.'));
-      else if (kind === 'agents_md') replace(bindingBox, h('label.prompts-check', null, sharedIn, ' Apply to every agent'));
-      else replace(bindingBox, h('p.prompts-hint', null, 'Fragments are not bound to a role or to the plaza.'));
+      bind = bindingField(kindSel.value as PromptKind, null);
+      replace(bindingBox, bind.node);
     }
 
     async function create(): Promise<void> {
       const kind = kindSel.value as PromptKind;
-      const role = roleIn.value.trim();
-      const binding = kind === 'system' ? (role ? `role:${role}` : null) : kind === 'agents_md' && sharedIn.checked ? 'plaza' : null;
-      const body: PromptCreate = {
-        id: idIn.value.trim() || undefined,
-        kind,
+      const meta = {
         title: titleIn.value.trim(),
         description: descIn.value.trim(),
-        tags: tagsIn.value.split(',').map((t) => t.trim()).filter(Boolean),
-        binding,
-        body: bodyIn.value,
+        tags: parseTags(tagsIn.value),
+        binding: bind.value(),
       };
+      const problem = metaProblem(kind, meta);
+      if (problem) {
+        toast(problem, 'error');
+        return;
+      }
+      const body: PromptCreate = { id: idIn.value.trim() || undefined, kind, ...meta, body: bodyIn.value };
       submit.disabled = true;
       try {
         const { prompt } = await promptsApi.create(body);
@@ -304,10 +306,13 @@ function mountList(root: HTMLElement): Cleanup {
     closeDialog = modal('New prompt', form);
   }
 
-  async function load(): Promise<void> {
+  /** Loads the list. A quiet load (a live refresh) keeps the rows on screen while it runs. */
+  async function load(quiet = false): Promise<void> {
     const mine = ++seq;
-    status = 'loading';
-    renderList();
+    if (!quiet) {
+      status = 'loading';
+      renderList();
+    }
     try {
       const res = await promptsApi.list({ archived: showArchived });
       if (!alive || mine !== seq) return;
@@ -342,8 +347,16 @@ function mountList(root: HTMLElement): Cleanup {
   renderList();
   void load();
 
+  // The hub publishes a `prompt` frame for every change to a prompt: the list reloads at once (debounced).
+  const offPrompt = on('prompt', () => {
+    window.clearTimeout(liveTimer);
+    liveTimer = window.setTimeout(() => void load(true), LIVE_MS);
+  });
+
   return () => {
     alive = false;
+    window.clearTimeout(liveTimer);
+    offPrompt();
     closeDialog?.();
     closeDialog = null;
   };

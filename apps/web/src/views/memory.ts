@@ -4,17 +4,35 @@
 import '../styles/memory.css';
 import { api, type MemoryDoc, type MemoryNote } from '../api';
 import { on } from '../store';
-import { ago, badge, empty, input, type Tone } from '../ui/components';
+import { ago, badge, button, empty, input, table, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import { createMemoryGraph, type MemoryGraph } from './memory-graph';
 
 type Kind = MemoryNote['kind'];
 type Resolve = (ref: string) => string | null;
+type View = 'graph' | 'list';
 
 const FALLBACK_REFRESH_MS = 30_000;
+const LIST_KEY = 'apz.memory.view';
 const KIND_TONE: Record<Kind, Tone> = { note: 'info', person: 'accent', journal: 'warn' };
 
+/** The view the user last chose; graph by default. Storage can be blocked, so it is read and written in try/catch. */
+function readView(): View {
+  try {
+    return localStorage.getItem(LIST_KEY) === 'list' ? 'list' : 'graph';
+  } catch {
+    return 'graph';
+  }
+}
+
+function saveView(view: View): void {
+  try {
+    localStorage.setItem(LIST_KEY, view);
+  } catch {
+    // Not kept: the choice lasts this visit only.
+  }
+}
 
 /** Mirrors the server's slug rule: lowercase, runs of non [a-z0-9] become '-', trimmed, at most 60. */
 function slugify(text: string): string {
@@ -29,14 +47,27 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
   let current: MemoryDoc | null = null;
   let readSeq = 0;
   let graph: MemoryGraph | null = null;
+  let view: View = readView();
+  let shown: View | null = null; // the view the body currently holds
 
   const count = h('span.mem-count');
   const search = input({ type: 'search', placeholder: 'Find a note…', 'aria-label': 'Find a note' });
   const canvas = h('div.mem-graph');
+  const listBox = h('div.mem-list', { style: 'overflow:auto;min-height:0' });
   const reader = h('article.mem-reader', { 'aria-live': 'polite' });
   const body = h('div.mem-body', null, h('p.faint', null, 'Loading memory…'));
+  const hint = h('span.mem-hint', null, 'Scroll to zoom · drag to pan · drag a note to move it');
+  // Like the desktop, the button names the view it switches to.
+  const toggle = button(view === 'graph' ? 'List' : 'Graph', () => setView(view === 'graph' ? 'list' : 'graph'), {
+    kind: 'ghost',
+    size: 'sm',
+    title: view === 'graph' ? 'Show the notes as a list' : 'Show the notes as a graph',
+  });
 
-  search.addEventListener('input', () => graph?.filter(search.value));
+  search.addEventListener('input', () => {
+    graph?.filter(search.value);
+    if (view === 'list') drawList();
+  });
   search.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     const q = search.value.trim().toLowerCase();
@@ -126,19 +157,57 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
     if (list.length === 0) {
       graph?.destroy();
       graph = null;
+      shown = null;
       replace(body, empty('memory', 'No memories yet', 'Notes the agent writes appear here, linked like a little brain.'));
       return;
     }
-    if (!graph) {
-      replace(body, canvas, reader);
-      graph = createMemoryGraph(canvas, (slug) => open(slug));
-    }
-    graph.update(list, changed);
+    paint(changed);
     const newest = list.reduce((best, n) => (n.updated_ms > best.updated_ms ? n : best));
     const target = list.find((n) => n.slug === selected) ?? newest;
     const stale = !current || current.slug !== target.slug || current.updated_ms !== target.updated_ms;
     if (stale) open(target.slug);
-    else graph.select(target.slug);
+    else graph?.select(target.slug);
+  };
+
+  /** Draws the notes in the current view: the graph (with the `changed` notes pulsing) or the list beside the reader. */
+  const paint = (changed = new Set<string>()): void => {
+    if (shown !== view) {
+      shown = view;
+      if (view === 'graph') {
+        graph = createMemoryGraph(canvas, (slug) => open(slug));
+        replace(body, canvas, reader);
+      } else {
+        graph?.destroy();
+        graph = null;
+        replace(body, listBox, reader);
+      }
+    }
+    if (graph) graph.update(notes, changed);
+    else drawList();
+  };
+
+  const listColumns: Column<MemoryNote>[] = [
+    { label: 'Title', cell: (n) => n.title },
+    { label: 'Kind', cell: (n) => badge(n.kind, KIND_TONE[n.kind]) },
+    { label: 'Tags', cell: (n) => h('span', null, n.tags.map((t) => h('span.chip', null, `#${t}`))) },
+    { label: 'Updated', cell: (n) => ago(n.updated_ms) },
+  ];
+
+  /** The notes as a table, newest first, filtered by the search box; a row opens the note in the reader. */
+  const drawList = (): void => {
+    const q = search.value.trim().toLowerCase();
+    const rows = notes.filter((n) => !q || n.title.toLowerCase().includes(q)).sort((a, b) => b.updated_ms - a.updated_ms);
+    replace(listBox, rows.length ? table(listColumns, rows, (n) => open(n.slug, true), (n) => n.slug) : h('p.faint', null, 'No notes match.'));
+  };
+
+  const setView = (next: View): void => {
+    if (next === view) return;
+    view = next;
+    saveView(next);
+    toggle.textContent = next === 'graph' ? 'List' : 'Graph';
+    toggle.title = next === 'graph' ? 'Show the notes as a list' : 'Show the notes as a graph';
+    hint.hidden = next !== 'graph';
+    if (notes.length) paint();
   };
 
   // Live: a note written by this agent refreshes at once (debounced); polling is only a fallback.
@@ -156,7 +225,8 @@ export function mountMemory(root: HTMLElement, cid: number): () => void {
     }, 250);
   });
 
-  replace(root, h('div.mem-view', null, h('header.mem-head', null, count, h('span.mem-hint', null, 'Scroll to zoom · drag to pan · drag a note to move it'), search), body));
+  hint.hidden = view !== 'graph';
+  replace(root, h('div.mem-view', null, h('header.mem-head', null, count, hint, toggle, search), body));
   void refresh();
   const timer = window.setInterval(() => void refresh(), FALLBACK_REFRESH_MS);
 

@@ -3,11 +3,14 @@
 
 import '../styles/skills.css';
 import { api, skillsApi, ApiError, type RoleView, type SkillPreview, type SkillRules, type SkillSource, type SkillSummary } from '../api';
+import { on } from '../store';
 import { go, href } from '../router';
 import { ago, badge, button, field, input, modal, table, textarea, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { mountEditor } from './skill-editor';
+import { mountEditor, splitTags } from './skill-editor';
+
+const LIVE_MS = 250;
 
 type Status = 'loading' | 'ready' | 'error';
 type SourceFilter = 'all' | SkillSource['kind'];
@@ -49,10 +52,6 @@ function errorText(err: unknown): string {
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
-}
-
-function splitTags(text: string): string[] {
-  return text.split(',').map((t) => t.trim()).filter(Boolean);
 }
 
 let rulesCache: Promise<SkillRules> | null = null;
@@ -128,6 +127,7 @@ function mountList(root: HTMLElement): Cleanup {
   let query = '';
   const selected = new Set<string>();
   let closeDialog: (() => void) | null = null;
+  let liveTimer: number | undefined;
 
   const search = input({ type: 'search', placeholder: 'Search by name, title, description or tag', 'aria-label': 'Search skills', autocomplete: 'off' });
   const bindingSel = h('select.select', { 'aria-label': 'Binding' }) as HTMLSelectElement;
@@ -504,10 +504,13 @@ function mountList(root: HTMLElement): Cleanup {
     );
   }
 
-  async function load(): Promise<void> {
+  /** Loads the list. A quiet load (a live refresh) keeps the rows on screen while it runs. */
+  async function load(quiet = false): Promise<void> {
     const mine = ++seq;
-    status = 'loading';
-    renderList();
+    if (!quiet) {
+      status = 'loading';
+      renderList();
+    }
     try {
       const res = await skillsApi.list({ archived: showArchived });
       if (!alive || mine !== seq) return;
@@ -557,8 +560,16 @@ function mountList(root: HTMLElement): Cleanup {
   renderList();
   void load();
 
+  // The hub publishes a `skill` frame for every change to a skill: the list reloads at once (debounced).
+  const offSkill = on('skill', () => {
+    window.clearTimeout(liveTimer);
+    liveTimer = window.setTimeout(() => void load(true), LIVE_MS);
+  });
+
   return () => {
     alive = false;
+    window.clearTimeout(liveTimer);
+    offSkill();
     closeDialog?.();
     closeDialog = null;
   };
