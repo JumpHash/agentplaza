@@ -9,6 +9,39 @@ pub struct MessageOrchestrator;
 pub struct TellAgent;
 pub struct StopAgent;
 pub struct PromptPropose;
+/// A workstation tool for owner-token clients, by its name: the same input as the agents' (`stations::tools`), run as
+/// the owner through the same choke point (`stations::act`).
+pub struct StationTool(pub &'static str);
+
+impl Tool for StationTool {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Operate
+    }
+
+    fn description(&self) -> &'static str {
+        crate::stations::tools::spec(self.0).map_or("", |(description, _)| description)
+    }
+
+    fn input_schema(&self) -> Value {
+        crate::stations::tools::spec(self.0).map_or_else(|| json!({"type": "object"}), |(_, schema)| schema)
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        ctx.plaza.station_call(self.0, args)
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("{} returned {} bytes of JSON.", self.0, out.to_string().len())
+    }
+}
 
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key).and_then(Value::as_str).ok_or_else(|| format!("{key} must be a string"))

@@ -11,12 +11,16 @@
 //! - `screen`: the live view (`WS .../screen`) and the thumbnails; the viewers of a session share one stream.
 //! - `control`: the owner's takeover socket (`WS .../control`): take, input, give back.
 //! - `takeover`: the takeover policies (agent waits, release the lease, keep working with the pointer paused).
+//! - `act`: the choke point every workstation action passes (the checks, the laws, the audit), and `hooks` after it.
+//! - `tools`: the workstation tools agents and the owner's MCP client are offered, parsed into operations for `act`.
 //!
 //! The containment rule holds: a station is never the hub's own machine (refused at join and at every hello), and
 //! agents reach a station only through the hub.
 
+mod act;
 mod api;
 mod control;
+mod hooks;
 mod leases;
 mod link;
 mod ops;
@@ -24,6 +28,7 @@ pub mod recordings;
 mod registry;
 mod screen;
 mod takeover;
+pub mod tools;
 
 pub use api::routes;
 pub use ops::{freeze_all, spawn};

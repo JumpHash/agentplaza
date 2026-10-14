@@ -595,6 +595,7 @@ mod tests {
                 session: Some(9),
                 started_ms: 1000,
                 state: State::Active,
+                paused: false,
             },
             position: None,
         }

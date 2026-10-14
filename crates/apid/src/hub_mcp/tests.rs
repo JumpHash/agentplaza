@@ -342,9 +342,14 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
     let observe_tools = [
         "plaza_status", "list_agents", "get_agent", "get_transcript", "list_tasks", "get_task", "list_board",
         "list_projects", "get_project", "list_approvals", "list_machines", "treasury_summary", "usage_summary",
-        "list_laws", "search_library", "prompts_list", "prompt_get", "skills_list", "skill_get",
+        "list_laws", "search_library", "prompts_list", "prompt_get", "skills_list", "skill_get", "station_list",
     ];
-    let operate_tools = ["message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task", "prompt_propose", "skill_propose"];
+    let operate_tools = [
+        "message_orchestrator", "tell_agent", "stop_agent", "restart_agent", "create_task", "prompt_propose", "skill_propose",
+        "station_lease", "station_release", "station_screenshot", "station_click", "station_type", "station_key", "station_scroll",
+        "station_drag", "station_wait", "station_ui_tree", "station_ui_act", "station_shell", "station_run", "station_files",
+        "station_app_list", "station_app_launch", "app_script",
+    ];
     let all: Vec<&str> = observe_tools.iter().chain(operate_tools.iter()).copied().collect();
     assert_eq!(listed_names(&h, &reader, &s_reader), observe_tools);
     assert_eq!(listed_names(&h, &operator, &s_operator), all);
@@ -580,7 +585,8 @@ fn the_registry_never_offers_a_tool_that_reaches_the_never_list() {
         "vault", "secret", "key", "token", "join", "mint", "fine", "transfer", "payment", "law_edit", "override",
         "sanction", "stop_all", "resume", "promote", "retire_model", "setting",
     ];
-    const ALLOWED: [&str; 2] = ["propose_law_change", "stop_agent"];
+    // `station_key` presses a keyboard key on a workstation (the word is in its name by meaning, not as a credential).
+    const ALLOWED: [&str; 3] = ["propose_law_change", "stop_agent", "station_key"];
     for tool in REGISTRY.iter() {
         let name = tool.name();
         if ALLOWED.contains(&name) {

@@ -28,6 +28,14 @@ pub trait Plaza: Sync {
     fn treasury(&self, journal_limit: usize) -> Value;
     fn usage(&self, from_ms: u64, to_ms: u64) -> Value;
     fn laws(&self) -> Vec<Value>;
+    /// The workstations, as `station_list` shows them. A plaza without workstations lists none.
+    fn stations(&self) -> Vec<Value> {
+        Vec::new()
+    }
+    /// A workstation tool run for the owner (`stations::tools`). An `Err` is the message the client sees.
+    fn station_call(&self, _name: &str, _args: &Value) -> Result<Value, String> {
+        Err("workstations are not available here".to_string())
+    }
     fn message_orchestrator(&self, text: &str) -> Result<Value, String>;
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String>;
     fn stop_agent(&self, cid: u64, reason: &str) -> Result<Value, String>;
@@ -191,6 +199,7 @@ pub static REGISTRY: &[&dyn Tool] = &[
     &observe::PromptGet,
     &observe::SkillsList,
     &observe::SkillGet,
+    &observe::StationList,
     &operate::MessageOrchestrator,
     &operate::TellAgent,
     &operate::StopAgent,
@@ -198,6 +207,23 @@ pub static REGISTRY: &[&dyn Tool] = &[
     &operate::CreateTask,
     &operate::PromptPropose,
     &operate::SkillPropose,
+    &operate::StationTool("station_lease"),
+    &operate::StationTool("station_release"),
+    &operate::StationTool("station_screenshot"),
+    &operate::StationTool("station_click"),
+    &operate::StationTool("station_type"),
+    &operate::StationTool("station_key"),
+    &operate::StationTool("station_scroll"),
+    &operate::StationTool("station_drag"),
+    &operate::StationTool("station_wait"),
+    &operate::StationTool("station_ui_tree"),
+    &operate::StationTool("station_ui_act"),
+    &operate::StationTool("station_shell"),
+    &operate::StationTool("station_run"),
+    &operate::StationTool("station_files"),
+    &operate::StationTool("station_app_list"),
+    &operate::StationTool("station_app_launch"),
+    &operate::StationTool("app_script"),
     &govern::RequestDecision,
     &govern::PromptPublish,
     &govern::SkillPublish,

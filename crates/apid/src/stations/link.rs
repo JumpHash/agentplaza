@@ -303,7 +303,7 @@ pub fn serve(wire: &mut dyn Wire, link: &Arc<StationLink>, outgoing: &Receiver<O
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use apz_station::{AccountMode, Form, Os, SessionKind, StationSettings};
     use std::thread;
@@ -335,26 +335,26 @@ mod tests {
     }
 
     /// The daemon's side: the sender of its frames, the reader of the hub's, and how the link ended.
-    struct Daemon {
-        say: Sender<String>,
-        hears: Receiver<String>,
-        ended: Receiver<(u16, String)>,
+    pub(crate) struct Daemon {
+        pub(crate) say: Sender<String>,
+        pub(crate) hears: Receiver<String>,
+        pub(crate) ended: Receiver<(u16, String)>,
     }
 
     impl Daemon {
-        fn say(&self, frame: &StationFrame) {
+        pub(crate) fn say(&self, frame: &StationFrame) {
             self.say.send(serde_json::to_string(frame).unwrap()).unwrap();
         }
 
         /// The next frame the hub wrote, parsed.
-        fn hears(&self) -> HubFrame {
+        pub(crate) fn hears(&self) -> HubFrame {
             let text = self.hears.recv_timeout(Duration::from_secs(5)).expect("the hub wrote a frame");
             serde_json::from_str(&text).expect("a hub frame")
         }
     }
 
     /// Serves one link on a thread with a `Scripted` wire, and gives the test its daemon.
-    fn start(station: &str, hooks: Arc<dyn Hooks + Send + Sync>) -> (Arc<StationLink>, Daemon, thread::JoinHandle<Result<(), String>>) {
+    pub(crate) fn start(station: &str, hooks: Arc<dyn Hooks + Send + Sync>) -> (Arc<StationLink>, Daemon, thread::JoinHandle<Result<(), String>>) {
         let (link, outgoing) = StationLink::new(station, 1, apz_plaza::now_ms());
         let (say, inbound) = mpsc::channel();
         let (written, hears) = mpsc::channel();
@@ -370,7 +370,7 @@ mod tests {
     }
 
     /// Accepts any hello, and records the facts it saw.
-    struct Accept;
+    pub(crate) struct Accept;
 
     impl Hooks for Accept {
         fn hello(&self, _link: &Arc<StationLink>, _version: &str, _facts: Facts) -> Result<(), String> {
@@ -380,7 +380,7 @@ mod tests {
         fn event(&self, _link: &Arc<StationLink>, _event: Event) {}
     }
 
-    fn facts() -> Facts {
+    pub(crate) fn facts() -> Facts {
         Facts {
             os: Os::Linux,
             os_version: "6.8".into(),
@@ -398,12 +398,12 @@ mod tests {
         }
     }
 
-    fn hello() -> StationFrame {
+    pub(crate) fn hello() -> StationFrame {
         StationFrame::Hello { station: "ws-7".into(), version: "0.0.8".into(), facts: facts() }
     }
 
     /// Greets the link with a hello and answers the first facts request the test sends with it.
-    fn greet(link: &Arc<StationLink>, daemon: &Daemon) {
+    pub(crate) fn greet(link: &Arc<StationLink>, daemon: &Daemon) {
         daemon.say(&hello());
         let asker = Arc::clone(link);
         let ask = thread::spawn(move || asker.request(Op::Facts, Duration::from_secs(5)));

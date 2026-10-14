@@ -1124,7 +1124,7 @@ pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks" | "plaza_agents" | "memory_read"
         | "memory_search" | "memory_list" | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
-        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" => "read",
+        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" | "station_list" | "station_app_list" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => crate::connectors::risk_of(t).unwrap_or("write"),
         t if crate::mcp::risk_of(t).is_some() => crate::mcp::risk_of(t).unwrap_or("write"),

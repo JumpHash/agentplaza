@@ -41,6 +41,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
+use super::act;
 use super::leases::Kind;
 use super::ops::{self, Failure};
 use super::recordings;
@@ -76,17 +77,36 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/stations/{id}/leases", |app, _, p| leases_route(app, p.get("id")))
         .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| release_route(app, p.get("id"), p.get("lease"), None, OWNER))
         .post("/internal/v1/agents/{cid}/stations/{id}/leases", |app, req, p| {
-            crate::internal::authorized(app, req, p.get("cid"), |cid| {
-                Ok(open_lease_route(app, req, p.get("id"), Some(cid), &format!("agent:{cid}")))
-            })
+            crate::internal::authorized(app, req, p.get("cid"), |cid| Ok(agent_open_lease_route(app, req, p.get("id"), cid)))
         })
         .delete("/internal/v1/agents/{cid}/stations/{id}/leases/{lease}", |app, req, p| {
-            crate::internal::authorized(app, req, p.get("cid"), |cid| {
-                Ok(release_route(app, p.get("id"), p.get("lease"), Some(cid), &format!("agent:{cid}")))
-            })
+            crate::internal::authorized(app, req, p.get("cid"), |cid| Ok(agent_release_route(app, p.get("id"), p.get("lease"), cid)))
         });
     // The live views and the takeover socket (screen.rs, control.rs).
     super::control::routes(super::screen::routes(router))
+}
+
+/// An agent opens its own lease through the choke point (`act::lease_open`): the laws and the station's rules apply.
+fn agent_open_lease_route(app: &App, req: &Request, id: &str, cid: u64) -> Response {
+    let body: OpenBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    if body.agent.is_some_and(|named| named != cid) {
+        return Response::error(400, "the agent in the body is not the agent in the path");
+    }
+    match act::lease_open(app, cid, id, body.kind, body.task) {
+        Ok(view) => Response::json(201, &view),
+        Err(failure) => fail(failure),
+    }
+}
+
+/// An agent releases its own lease through the choke point (`act::lease_release`).
+fn agent_release_route(app: &App, id: &str, lease: &str, cid: u64) -> Response {
+    match act::lease_release(app, cid, id, lease) {
+        Ok(released) => Response::json(200, &released),
+        Err(failure) => fail(failure),
+    }
 }
 
 fn fail((status, message): Failure) -> Response {

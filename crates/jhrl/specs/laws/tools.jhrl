@@ -163,3 +163,15 @@ law "T-013" "Agents may use enabled MCP tools" {
   resource is Tool
   when resource.kind == "mcp"
 }
+
+law "T-014" "Agents may use the workstation tools" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may use the workstation tools its role is granted: list the workstations, lease one, act on its screen, shell, files, runs, applications and scripts."
+  rationale "A workstation is a machine outside the hub that the owner enrolled, so its tools are host tools that act on an outside machine. Every call goes through one choke point (stations::act), which checks the station, the pixel lease a screen action needs, and this law, and audits the attempt; the role grant decides who is offered them."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.kind == "host" and resource.name in ["station_list", "station_lease", "station_release", "station_screenshot", "station_click", "station_type", "station_key", "station_scroll", "station_drag", "station_wait", "station_ui_tree", "station_ui_act", "station_shell", "station_run", "station_files", "station_app_list", "station_app_launch", "app_script"]
+}

@@ -52,6 +52,15 @@ impl Plaza for App {
         self.bus.publish(kind, &json!({ "id": id, "action": action }));
     }
 
+    fn stations(&self) -> Vec<Value> {
+        crate::stations::tools::list(self)
+    }
+
+    fn station_call(&self, name: &str, args: &Value) -> Result<Value, String> {
+        // The owner acts as cid 0: its own role and actor in the laws and the station audit.
+        crate::stations::tools::call(self, 0, name, args)
+    }
+
     fn search_library(&self, query: &str, limit: usize) -> Vec<Value> {
         self.library.search(query, limit).iter().filter_map(|entry| serde_json::to_value(entry).ok()).collect()
     }
@@ -939,6 +948,39 @@ impl Tool for ListApprovals {
 
     fn summary(&self, out: &Value) -> String {
         format!("{} approvals on this page.", out["approvals"].as_array().map_or(0, Vec::len))
+    }
+}
+
+/// The workstations: id, name, status, what each machine is and its leases. Read-only.
+pub struct StationList;
+
+impl Tool for StationList {
+    fn name(&self) -> &'static str {
+        "station_list"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Observe
+    }
+
+    fn description(&self) -> &'static str {
+        "The plaza's workstations: id, name, status (online, offline, draining, revoked), what each machine is and the leases on it."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}, "additionalProperties": false})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"stations": {"type": "array", "items": {"type": "object"}}}, "required": ["stations"]})
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, _args: &Value) -> Result<Value, String> {
+        Ok(json!({ "stations": ctx.plaza.stations() }))
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        format!("{} workstations.", out["stations"].as_array().map_or(0, Vec::len))
     }
 }
 

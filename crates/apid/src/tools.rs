@@ -127,6 +127,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_git" => Some(Runs::Host),
+        name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
@@ -477,7 +478,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"url": {"type": "string"}, "path": {"type": "string"}}), &["url", "path"]),
         ),
         other => {
-            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other)).or_else(|| crate::agent_proposals::spec(other)).or_else(|| crate::skills::agent_tools::spec(other))?;
+            let (description, input_schema) = crate::society::spec(other).or_else(|| crate::toolbox::spec(other)).or_else(|| crate::projects::spec(other)).or_else(|| crate::harness_control::spec(other)).or_else(|| crate::git::spec(other)).or_else(|| crate::agent_proposals::spec(other)).or_else(|| crate::skills::agent_tools::spec(other)).or_else(|| crate::stations::tools::spec(other))?;
             return Some(ToolSpec { name: name.to_string(), description: description.to_string(), input_schema });
         }
     };
@@ -777,6 +778,7 @@ fn host_call(app: &App, agent: &Agent, work: u64, name: &str, input: &Value) -> 
         other if crate::projects::TOOLS.contains(&other) => crate::projects::run(app, agent, other, input),
         other if crate::harness_control::TOOLS.contains(&other) => crate::harness_control::run(app, agent, other, input),
         "plaza_git" => crate::git::run(app, agent, input),
+        other if crate::stations::tools::TOOLS.contains(&other) => crate::stations::tools::run(app, agent, other, input),
         "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
