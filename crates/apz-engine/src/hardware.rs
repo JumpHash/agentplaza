@@ -139,7 +139,7 @@ pub struct Part {
     #[serde(default)]
     pub repeat: Option<Repeat>,
     /// Camera-distance detail, 1 (medium) or 2 (fine): the part and its children are drawn only
-    /// close enough to the board (see `scene::Lod`). None: always.
+    /// close enough to it (see `DetailPart`). None: always, or the level of its parent.
     #[serde(default)]
     pub detail: Option<u8>,
     /// Fades to `CUTAWAY_OPACITY` (15 %) while it stands between the camera and the board's focus (the
@@ -1005,6 +1005,39 @@ fn status_color(s: Status) -> Color {
     }
 }
 
+/// The camera distance a detail part shows within, by level (1 and 2): three's `DETAIL_RANGE`.
+const DETAIL_RANGE: [f32; 2] = [160.0, 90.0];
+/// The band around a detail threshold, as a fraction: a switch needs to clear it both ways (three's `DETAIL_BAND`).
+const DETAIL_BAND: f32 = 0.05;
+
+/// A detail part (three's `detailLevels` entry): a node of level 1 or 2 whose parent is not of that level. It shows
+/// while the camera is near its box. The box is in the model's frame, taken at build: detail parts never move.
+pub struct DetailPart {
+    node: Obj,
+    level: u8,
+    lo: Vec3,
+    hi: Vec3,
+    /// Whether it showed at the last `frame_detail` (its hysteresis state; its node's `visible` follows it).
+    on: bool,
+}
+
+impl DetailPart {
+    /// Its level: 1 (medium) or 2 (fine).
+    pub fn level(&self) -> u8 {
+        self.level
+    }
+
+    /// The centre of its box, in the model's frame.
+    pub fn centre(&self) -> Vec3 {
+        0.5 * (self.lo + self.hi)
+    }
+
+    /// Whether its node is drawn now.
+    pub fn shown(&self) -> bool {
+        self.node.get().visible
+    }
+}
+
 /// A built model: its scene root, its parts by id, and the state that `update` drives.
 pub struct Built {
     pub root: Obj,
@@ -1015,6 +1048,8 @@ pub struct Built {
     pub fades: Vec<scene::Fade>,
     /// The cutaway nodes (dynamic while they can fade; see `freeze_cutaways`).
     fade_nodes: Vec<Obj>,
+    /// The detail parts, shown by the camera's distance (see `frame_detail`).
+    details: Vec<DetailPart>,
     live: Vec<Live>,
     t: f32,
     /// The fleet index of this machine's fan-angle table entry (`set_machine`), if it has one.
@@ -1357,6 +1392,62 @@ fn span_of(node: &Obj, world: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
     }
 }
 
+/// The detail parts under `root` (the root itself is none): each node of level 1 or 2 whose parent is not of that level,
+/// with its box in `root`'s frame (its meshes' and instances' bounds with its children's, as three's `setFromObject`).
+fn detail_parts(root: &Obj) -> Vec<DetailPart> {
+    fn visit(node: &Obj, parent: Mat4, parent_level: u8, out: &mut Vec<DetailPart>) {
+        let world = parent * node.local_matrix();
+        let (level, children) = {
+            let n = node.get();
+            (n.lod, n.children.clone())
+        };
+        if matches!(level, 1 | 2) && level != parent_level {
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            bounds_of(node, world, &mut lo, &mut hi);
+            if lo.x <= hi.x {
+                out.push(DetailPart { node: node.clone(), level, lo, hi, on: true });
+            }
+        }
+        for child in &children {
+            visit(child, world, level, out);
+        }
+    }
+    let mut out = Vec::new();
+    visit(root, Mat4::IDENTITY, 0, &mut out);
+    out
+}
+
+/// The bounds (lo, hi) of a node's meshes and instances and its descendants', with `world` the node's own matrix in the
+/// frame the bounds are in. Unlike `span_of` (the cutaways' boxes), instanced copies count.
+fn bounds_of(node: &Obj, world: Mat4, lo: &mut Vec3, hi: &mut Vec3) {
+    let (meshes, children) = {
+        let n = node.get();
+        let meshes: Vec<(scene::Geo, Mat4)> = match &n.kind {
+            Kind::Mesh { geo, .. } => vec![(Arc::clone(geo), world)],
+            Kind::Instanced { geo, instances, count, .. } => {
+                instances.iter().take(*count).map(|inst| (Arc::clone(geo), world * inst.matrix)).collect()
+            }
+            _ => Vec::new(),
+        };
+        (meshes, n.children.clone())
+    };
+    for (geo, m) in &meshes {
+        for p in &geo.positions {
+            let w = m.transform_point3(Vec3::from(*p));
+            *lo = lo.min(w);
+            *hi = hi.max(w);
+        }
+    }
+    for child in &children {
+        bounds_of(child, world * child.local_matrix(), lo, hi);
+    }
+}
+
+/// The distance from `p` to the box lo..hi (0 inside it): three's `Box3.distanceToPoint`.
+fn distance_to_box(p: Vec3, lo: Vec3, hi: Vec3) -> f32 {
+    (p.clamp(lo, hi) - p).length()
+}
+
 /// Builds a model's scene. `params` override the model's own `params` (a missing param is 0).
 /// Parts are toon-shaded with ink outlines unless `flat`; `repeat`, `when`, `use`, `children`,
 /// `scale`, `rot` and `label` are applied as the schema says. Only the parts that move (animated,
@@ -1396,7 +1487,8 @@ pub fn build_tinted(model: &Model, params: &Params, tints: &[Option<u32>]) -> Bu
         })
         .collect();
     let fade_nodes = b.fades.iter().map(|(_, node)| node.clone()).collect();
-    Built { root, parts: b.parts, fades, fade_nodes, live: b.live, t: 0.0, machine: None, fan_angle: 0.0, led: [0.0; 4], led_status: status_color(Status::Online) }
+    let details = detail_parts(&root);
+    Built { root, parts: b.parts, fades, fade_nodes, details, live: b.live, t: 0.0, machine: None, fan_angle: 0.0, led: [0.0; 4], led_status: status_color(Status::Online) }
 }
 
 /// The model with its GPU cards retinted: card i (the i-th top-level card part, in model order) takes an inline material of
@@ -1554,6 +1646,34 @@ fn world_box(m: Mat4, lo: Vec3, hi: Vec3) -> (Vec3, Vec3) {
 }
 
 impl Built {
+    /// The detail parts, in the scene's order (see `frame_detail`).
+    pub fn details(&self) -> &[DetailPart] {
+        &self.details
+    }
+
+    /// Per frame, with the camera's eye (world) and the root's world matrix: each detail part shows while the eye is
+    /// within its range of its box, measured in the model's frame (three's `frame()`: level 1 within 160 units, level 2
+    /// within 90, a switch needing 5 % past the threshold either way). Returns whether a part switched: its visibility is
+    /// baked into the statics, so the caller re-bakes them then.
+    pub fn frame_detail(&mut self, eye: Vec3, root_world: Mat4) -> bool {
+        if self.details.is_empty() || root_world.determinant() == 0.0 {
+            return false;
+        }
+        let at = root_world.inverse().transform_point3(eye);
+        let mut changed = false;
+        for part in &mut self.details {
+            let range = DETAIL_RANGE[usize::from(part.level - 1)];
+            let dist = distance_to_box(at, part.lo, part.hi);
+            let on = if part.on { dist < range * (1.0 + DETAIL_BAND) } else { dist < range * (1.0 - DETAIL_BAND) };
+            if on != part.on {
+                part.on = on;
+                part.node.set_visible(on);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Takes the cutaways out of the per-frame walk, for a view that never fades them (the Machines
     /// view): their draws bake with the statics.
     pub fn freeze_cutaways(&mut self) {

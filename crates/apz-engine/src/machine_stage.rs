@@ -387,8 +387,7 @@ impl MachineStage {
             lights: self.lights.clone(),
             time: self.time,
             overlays: Vec::new(),
-            lod: None,
-            fades: Arc::new(Vec::new()), // no cutaways on the stage
+                        fades: Arc::new(Vec::new()), // no cutaways on the stage
             plaza: None,
             anim_batches: Arc::new(Vec::new()),
             focus: None,

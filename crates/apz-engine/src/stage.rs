@@ -232,6 +232,22 @@ fn now_ms(at: Instant) -> f64 {
 }
 
 impl Stage {
+    /// The hardware models' detail parts show by the camera's eye (three's `frame()`, per part): the hardware lab's model
+    /// and the fleet's machines, which sit under the Machines floor's root. A part that switched re-bakes those statics.
+    fn detail_parts(&mut self, eye: glam::Vec3) {
+        let top = self.machines.root.clone();
+        let mut changed = false;
+        if let Some(lab) = self.hardware_lab.as_mut() {
+            changed |= lab.frame_detail(eye, &top);
+        }
+        if let Some(fleet) = self.fleet.as_mut() {
+            changed |= fleet.frame_detail(eye, &top);
+        }
+        if changed {
+            self.machines.statics_dirty = true;
+        }
+    }
+
     /// The lab's readout as JSON (the room lab's or the hardware lab's; `{}` when no lab runs): what the page shows of
     /// the lab's options (the violations, the model's validation).
     pub fn lab_info(&self) -> String {
@@ -666,6 +682,7 @@ pub fn tick(&mut self, now: Instant) -> Motion {
             }
             if w > 0.0 && h > 0.0 {
                 let camera = self.machines.orbit.camera(w / h);
+                self.detail_parts(camera.eye);
                 let mut frame = self.machines.frame(w / h);
                 // The robot lab's `bg` is the Machines view's sky too (the lab's line-up is on the machines' ground).
                 if let Some(bg) = self.lab.as_ref().and_then(lab::Lab::background) {

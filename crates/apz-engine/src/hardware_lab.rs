@@ -195,6 +195,12 @@ impl Lab {
         &self.info
     }
 
+    /// Per frame: the model's detail parts show by the camera's eye (see `Built::frame_detail`). `top` is the scene the
+    /// lab's model sits under. True when a part switched.
+    pub fn frame_detail(&mut self, eye: Vec3, top: &Obj) -> bool {
+        top.world_matrix_of(&self.built.root).is_some_and(|world| self.built.frame_detail(eye, world))
+    }
+
     /// Advances the model by `dt` seconds (the fans turn by it) at the ambient clock `clock` in seconds (the LEDs and
     /// the pulses read it).
     pub fn step(&mut self, dt: f32, clock: f32) {
@@ -264,6 +270,40 @@ mod tests {
         let want = hardware::validate(hardware::model(name).expect("embedded"), name);
         assert_eq!(lab.info()["errors"], json!(want));
         assert_eq!(lab.info()["kind"], "hardware");
+    }
+
+    /// The index of board/workstation's dimm_1 led-info strip among its detail parts: the child at (0, 3.0815, 0) of
+    /// dimm_1 at (12.075, 4.1185, -9.135), its box centred at (12.075, 7.2, -9.135) in the model's frame.
+    fn dimm_strip(built: &hardware::Built) -> usize {
+        let want = Vec3::new(12.075, 7.2, -9.135);
+        built
+            .details()
+            .iter()
+            .position(|p| p.level() == 2 && (p.centre() - want).length() < 0.01)
+            .expect("the strip is a detail part")
+    }
+
+    #[test]
+    fn a_dimm_strip_is_hidden_from_the_top_view_as_three_js_hid_it() {
+        let model = hardware::model("board/workstation").expect("embedded");
+        let mut built = hardware::build(model, &Params::default());
+        let strip = dimm_strip(&built);
+        assert!(built.details()[strip].shown(), "shown until the camera has framed it");
+        // The lab's top view: its eye is about 123 units from the strip's box, past the 90 of detail 2 (plus the band).
+        let (eye, _) = view(model, "top");
+        built.frame_detail(Vec3::from(eye), glam::Mat4::IDENTITY);
+        assert!(!built.details()[strip].shown(), "the strip hides from the top view");
+    }
+
+    #[test]
+    fn a_dimm_strip_shows_when_the_camera_is_near_it() {
+        let model = hardware::model("board/workstation").expect("embedded");
+        let mut built = hardware::build(model, &Params::default());
+        let strip = dimm_strip(&built);
+        // 30 units above the strip: within detail 2's 90.
+        let near = built.details()[strip].centre() + Vec3::Y * 30.0;
+        built.frame_detail(near, glam::Mat4::IDENTITY);
+        assert!(built.details()[strip].shown(), "the strip shows 30 units from it");
     }
 
     #[test]

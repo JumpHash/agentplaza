@@ -965,6 +965,20 @@ impl FleetScene {
 
     /// The camera's fit: the centre of every machine's bounding box, and the radius that holds
     /// every machine's sphere.
+    /// Per frame: each machine's detail parts show by the camera's eye (see `Built::frame_detail`). `top` is the scene the
+    /// fleet sits under: the machines' roots are measured there. True when a part switched.
+    pub fn frame_detail(&mut self, eye: Vec3, top: &Obj) -> bool {
+        let roots: Vec<Obj> = self.machines.values().map(|m| m.built.root.clone()).collect();
+        let worlds = top.world_matrices_of(&roots);
+        let mut changed = false;
+        for (m, world) in self.machines.values_mut().zip(worlds) {
+            if let Some(world) = world {
+                changed |= m.built.frame_detail(eye, world);
+            }
+        }
+        changed
+    }
+
     pub fn frame(&self) -> FleetFrame {
         if self.machines.is_empty() {
             return FleetFrame {

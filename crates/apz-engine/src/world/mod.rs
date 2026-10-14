@@ -32,7 +32,7 @@ use super::props::{Anim, Box2, PropPalette};
 use board_layout::{BoardLayout, TraceGraph};
 use layout::{AZIMUTH, POLAR};
 use super::robot::{robot_palette, Robot, RobotPalette, RobotState};
-use super::scene::{self, Color, Draw, Filter, Frame, Geo, Lod, Mat, Obj, PointLightDraw, World};
+use super::scene::{self, Color, Draw, Filter, Frame, Geo, Mat, Obj, PointLightDraw, World};
 
 /// The name the floor shows (`floorName` in roles.ts): the agent's own name, or "agent <cid>" while
 /// it has not chosen one (the hub returns an empty name until then).
@@ -351,6 +351,14 @@ impl Floor {
 
     /// This frame for the renderer: the baked statics (re-baked when dirty) and the dynamic draws.
     pub fn frame(&mut self, aspect: f32) -> Frame {
+        // The board's detail parts show by the camera's distance to each part (three.js frame()); a part that switched
+        // is baked out of or into the statics below.
+        if let Some(board) = self.board.as_mut() {
+            let eye = self.orbit.camera(aspect).eye;
+            if let Some(world) = self.root.world_matrix_of(&board.built.root) {
+                self.statics_dirty |= board.built.frame_detail(eye, world);
+            }
+        }
         if self.statics_dirty {
             let baked = scene::bake_split(&self.root, scene::GPU_HW_ANIM);
             self.statics = Arc::new(baked.statics);
@@ -386,10 +394,6 @@ impl Floor {
             lights,
             time: self.time,
             overlays: Vec::new(),
-            lod: self.board.as_ref().map(|b| Lod {
-                center: Vec3::new(0.0, b.model.size[1] * 0.5, 0.0),
-                radius: 0.5 * Vec3::from(b.model.size).length(),
-            }),
             // The cutaways' boxes and the atom are the model's, at the board's world scale.
             fades: Arc::new(
                 self.board

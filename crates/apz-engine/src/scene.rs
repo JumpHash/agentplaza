@@ -463,7 +463,8 @@ pub struct Node {
     pub rest: bool,
     /// `userData.walk`: robots walk over it (rugs, floor markings): it has no footprint.
     pub walk: bool,
-    /// Camera-distance detail: 0 always shown, 1 medium, 2 fine (see [`Lod`]).
+    /// The hardware detail level this node is under: 0 none, 1 medium, 2 fine. A part of level 1 or 2 shows by the
+    /// camera's distance to its own box (`hardware::Built::frame_detail`), which sets its `visible`.
     pub lod: u8,
     /// The cutaway this node belongs to (0: none). Its draws fade while they stand between the
     /// camera and the focus (see [`Fade`]).
@@ -688,6 +689,31 @@ impl Obj {
         }
     }
 
+    /// The world matrices of the distinct `targets` within this tree, in their order (None for one not in it): one walk.
+    pub fn world_matrices_of(&self, targets: &[Obj]) -> Vec<Option<Mat4>> {
+        fn walk(node: &Obj, parent: Mat4, index: &HashMap<*const Mutex<Node>, usize>, out: &mut [Option<Mat4>], left: &mut usize) {
+            if *left == 0 {
+                return;
+            }
+            let (world, children) = {
+                let n = node.get();
+                (parent * local_of(&n), n.children.clone())
+            };
+            if let Some(&i) = index.get(&Arc::as_ptr(&node.0)).filter(|&&i| out[i].is_none()) {
+                out[i] = Some(world);
+                *left -= 1;
+            }
+            for child in &children {
+                walk(child, world, index, out, left);
+            }
+        }
+        let index: HashMap<*const Mutex<Node>, usize> = targets.iter().enumerate().map(|(i, t)| (Arc::as_ptr(&t.0), i)).collect();
+        let mut out = vec![None; targets.len()];
+        let mut left = index.len();
+        walk(self, Mat4::IDENTITY, &index, &mut out, &mut left);
+        out
+    }
+
     /// The world matrix of `target` within this tree (None when it is not in it).
     pub fn world_matrix_of(&self, target: &Obj) -> Option<Mat4> {
         fn walk(node: &Obj, target: &Obj, parent: Mat4) -> Option<Mat4> {
@@ -876,7 +902,7 @@ pub struct Draw {
     pub cast_shadow: bool,
     pub receive_shadow: bool,
     pub render_order: i32,
-    /// The detail level of its node (0 always shown; see [`Lod`]).
+    /// The detail level of its node (0 none; 1 and 2: see [`Node::lod`]).
     pub lod: u8,
     /// The cutaway it belongs to (0: none; see [`Fade`]).
     pub fade: u32,
@@ -935,14 +961,6 @@ pub struct Baked {
     pub animated: Vec<AnimBatch>,
 }
 
-/// A model's detail by camera distance: its centre and its radius R. Detail 1 is shown while the
-/// camera is within 160 units of that sphere, detail 2 within 90 (the renderer adds hysteresis).
-#[derive(Debug, Clone, Copy)]
-pub struct Lod {
-    pub center: Vec3,
-    pub radius: f32,
-}
-
 /// A cutaway's box in world space: its draws fade while the segment from the camera to the focus
 /// passes through the box.
 #[derive(Debug, Clone, Copy)]
@@ -977,8 +995,6 @@ pub struct Frame {
     pub time: f32,
     /// 2D pictures drawn over the scene (the robots' name labels), back to front.
     pub overlays: Vec<Overlay>,
-    /// The board's detail centre and radius (None: every detail level is shown).
-    pub lod: Option<Lod>,
     /// The board's cutaways and their boxes.
     pub fades: Arc<Vec<Fade>>,
     /// What the cutaways keep in view: the board's atom (None: the camera's target).

@@ -12,7 +12,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 use super::fleet::{FleetInstances, PacketInstance, RingInstance, WRAP_PERIOD};
-use super::scene::{merge, world_sphere, Draw, DrawKind, Fade, Frame, Frustum, Geo, Lod, Shading, Side, Texture};
+use super::scene::{merge, world_sphere, Draw, DrawKind, Fade, Frame, Frustum, Geo, Shading, Side, Texture};
 use super::hardware::{over_area, CUTAWAY_OPACITY};
 
 /// A rectangle in pixels: the host's widget or target rectangle.
@@ -988,8 +988,6 @@ pub struct Pipeline {
     static_shadow: Vec<(u64, std::ops::Range<u32>)>,
     static_meshes: HashSet<u64>,
     static_textures: HashSet<u64>,
-    /// Which detail levels showed last frame (for the hysteresis).
-    lod_on: [bool; 2],
     /// Each cutaway's opacity now, and the frame time it was last eased at.
     fade_alpha: HashMap<u32, f32>,
     fade_time: Option<f32>,
@@ -1269,7 +1267,6 @@ impl Pipeline {
             static_shadow: Vec::new(),
             static_meshes: HashSet::new(),
             static_textures: HashSet::new(),
-            lod_on: [false; 2],
             fade_alpha: HashMap::new(),
             fade_time: None,
             fleet: FleetGpu::new(device, queue),
@@ -1520,8 +1517,6 @@ pub struct Primitive {
     pub frame: Arc<Frame>,
 }
 
-/// Where a level of detail switches on or off: this far (as a fraction) inside or past its threshold.
-const LOD_HYSTERESIS: f32 = 0.05;
 /// An instanced part casts a shadow only when its geometry is at least this big (units): a resistor
 /// in a copper array does not.
 const SHADOW_MIN_INSTANCE: f32 = 1.0;
@@ -1532,13 +1527,6 @@ struct Stamp {
     shadows: bool,
     ink: [u32; 3],
     samples: u32,
-    /// The detail levels shown (see `Pipeline::detail_mask`).
-    mask: u8,
-}
-
-/// Whether a draw shows at a detail mask: level 0 always, level 1 and 2 by their bits (2 and 4).
-fn visible_at(d: &Draw, mask: u8) -> bool {
-    d.lod == 0 || (mask >> d.lod) & 1 == 1
 }
 
 /// Whether a dynamic draw's bounds touch a view volume: a mesh's (or hull's) sphere under its matrix,
@@ -1617,24 +1605,6 @@ fn segment_hits(min: Vec3, max: Vec3, a: Vec3, b: Vec3) -> bool {
 }
 
 impl Pipeline {
-    /// Which detail levels show from the eye: bit 1 for detail 1 (the eye within 160 units of the
-    /// board's bounds), bit 2 for detail 2 (within 90), as the web's DETAIL_RANGE: the board's default
-    /// view shows both, a far view drops them, and zooming in brings them back. A level switches on
-    /// inside its threshold less 5 % and off past it plus 5 %. Without a board, every level shows.
-    fn detail_mask(&mut self, lod: Option<Lod>, eye: Vec3) -> u8 {
-        let Some(lod) = lod else { return 0b110 };
-        let distance = (eye.distance(lod.center) - lod.radius).max(0.0);
-        let mut mask = 0;
-        for (i, limit) in [160.0f32, 90.0].into_iter().enumerate() {
-            let on = &mut self.lod_on[i];
-            *on = if *on { distance < limit * (1.0 + LOD_HYSTERESIS) } else { distance < limit * (1.0 - LOD_HYSTERESIS) };
-            if *on {
-                mask |= 2 << i;
-            }
-        }
-        mask
-    }
-
     /// Eases each cutaway's opacity toward `CUTAWAY_OPACITY` while the segment from the eye to the focus
     /// passes through its box or the box is over the plaza area, and back to 100 % once it is not
     /// (settled in about 0.3 s).
@@ -1666,7 +1636,7 @@ impl Pipeline {
         self.static_textures.clear();
         // The meshes that cast shadows are merged into one geometry for the shadow pass.
         let mut casters: Vec<(Geo, Mat4)> = Vec::new();
-        for d in src.iter().filter(|d| visible_at(d, stamp.mask)) {
+        for d in src.iter() {
             let a = d.material.opacity;
             if stamp.shadows && d.cast_shadow && matches!(d.kind, DrawKind::Mesh) && !is_transparent(d, a) {
                 casters.push((Arc::clone(&d.geo), d.model));
@@ -1906,16 +1876,15 @@ impl Primitive {
         };
 
         let ink = w.ink.to_array();
-        // Detail levels (by the eye's distance, with hysteresis) and the cutaways' fades.
+        // The cutaways' fades (the detail parts show by their nodes' visibility, set by the scene).
         let eye = camera.eye;
-        let mask = p.detail_mask(f.lod, eye);
         p.fade_step(&f.fades, eye, f.focus.unwrap_or(camera.target), f.plaza, f.time);
         let fades_now = p.fade_alpha.clone();
         let alpha = |d: &Draw| -> f32 {
             let fade = if d.fade != 0 { fades_now.get(&d.fade).copied().unwrap_or(1.0) } else { 1.0 };
             d.material.opacity * fade
         };
-        let stamp = Stamp { shadows, ink: ink.map(f32::to_bits), samples, mask };
+        let stamp = Stamp { shadows, ink: ink.map(f32::to_bits), samples };
         let statics_changed = !p.statics_are(&f.statics, stamp);
         if statics_changed {
             p.build_statics(device, queue, &f.statics, stamp, ink, samples);
@@ -1936,7 +1905,7 @@ impl Primitive {
         let main_frustum = Frustum::from_view_proj(proj * view);
         let shadow_frustum = Frustum::from_view_proj(light_proj * light_view);
         let mut culled = 0usize;
-        for d in f.draws.iter().filter(|d| visible_at(d, mask)) {
+        for d in f.draws.iter() {
             let a = alpha(d);
             let in_main = bounds_visible(d, &main_frustum);
             let in_shadow = shadows && d.cast_shadow && casts_shadow(d) && bounds_visible(d, &shadow_frustum);
