@@ -32,6 +32,7 @@ pub mod mcp_hub;
 pub mod mcp_wizard;
 pub mod vault;
 pub mod machines;
+pub mod workstations;
 pub mod nodes;
 pub mod setup;
 pub mod agent;
@@ -82,6 +83,7 @@ pub enum Id {
     Mcp,
     Vault,
     Machines,
+    Workstations,
     Nodes,
     Setup,
     /// One task in full, on the Tasks screen, by its id.
@@ -134,6 +136,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Mcp, "MCP", "Setup", "terminal"),
     (Id::Vault, "Vault", "Setup", "key"),
     (Id::Machines, "Machines", "Setup", "machine"),
+    (Id::Workstations, "Workstations", "Setup", "harness"),
     (Id::Nodes, "Nodes", "Setup", "link"),
     (Id::Setup, "Setup", "Setup", "settings"),
 ];
@@ -163,6 +166,7 @@ pub struct Screens {
     pub mcp: mcp::State,
     pub vault: vault::State,
     pub machines: machines::State,
+    pub workstations: workstations::State,
     pub nodes: nodes::State,
     pub setup: setup::State,
     pub agent: agent::State,
@@ -202,6 +206,7 @@ pub enum Msg {
     Mcp(mcp::Msg),
     Vault(vault::Msg),
     Machines(machines::Msg),
+    Workstations(workstations::Msg),
     Nodes(nodes::Msg),
     Setup(setup::Msg),
     Agent(agent::Msg),
@@ -242,6 +247,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Mcp(m) => mcp::go(m),
         Msg::Vault(m) => vault::go(m),
         Msg::Machines(m) => machines::go(m),
+        Msg::Workstations(m) => workstations::go(m),
         Msg::Nodes(m) => nodes::go(m),
         Msg::Setup(m) => setup::go(m),
         Msg::Agent(m) => agent::go(m),
@@ -303,6 +309,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Mcp => mcp::load(&mut screens.mcp, ctx).map(Msg::Mcp),
         Id::Vault => vault::load(&mut screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::load(&mut screens.machines, ctx).map(Msg::Machines),
+        Id::Workstations => workstations::load(&mut screens.workstations, ctx).map(Msg::Workstations),
         Id::Nodes => nodes::load(&mut screens.nodes, ctx).map(Msg::Nodes),
         Id::Setup => setup::load(&mut screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
@@ -343,6 +350,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Mcp(m) => mcp::update(&mut screens.mcp, m, ctx).map(Msg::Mcp),
         Msg::Vault(m) => vault::update(&mut screens.vault, m, ctx).map(Msg::Vault),
         Msg::Machines(m) => machines::update(&mut screens.machines, m, ctx).map(Msg::Machines),
+        Msg::Workstations(m) => workstations::update(&mut screens.workstations, m, ctx).map(Msg::Workstations),
         Msg::Nodes(m) => nodes::update(&mut screens.nodes, m, ctx).map(Msg::Nodes),
         Msg::Setup(m) => setup::update(&mut screens.setup, m, ctx).map(Msg::Setup),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
@@ -368,6 +376,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
         Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab),
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
+        Id::Workstations => workstations::subscription(ctx).map(Msg::Workstations),
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury, ctx).map(Msg::Treasury),
@@ -416,6 +425,7 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx, plaza: ide::Plaza) 
         Id::Mcp => mcp::view(&screens.mcp, ctx).map(Msg::Mcp),
         Id::Vault => vault::view(&screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::view(&screens.machines, ctx).map(Msg::Machines),
+        Id::Workstations => workstations::view(&screens.workstations).map(Msg::Workstations),
         Id::Nodes => nodes::view(&screens.nodes, ctx).map(Msg::Nodes),
         Id::Setup => setup::view(&screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
