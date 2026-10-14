@@ -739,7 +739,7 @@ pub fn spawn_sweep(app: &Arc<App>) {
 mod tests {
     use super::*;
     use crate::stations::leases::Lease;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     /// Frames kept in memory, by key.
     #[derive(Default)]
@@ -1256,12 +1256,6 @@ mod tests {
         assert_eq!(
             frame_key("w3", "r1700-2", 12),
             "recordings/w3/r1700-2/12.jpg"
-        );
-        assert_eq!(
-            Path::new(&frame_key("w3", "r1", 1))
-                .extension()
-                .and_then(|e| e.to_str()),
-            Some("jpg")
         );
     }
 }

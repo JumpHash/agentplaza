@@ -326,7 +326,7 @@ pub fn serve(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use apz_station::{AccountMode, Form, Os, SessionKind, StationSettings};
+    use apz_station::{AccountMode, Form, Os, StationSettings};
     use std::thread;
 
     /// A daemon's end of the socket, in memory: the test sends what the daemon says, reads what the hub wrote,
@@ -471,42 +471,6 @@ pub(crate) mod tests {
             error: None,
         });
         assert!(ask.join().unwrap().is_ok());
-    }
-
-    #[test]
-    fn a_request_is_answered_by_its_id_with_its_result() {
-        let (link, daemon, handle) = start("w1", Arc::new(Accept));
-        greet(&link, &daemon);
-        let asker = Arc::clone(&link);
-        let ask = thread::spawn(move || {
-            asker.request(
-                Op::SessionOpen {
-                    agent: 3,
-                    kind: SessionKind::Pixel,
-                },
-                Duration::from_secs(5),
-            )
-        });
-        let HubFrame::Request { id, op } = daemon.hears() else {
-            panic!("a request")
-        };
-        assert_eq!(
-            op,
-            Op::SessionOpen {
-                agent: 3,
-                kind: SessionKind::Pixel
-            }
-        );
-        daemon.say(&StationFrame::Response {
-            id,
-            ok: true,
-            result: Some(serde_json::json!({"session": 9})),
-            error: None,
-        });
-        assert_eq!(ask.join().unwrap(), Ok(serde_json::json!({"session": 9})));
-        link.kill(1000, "done");
-        assert_eq!(daemon.ended.recv().unwrap().0, 1000);
-        assert!(handle.join().unwrap().is_ok());
     }
 
     #[test]

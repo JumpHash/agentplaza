@@ -716,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lease_of_another_agent_or_of_another_session_is_refused() {
+    fn a_lease_of_another_agent_or_of_another_session_is_refused_and_the_held_one_runs() {
         let (link, daemon) = online();
         let hub = hub(Some(link));
         let theirs = pixel_lease(&hub, 8, 9);
@@ -736,24 +736,10 @@ mod tests {
             daemon,
             json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
         );
-        assert!(run_op(&hub, 7, "builder", "w1", Some(&mine), screenshot(10)).is_ok());
+        let shot = run_op(&hub, 7, "builder", "w1", Some(&mine), screenshot(10)).unwrap();
+        assert_eq!(shot["w"], 1);
         let (op, _) = asked.join().unwrap();
         assert!(matches!(op, Op::Screenshot { session: 10, .. }));
-    }
-
-    #[test]
-    fn a_held_pixel_lease_lets_the_screen_operation_run() {
-        let (link, daemon) = online();
-        let hub = hub(Some(link));
-        let lease = pixel_lease(&hub, 7, 9);
-        let asked = answer(
-            daemon,
-            json!({"w": 2, "h": 2, "format": "png", "data_b64": "iVBO"}),
-        );
-        let shot = run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap();
-        assert_eq!(shot["w"], 2);
-        let (op, _) = asked.join().unwrap();
-        assert!(matches!(op, Op::Screenshot { session: 9, .. }));
         assert_eq!(last_audit(&hub)["data"]["ok"], true);
     }
 

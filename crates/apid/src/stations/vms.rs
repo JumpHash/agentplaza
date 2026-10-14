@@ -664,6 +664,11 @@ mod tests {
         let mut name = request("linux");
         name.name = "Desk".into();
         assert!(check(&name, false, 0).is_err());
+        assert!(
+            check(&request("freebsd"), true, 0)
+                .unwrap_err()
+                .contains("os must be")
+        );
     }
 
     #[test]
@@ -707,15 +712,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_unknown_os_is_refused() {
-        assert!(
-            check(&request("freebsd"), true, 0)
-                .unwrap_err()
-                .contains("os must be")
-        );
-    }
-
     /// A fake node: records every call in order, and answers each step with the status it is given.
     struct Fake {
         calls: RefCell<Vec<String>>,
@@ -736,20 +732,23 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_is_stop_then_the_disk_step_then_start_through_the_node() {
-        let fake = Fake {
-            calls: RefCell::new(Vec::new()),
-            answer: all_ok,
-        };
-        around(&fake, "n1", "wv3", Step::Snapshot).expect("every step answers");
-        assert_eq!(
-            *fake.calls.borrow(),
-            [
-                "n1 POST /v1/workstations/wv3/stop",
-                "n1 POST /v1/workstations/wv3/snapshot",
-                "n1 POST /v1/workstations/wv3/start",
-            ]
-        );
+    fn a_reset_or_a_revert_is_stop_then_its_disk_step_then_start_through_the_node() {
+        for (work, path) in [(Step::Snapshot, "snapshot"), (Step::Revert, "revert")] {
+            let fake = Fake {
+                calls: RefCell::new(Vec::new()),
+                answer: all_ok,
+            };
+            around(&fake, "n1", "wv3", work).expect("every step answers");
+            assert_eq!(
+                *fake.calls.borrow(),
+                [
+                    "n1 POST /v1/workstations/wv3/stop".to_string(),
+                    format!("n1 POST /v1/workstations/wv3/{path}"),
+                    "n1 POST /v1/workstations/wv3/start".to_string(),
+                ],
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -800,18 +799,6 @@ mod tests {
     }
 
     #[test]
-    fn a_revert_sequences_the_same_way_with_the_revert_step() {
-        let fake = Fake {
-            calls: RefCell::new(Vec::new()),
-            answer: all_ok,
-        };
-        around(&fake, "n2", "wv7", Step::Revert).unwrap();
-        let calls = fake.calls.borrow();
-        assert_eq!(calls[1], "n2 POST /v1/workstations/wv7/revert");
-        assert_eq!(calls.len(), 3);
-    }
-
-    #[test]
     fn a_node_refusal_names_the_node_and_the_step() {
         fn refused(_: &str) -> (u16, Value) {
             (404, json!({"error": "no workstation VM wv9"}))
@@ -839,26 +826,24 @@ mod tests {
     }
 
     #[test]
-    fn the_record_is_kept_without_its_station_until_one_enrols() {
-        let record = VmRecord {
-            id: "v1".into(),
-            node: "n0".into(),
-            vm: "wv1".into(),
-            name: "desk".into(),
-            os: "linux".into(),
-            cpus: 2,
-            ram_mb: 4096,
-            disk_gb: 16,
-            gpu: "none".into(),
-            image: None,
-            backend: "plaza".into(),
-            code: "j1".into(),
-            station: None,
-            created_ms: 1,
-        };
-        let text = serde_json::to_string(&record).unwrap();
-        let back: VmRecord = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, record);
+    fn a_record_from_before_qemu_is_plaza_and_one_without_its_station_has_none() {
+        let old = json!({
+            "id": "v1",
+            "node": "n0",
+            "vm": "wv1",
+            "name": "desk",
+            "os": "linux",
+            "cpus": 2,
+            "ram_mb": 4096,
+            "disk_gb": 16,
+            "gpu": "none",
+            "image": null,
+            "code": "j1",
+            "created_ms": 1
+        });
+        let record: VmRecord = serde_json::from_value(old).unwrap();
+        assert_eq!(record.backend, "plaza");
+        assert_eq!(record.station, None, "kept until one enrols");
     }
 
     #[test]

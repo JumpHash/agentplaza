@@ -709,20 +709,6 @@ mod tests {
     }
 
     #[test]
-    fn a_control_take_holds_through_any_quiet_time() {
-        let fx = Fake::default();
-        let sessions = Sessions::default();
-        sessions
-            .take(&fx, T0, "w1", 9, 1, Takeover::AgentWaits)
-            .unwrap();
-        sessions.sweep(&fx, T0 + 10 * QUIET);
-        assert!(
-            sessions.pixel_paused(T0 + 10 * QUIET, "w1", 9),
-            "held until the owner gives it back"
-        );
-    }
-
-    #[test]
     fn an_input_take_passes_to_the_view_that_takes_it_and_is_held_there() {
         let fx = Fake::default();
         let sessions = Sessions::default();
@@ -827,5 +813,9 @@ mod tests {
             "only the input take went quiet; a control take holds"
         );
         assert!(sessions.standing_on(T0 + QUIET, "w1").is_empty());
+        assert!(
+            sessions.holds(T0 + 10 * QUIET, "w2", 5, 1),
+            "held until the owner gives it back, however quiet"
+        );
     }
 }

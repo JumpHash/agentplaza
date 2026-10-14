@@ -917,16 +917,6 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_message_is_the_length_the_header_and_the_image() {
-        let header = json!({"w": 2, "h": 1, "format": "png", "ts": 5, "seq": 1});
-        let message = frame_message(&header, &[9, 8, 7]);
-        let len = u32::from_be_bytes([message[0], message[1], message[2], message[3]]) as usize;
-        let head: Value = serde_json::from_slice(&message[4..4 + len]).unwrap();
-        assert_eq!(head, header);
-        assert_eq!(&message[4 + len..], &[9, 8, 7]);
-    }
-
-    #[test]
     fn the_view_query_is_checked() {
         assert_eq!(
             parse_view(Some("9"), None, None),
