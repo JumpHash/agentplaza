@@ -59,6 +59,7 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
         activity: (number("APZ_HW_WORKING", 0.0, 6.0, 0.0) / 4.0).min(1.0),
         open: number("APZ_HW_OPEN", 0.0, 1.0, 0.0),
     };
+    night_stage(floor);
     let built = hardware::build(model, &params);
     floor.root.add(&built.root);
     let pulses = if var("APZ_HW_TRACES").is_some_and(|t| t == "1") {
@@ -76,6 +77,43 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let mut lab = Lab { built, pulses, state };
     lab.step(0.0, 0.0);
     Some(lab)
+}
+
+/// The web hardware lab's stage (hardware-lab.ts): its night sky (the floor's dome), no plaza scenery, a flat ground of
+/// 0x1d2140 under a 120-unit grid (three's GridHelper: the centre lines 0x3b4566, the rest 0x242a48), its lights.
+fn night_stage(floor: &mut Floor) {
+    use crate::scene::{Color, Mat, Obj};
+    use std::f32::consts::FRAC_PI_2;
+    floor.stars.set_visible(false);
+    floor.planet.set_visible(false);
+    floor.dust.set_visible(false);
+    floor.backdrop.set_visible(false);
+    floor.ground.set_visible(false);
+    let ground = Obj::mesh(&crate::geometry::plane(800.0, 800.0, 1, 1), &crate::toon::toon_mat(crate::scene::Material { color: Color::hex(0x1d2140), ..Default::default() }));
+    ground.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, -0.01, 0.0).set_shadows(false, true);
+    floor.root.add(&ground);
+    let (centre, line) = (Mat::basic(Color::hex(0x3b4566)), Mat::basic(Color::hex(0x242a48)));
+    let grid = Obj::group();
+    for k in 0..=120 {
+        let at = k as f32 - 60.0;
+        let mat = if k == 60 { &centre } else { &line };
+        let along_x = Obj::mesh(&crate::geometry::plane(120.0, 0.05, 1, 1), mat);
+        along_x.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(0.0, 0.002, at);
+        let along_z = Obj::mesh(&crate::geometry::plane(0.05, 120.0, 1, 1), mat);
+        along_z.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(at, 0.002, 0.0);
+        grid.add(&along_x);
+        grid.add(&along_z);
+    }
+    floor.root.add(&grid);
+    floor.statics_dirty = true;
+    let world = &mut floor.world;
+    world.fog_near = 1.0e6;
+    world.fog_far = 2.0e6;
+    world.hemi_sky = Color::hex(0x9fb0ff);
+    world.hemi_ground = Color::hex(0x2a1d52);
+    world.hemi_intensity = 1.15;
+    world.sun_color = Color::hex(0xd2ddff);
+    world.sun_intensity = 2.0;
 }
 
 impl Lab {

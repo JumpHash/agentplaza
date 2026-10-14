@@ -439,7 +439,10 @@ const MACHINES_FILL: f32 = 0.8;
 pub fn fit_distance(radius: f32, aspect: f32) -> f32 {
     let tan_v = (FOV_DEG / 2.0).to_radians().tan();
     let tan_h = tan_v * aspect.max(1e-3);
-    radius / (MACHINES_FILL * tan_v.min(tan_h))
+    // floor.ts fitDistance: the sphere's angular radius a has tan a = fill * tan(half-field), and sin a = radius /
+    // distance, so the distance is radius * sqrt(1 + 1 / (fill * tan)^2) (4% farther than radius / (fill * tan)).
+    let t = MACHINES_FILL * tan_v.min(tan_h);
+    radius * (1.0 + 1.0 / (t * t)).sqrt()
 }
 
 impl Default for Floor {
@@ -455,13 +458,15 @@ mod tests {
     #[test]
     fn fit_distance_holds_the_sphere_in_the_tighter_axis() {
         let tan_v = (FOV_DEG / 2.0).to_radians().tan();
+        // floor.ts fitDistance: radius * sqrt(1 + 1 / (fill * tan(half-field))^2), the half-field the tighter axis's.
+        let web = |r: f32, t: f32| r * (1.0 + 1.0 / (0.8 * t).powi(2)).sqrt();
         // A square stage: the sphere fills 80% of both half-extents.
-        assert!((fit_distance(10.0, 1.0) - 10.0 / (0.8 * tan_v)).abs() < 1e-3);
+        assert!((fit_distance(10.0, 1.0) - web(10.0, tan_v)).abs() < 1e-3);
         // A wide stage: the height is the tighter axis, so the distance does not change.
         assert!((fit_distance(10.0, 2.0) - fit_distance(10.0, 1.0)).abs() < 1e-3);
         // A tall stage: the width is the tighter axis, so the sphere stands farther off.
         let tall = fit_distance(10.0, 0.5);
-        assert!((tall - 10.0 / (0.8 * tan_v * 0.5)).abs() < 1e-3);
+        assert!((tall - web(10.0, tan_v * 0.5)).abs() < 1e-3);
         assert!(tall > fit_distance(10.0, 1.0));
     }
 

@@ -115,6 +115,28 @@ pub fn background_or_default(v: Option<&str>) -> Color {
     background_of(v).unwrap_or(Color::hex(DEFAULT_BACKGROUND))
 }
 
+/// The labs' own stage, as the web's robot and room labs (robot-lab.ts, room-lab.ts): no plaza scenery (the stars,
+/// the planet, the dust, the skyline and the machines' ground), no fog, their lights, and a flat `bg` background.
+pub(crate) fn pale_stage(floor: &mut Floor, bg: Color) {
+    floor.stars.set_visible(false);
+    floor.planet.set_visible(false);
+    floor.dust.set_visible(false);
+    floor.backdrop.set_visible(false);
+    floor.ground.set_visible(false);
+    floor.statics_dirty = true;
+    let world = &mut floor.world;
+    world.background = bg;
+    world.flat_background = true;
+    world.fog_near = 1.0e6;
+    world.fog_far = 2.0e6; // past fog_near, or every fragment is fully fogged
+    world.hemi_sky = Color::hex(0xeaf4ff);
+    world.hemi_ground = Color::hex(0x8a7a5a);
+    world.hemi_intensity = 1.3;
+    world.sun_color = Color::hex(0xfff1d6);
+    world.sun_intensity = 2.6;
+    world.sun_position = [25.0, 40.0, 30.0].into();
+}
+
 /// The web's orchestrator rule: the rover alone, or in a line-up only the first robot, when it is the rover.
 fn is_orchestrator(orch: bool, id: &str, index: usize, lineup: bool) -> bool {
     orch && id == "rover" && (!lineup || index == 0)
@@ -147,26 +169,8 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let orch = var("APZ_ROBOT_ORCH").as_deref() == Some("1");
     let frozen = frozen_of(var("APZ_ROBOT_T").as_deref());
     let cam = var("APZ_ROBOT_CAM").as_deref().and_then(Cam::parse).unwrap_or(Cam::Front);
-    // The lab's own stage, as the web's: no plaza scenery (the stars, the planet, the dust, the skyline and
-    // the machines' ground), no fog, the web's lights, and the pale blue (or `bg`) background.
     let bg = background_or_default(var("APZ_ROBOT_BG").as_deref());
-    floor.stars.set_visible(false);
-    floor.planet.set_visible(false);
-    floor.dust.set_visible(false);
-    floor.backdrop.set_visible(false);
-    floor.ground.set_visible(false);
-    floor.statics_dirty = true;
-    let world = &mut floor.world;
-    world.background = bg;
-    world.flat_background = true;
-    world.fog_near = 1.0e6;
-    world.fog_far = 2.0e6; // past fog_near, or every fragment is fully fogged
-    world.hemi_sky = Color::hex(0xeaf4ff);
-    world.hemi_ground = Color::hex(0x8a7a5a);
-    world.hemi_intensity = 1.3;
-    world.sun_color = Color::hex(0xfff1d6);
-    world.sun_intensity = 2.6;
-    world.sun_position = [25.0, 40.0, 30.0].into();
+    pale_stage(floor, bg);
 
     let n = ids.len();
     let mut robots = Vec::with_capacity(n);

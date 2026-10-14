@@ -97,6 +97,8 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let door = var("APZ_ROOM_DOOR").and_then(|s| Door::parse(&s)).unwrap_or(Door::S);
     let grid = var("APZ_ROOM_GRID").is_some_and(|g| g == "1");
 
+    // The web room lab's stage: the pale blue, its lights, no plaza scenery.
+    crate::robots::lab::pale_stage(floor, crate::scene::Color::hex(crate::robots::lab::DEFAULT_BACKGROUND));
     let palette = kit_palette(&floor.colors);
     // The slot's half-size: the inner size plus the wall margin (web room-lab).
     let half = (w.max(d) / 2.0 + 0.075) as f32;
