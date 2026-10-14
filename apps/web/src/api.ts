@@ -827,7 +827,11 @@ export const retireModel = (id: string) => foundryOk<ModelView>('POST', foundryP
 
 export type VaultState = 'uninitialized' | 'sealed' | 'unsealed' | 'tampered';
 export type VaultSlotKind = 'passphrase' | 'keyfile' | 'recovery';
-export interface VaultSlot { id: string; kind: VaultSlotKind; created_ms: number }
+export interface VaultSlot {
+  id: string; kind: VaultSlotKind; created_ms: number;
+  /** True for the slot that unlocked this session. A rekey does not ask for its secret. */
+  unsealed_with?: boolean;
+}
 /** `id` is `n0` for this hub, else the node's id. */
 export interface VaultNodeRef { id: string; name: string }
 export interface VaultStatus {
@@ -835,7 +839,8 @@ export interface VaultStatus {
   slots: VaultSlot[];
   entries: number;
   nodes: VaultNodeRef[];
-  audit_ok: boolean;
+  /** `null` until the audit chain has been checked (the first unlock or audit read). */
+  audit_ok: boolean | null;
   rekeyed_ms: number | null;
   /** The reason the vault is tampered (state `tampered`), else null. */
   tampered: string | null;

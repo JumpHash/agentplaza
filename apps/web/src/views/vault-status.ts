@@ -24,6 +24,10 @@ export function vaultStatusSection(ctx: VaultCtx): HTMLElement {
     actions.push(
       button('Seal', () => void seal(ctx)),
       button('Add passphrase', () => addPassphraseDialog(ctx)),
+      button('Add key file slot', () => addKeyfileDialog(ctx), {
+        disabled: hasKeyfile,
+        title: hasKeyfile ? 'This vault already has a key file slot.' : 'The hub creates a key file slot on its own disk.',
+      }),
       button('Create recovery code', () => recoveryDialog(ctx)),
       button('Rekey', () => rekeyDialog(ctx)),
     );
@@ -40,12 +44,7 @@ export function vaultStatusSection(ctx: VaultCtx): HTMLElement {
     fact('Key slots', slotList),
     fact('Secrets', String(status.entries)),
     fact('Rekeyed', status.rekeyed_ms == null ? 'Never' : ago(status.rekeyed_ms)),
-    fact(
-      'Audit',
-      status.audit_ok
-        ? badge('Audit chain intact', 'ok', true)
-        : badge('Audit chain broken, see the Audit tab', 'danger', true),
-    ),
+    fact('Audit', auditBadge(status.audit_ok)),
   );
 
   const top = h(
@@ -94,6 +93,14 @@ function envBanner(): HTMLElement {
 
 function fact(label: string, value: Node | string): HTMLElement {
   return h('div.vault-fact', null, h('dt', null, label), h('dd', null, value));
+}
+
+/** `null` means the chain has not been checked yet (no unlock or audit read this run), which is not a failure. */
+function auditBadge(ok: boolean | null): HTMLElement {
+  if (ok === null) return badge('Audit chain not checked until unsealed', 'muted', true);
+  return ok
+    ? badge('Audit chain intact', 'ok', true)
+    : badge('Audit chain broken, see the Audit tab', 'danger', true);
 }
 
 function slotRow(ctx: VaultCtx, slot: VaultSlot, unsealed: boolean, count: number): HTMLElement {
@@ -218,6 +225,29 @@ function addPassphraseDialog(ctx: VaultCtx): void {
   ]);
 }
 
+// The hub creates the key file itself (POST {kind:"keyfile"}); no file is chosen or sent from the browser.
+function addKeyfileDialog(ctx: VaultCtx): void {
+  const err = errorLine();
+  let close: () => void = () => {};
+  const add = async () => {
+    try {
+      await vaultApi.addKeyfile();
+      close();
+      toast('Key file slot added');
+      await ctx.reload();
+    } catch (e) {
+      setError(err, errorText(e));
+    }
+  };
+
+  close = dialog('Add key file slot', [
+    h('p', null, 'The hub creates the key file on its own disk. The vault can then be unsealed with that file, without a passphrase.'),
+    h('p', null, 'Anyone with that file and a copy of the vault data can unseal the vault. Remove the slot to destroy the file.'),
+    err,
+    row(button('Cancel', () => close()), button('Add key file slot', () => void add(), { kind: 'primary' })),
+  ]);
+}
+
 function recoveryDialog(ctx: VaultCtx): void {
   const err = errorLine();
   let close: () => void = () => {};
@@ -295,8 +325,9 @@ function removeSlotDialog(ctx: VaultCtx, slot: VaultSlot): void {
 
 function rekeyDialog(ctx: VaultCtx): void {
   const err = errorLine();
+  // The slot that unlocked this session keeps its key (the hub reuses it), so its secret is not asked for.
   const others = ctx.data.status.slots
-    .filter((s) => s.kind !== 'keyfile')
+    .filter((s) => s.kind !== 'keyfile' && s.unsealed_with !== true)
     .map((slot) => ({
       slot,
       control: input({ type: 'password', autocomplete: 'off', 'aria-label': `${KIND_LABEL[slot.kind]} ${slot.id}` }),
@@ -325,8 +356,9 @@ function rekeyDialog(ctx: VaultCtx): void {
     h(
       'p',
       null,
-      'Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten, so each one must be given now.',
+      'Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten, so each one must be given now, except the one that unlocked this session.',
     ),
+    ...(others.length === 0 ? [h('p', null, 'No other passphrase or recovery slot needs a secret.')] : []),
     ...others.map(({ slot, control }) => field(`${KIND_LABEL[slot.kind]} (${slot.id})`, control)),
     err,
     row(button('Cancel', () => close()), button('Rekey', () => void rekey(), { kind: 'primary' })),

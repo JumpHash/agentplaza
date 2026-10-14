@@ -9,7 +9,7 @@ import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import { errorText, type VaultCtx, type VaultData } from './vault-common';
 import { vaultStatusSection } from './vault-status';
-import { vaultSecretsSection } from './vault-secrets';
+import { type SecretScope, vaultSecretsSection } from './vault-secrets';
 import { vaultMatrixSection } from './vault-matrix';
 import { vaultAuditSection } from './vault-audit';
 import { openImportDialog } from './vault-import';
@@ -42,6 +42,8 @@ async function fetchData(): Promise<VaultData> {
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let alive = true;
   let tab: VaultTab = 'secrets';
+  // Kept here, not in the section, because every draw rebuilds the section.
+  let secretScope: SecretScope = { kind: 'all' };
   let ctx: VaultCtx | undefined;
   let failure: string | undefined;
   let loads = 0;
@@ -76,7 +78,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   function tabContent(c: VaultCtx): HTMLElement {
     if (tab === 'matrix') return vaultMatrixSection(c);
     if (tab === 'audit') return vaultAuditSection(c);
-    return vaultSecretsSection(c);
+    return vaultSecretsSection(c, secretScope, (next) => {
+      secretScope = next;
+      draw();
+    });
   }
 
   function draw(): void {

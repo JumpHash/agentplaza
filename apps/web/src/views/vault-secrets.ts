@@ -7,13 +7,54 @@ import { attempt, ago, badge, button, card, clip, empty, field, input, modal, se
 import { type VaultConsumer, type VaultEntry, type VaultNodeRef, type VaultScope, vaultApi } from '../api';
 import { THIS_HUB, type VaultCtx, bindingLabel, errorText, fingerprint, lastFour, nodeName, scopeNodeIds } from './vault-common';
 
-export function vaultSecretsSection(ctx: VaultCtx): HTMLElement {
+/** Which secrets the list shows: all of them, the plaza-wide ones, or those scoped to one node. */
+export type SecretScope = { kind: 'all' } | { kind: 'plaza' } | { kind: 'node'; id: string };
+
+/** The desktop's rule: a node shows only the entries whose scope lists it; plaza entries are not bound to one node. */
+function inScope(entry: VaultEntry, scope: SecretScope): boolean {
+  switch (scope.kind) {
+    case 'all':
+      return true;
+    case 'plaza':
+      return entry.scope.kind === 'plaza';
+    case 'node':
+      return entry.scope.kind === 'nodes' && entry.scope.nodes.includes(scope.id);
+  }
+}
+
+function scopeValue(scope: SecretScope): string {
+  return scope.kind === 'node' ? `node:${scope.id}` : scope.kind;
+}
+
+function scopeFromValue(value: string): SecretScope {
+  if (value.startsWith('node:')) return { kind: 'node', id: value.slice('node:'.length) };
+  return value === 'plaza' ? { kind: 'plaza' } : { kind: 'all' };
+}
+
+/** The scope select above the list. Its node choices are the vault's own nodes, the same ones the scope picker offers. */
+function scopeSelect(nodes: VaultNodeRef[], scope: SecretScope, onScope: (next: SecretScope) => void): HTMLElement {
+  const options = [
+    { value: 'all', label: 'All' },
+    { value: 'plaza', label: 'Plaza' },
+    ...nodes.map((n) => ({ value: `node:${n.id}`, label: nodeName(n.id, nodes) })),
+  ];
+  const control = select(options, scopeValue(scope));
+  control.addEventListener('change', () => onScope(scopeFromValue(control.value)));
+  return h('div.vs-form', { style: 'padding: var(--s3) var(--s3) 0' }, field('Scope', control));
+}
+
+export function vaultSecretsSection(ctx: VaultCtx, scope: SecretScope, onScope: (next: SecretScope) => void): HTMLElement {
   if (ctx.locked) {
     return card(null, empty('key', 'Vault is locked', 'Unseal the vault to see and manage secrets.'), { flush: true });
   }
   const { entries, consumers, status } = ctx.data;
   if (entries.length === 0) {
     return card(null, empty('key', 'No secrets yet', 'Add one with Add secret, or import a .env file.'), { flush: true });
+  }
+  const shown = entries.filter((e) => inScope(e, scope));
+  const filter = scopeSelect(status.nodes, scope, onScope);
+  if (shown.length === 0) {
+    return card(null, [filter, empty('key', 'No secrets in this scope', 'Pick another scope above.')], { flush: true });
   }
 
   const columns: Column<VaultEntry>[] = [
@@ -32,7 +73,7 @@ export function vaultSecretsSection(ctx: VaultCtx): HTMLElement {
     { label: 'Actions', cell: (e) => rowActions(ctx, e) },
   ];
 
-  const tbl = table(columns, entries, undefined, (e) => e.id);
+  const tbl = table(columns, shown, undefined, (e) => e.id);
   tbl.classList.add('vs-table');
   // The stacked (narrow) layout labels each cell with its column name.
   tbl.querySelectorAll('tbody tr').forEach((tr) => {
@@ -40,7 +81,7 @@ export function vaultSecretsSection(ctx: VaultCtx): HTMLElement {
       td.dataset.label = columns[i]?.label ?? '';
     });
   });
-  return card(null, h('div.vs-scroll', null, tbl), { flush: true });
+  return card(null, [filter, h('div.vs-scroll', null, tbl)], { flush: true });
 }
 
 function chip(text: string): HTMLElement {
