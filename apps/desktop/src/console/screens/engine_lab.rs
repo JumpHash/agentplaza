@@ -427,7 +427,10 @@ fn readout(state: &State) -> (String, Vec<String>, bool) {
     let info: Value = serde_json::from_str(&state.stage.lab_info()).unwrap_or(Value::Null);
     let lines = |key: &str| info[key].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
     match state.kind {
-        Kind::Robot => (format!("draw calls (last frame): {}", state.stage.0.draw_calls()), Vec::new(), false),
+        Kind::Robot => {
+            let calls = crate::console::floor_engine::LAST_DRAW_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+            (format!("draw calls (last frame): {calls}"), Vec::new(), false)
+        }
         Kind::Room => {
             let debug = state.values.get("debug").is_some_and(|v| v == "1");
             (info["summary"].as_str().unwrap_or_default().to_string(), if debug { lines("lines") } else { Vec::new() }, false)

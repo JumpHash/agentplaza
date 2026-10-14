@@ -2,6 +2,7 @@
 //! engine's [`Pointer`] input, turns the engine's actions into the console's messages, and draws the
 //! engine's [`Frame`] through the engine's [`Renderer`].
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use apz_engine::input::{Action, Button, Event, Pointer};
@@ -10,6 +11,9 @@ use apz_engine::scene::Frame;
 use apz_engine::Renderer;
 use iced::widget::shader::{self, Viewport};
 use iced::{mouse, wgpu, Rectangle};
+
+/// The draw calls of the frame the floor's pipeline prepared last (the labs' readout).
+pub static LAST_DRAW_CALLS: AtomicU32 = AtomicU32::new(0);
 
 /// The shader widget's program: draws the frame the host built, and turns pointer input into the host's messages
 /// (`wrap` maps each engine action to one of them).
@@ -100,7 +104,8 @@ impl shader::Primitive for FloorPrimitive {
         viewport: &Viewport,
     ) {
         let rect = render::Rect { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
-        pipeline.0.prepare(Arc::clone(&self.0), rect, viewport.scale_factor())
+        pipeline.0.prepare(Arc::clone(&self.0), rect, viewport.scale_factor());
+        LAST_DRAW_CALLS.store(pipeline.0.draw_calls(), Ordering::Relaxed);
     }
 
     fn draw(&self, pipeline: &FloorPipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
