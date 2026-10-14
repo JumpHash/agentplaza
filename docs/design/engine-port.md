@@ -84,5 +84,7 @@ screenshots compared side by side, their debug hooks called and their scenes mea
   `__apzScene` (three's Scene object) is the engine's frame counts; `__apzCamera` is new.
 - **Layout.** The engine's board layout is `apz-board`'s, not the retired board-layout.ts: the TS layout failed on the
   two- and four-GPU workstations of the fixture and grew other boards differently, so its numbers are not a target.
+- **Sky and ink.** three's sky dome and ink hulls were ShaderMaterials with no colour-space output, so their linear
+  colours reached the screen unencoded (a darker night, near-black outlines); the engine writes them the same way.
 - **Lifts on hardware.** On lumen in a WebGPU browser on the GPU, two robots sent through lift 0 boarded, rode the cab
   (body `lift`, cab rising) and got off at the other level.
