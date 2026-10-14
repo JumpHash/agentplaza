@@ -94,8 +94,8 @@ applied migrations unchanged:
   The message names the file and says "applied migrations are immutable: add a new migration instead".
 - `scripts/check-migrations.sh --staged` runs the same comparison on the index against `HEAD`.
 
-CI runs the check in `.github/workflows/migrations.yml`: on a pull request against its base, and on
-a push to main against `github.event.before` (nothing to compare on a new branch). The job runs on
+CI runs the check in `.github/workflows/migrations.yml` on a push to main, against
+`github.event.before`. No workflow runs on pull requests or on other branches. The job runs on
 the org's self-hosted runner (`runs-on: [self-hosted, Linux, X64, hetzner]`).
 
 The pre-commit hook is `.githooks/pre-commit`. It does nothing until the clone points git at it.

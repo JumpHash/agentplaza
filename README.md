@@ -215,7 +215,7 @@ cd trainer && uv sync --locked && uv run pytest -q
 
 `scripts/test-db.sh` needs the `postgres:17` image already present locally; it never pulls.
 
-**Continuous integration** (`.github/workflows`). Most platform builds run on the organisation's self-hosted runners.
+**Continuous integration** (`.github/workflows`). Workflows run on main only, never on pull requests or other branches. Most platform builds run on the organisation's self-hosted runners.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
@@ -225,9 +225,9 @@ cd trainer && uv sync --locked && uv run pytest -q
 | `guest.yml` | from `release.yml` | Builds the agents' guest kernel and initramfs per architecture |
 | `raspberry-pi.yml` | from `release.yml` | Packages the Raspberry Pi `.deb` and tarball |
 | `relay.yml` | from `release.yml` | Builds the MCP relay container |
-| `migrations.yml` | pull requests and pushes | Checks that applied database migrations are not edited (`scripts/check-migrations.sh`) |
-| `trainer.yml` | pushes and pull requests | Runs the trainer's tests (`pytest`) |
-| `release.yml` | every push to main | Picks the next version (`packaging/scripts/next-version.sh`), runs the platform workflows, and publishes the GitHub Release with its changelog and deliverables |
+| `migrations.yml` | every push to main | Checks that applied database migrations are not edited (`scripts/check-migrations.sh`) |
+| `trainer.yml` | pushes to main that touch `trainer/`, or by hand | Runs the trainer's tests (`pytest`) |
+| `release.yml` | every push to main, or by hand | Picks the next version (`packaging/scripts/next-version.sh`), runs the platform workflows, and publishes the GitHub Release with its changelog and deliverables |
 
 Read `packaging/README.md` for the stage layout and the version rules.
 

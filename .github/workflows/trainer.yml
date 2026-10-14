@@ -2,10 +2,10 @@
 # local hub) paths, ONNX export and checks. The GPU images are built by hand or at release.
 name: trainer
 
+# Runs on a push to main only: never on pull requests or other branches.
 on:
   push:
-    paths: ["trainer/**", ".github/workflows/trainer.yml"]
-  pull_request:
+    branches: [main]
     paths: ["trainer/**", ".github/workflows/trainer.yml"]
   workflow_dispatch:
   workflow_call:
