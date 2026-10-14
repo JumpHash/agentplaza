@@ -1906,13 +1906,6 @@ mod tests {
     }
 
     #[test]
-    fn a_builder_may_not_post_a_task() {
-        let laws = Laws::load(&scratch("builder-post"));
-        let verdict = laws.check("7", "builder", "plaza_post_task", &json!({}));
-        assert!(verdict.unpermitted, "{verdict:?}");
-    }
-
-    #[test]
     fn a_call_no_law_permits_is_refused_and_not_recorded() {
         let dir = scratch("default-deny");
         let _ = std::fs::remove_file(dir.join("violations.json"));
@@ -1921,6 +1914,10 @@ mod tests {
         assert_eq!(
             refusal.as_deref(),
             Some("refused: no law permits plaza_post_task for the builder role")
+        );
+        assert!(
+            laws.check("7", "builder", "plaza_post_task", &json!({}))
+                .unpermitted
         );
         assert!(laws.all_violations().is_empty());
         assert!(laws.recent(7, apz_plaza::now_ms()).is_empty());
@@ -2026,111 +2023,76 @@ mod tests {
     }
 
     #[test]
-    fn a_task_post_is_checked_as_task_create() {
-        let laws = Laws::load(&scratch("task-create"));
-        let verdict = laws.check(
-            "7",
-            crate::settings::ORCHESTRATOR_ROLE,
-            "plaza_post_task",
-            &json!({"title": "t", "body": "b"}),
-        );
-        assert!(
-            verdict.requested.iter().any(|op| op == "task.create"),
-            "{verdict:?}"
-        );
-        assert!(
-            verdict.forbid.is_empty() && !verdict.unpermitted,
-            "{verdict:?}"
-        );
-    }
-
-    #[test]
-    fn a_verdict_is_checked_as_review_submit_under_the_reviewers_permit() {
-        let laws = Laws::load(&scratch("review-submit"));
-        let verdict = laws.check(
-            "7",
-            "reviewer",
-            "plaza_verdict",
-            &json!({"task": "t-1", "pass": true, "notes": "ok"}),
-        );
-        assert!(
-            verdict.requested.iter().any(|op| op == "review.submit"),
-            "{verdict:?}"
-        );
-        assert!(
-            verdict.permit.iter().any(|id| id == "S-002c"),
-            "{verdict:?}"
-        );
-        assert!(verdict.forbid.is_empty(), "{verdict:?}");
-    }
-
-    #[test]
-    fn a_project_approval_is_checked_as_plan_approve() {
-        let laws = Laws::load(&scratch("plan-approve"));
-        let verdict = laws.check("7", "mayor", "plaza_project_approve", &json!({"id": "p-1"}));
-        assert!(
-            verdict.requested.iter().any(|op| op == "plan.approve"),
-            "{verdict:?}"
-        );
-        assert!(
-            verdict.forbid.is_empty() && !verdict.unpermitted,
-            "{verdict:?}"
-        );
-    }
-
-    #[test]
-    fn a_memory_write_is_checked_as_memory_change() {
-        let laws = Laws::load(&scratch("memory-change"));
-        let verdict = laws.check(
-            "7",
-            "librarian",
-            "memory_write",
-            &json!({"title": "t", "body": "b"}),
-        );
-        assert!(
-            verdict.requested.iter().any(|op| op == "memory.change"),
-            "{verdict:?}"
-        );
-        assert!(verdict.forbid.is_empty(), "{verdict:?}");
-    }
-
-    #[test]
-    fn a_claim_is_checked_as_claim_submit_under_the_builders_permit() {
-        let laws = Laws::load(&scratch("claim-submit"));
-        let verdict = laws.check(
-            "7",
-            "builder",
-            "submit_claim",
-            &json!({"task": "t-1", "summary": "done"}),
-        );
-        assert!(
-            verdict.requested.iter().any(|op| op == "claim.submit"),
-            "{verdict:?}"
-        );
-        assert!(
-            verdict.permit.iter().any(|id| id == "S-001e"),
-            "{verdict:?}"
-        );
-        assert!(verdict.forbid.is_empty(), "{verdict:?}");
-    }
-
-    #[test]
-    fn a_task_assignment_is_checked_as_task_assign_under_the_mayors_permit() {
-        let laws = Laws::load(&scratch("task-assign"));
-        let verdict = laws.check(
-            "7",
-            "mayor",
-            "plaza_assign",
-            &json!({"task": "t-1", "agent": 9}),
-        );
-        assert!(
-            verdict.requested.iter().any(|op| op == "task.assign"),
-            "{verdict:?}"
-        );
-        assert!(
-            verdict.permit.iter().any(|id| id == "S-004a"),
-            "{verdict:?}"
-        );
+    fn a_tool_is_checked_as_the_operation_it_performs() {
+        // (role, tool, input, operation the laws see, permit that allows it, must be permitted outright)
+        let cases: [(&str, &str, Json, &str, Option<&str>, bool); 6] = [
+            (
+                crate::settings::ORCHESTRATOR_ROLE,
+                "plaza_post_task",
+                json!({"title": "t", "body": "b"}),
+                "task.create",
+                None,
+                true,
+            ),
+            (
+                "reviewer",
+                "plaza_verdict",
+                json!({"task": "t-1", "pass": true, "notes": "ok"}),
+                "review.submit",
+                Some("S-002c"),
+                false,
+            ),
+            (
+                "mayor",
+                "plaza_project_approve",
+                json!({"id": "p-1"}),
+                "plan.approve",
+                None,
+                true,
+            ),
+            (
+                "librarian",
+                "memory_write",
+                json!({"title": "t", "body": "b"}),
+                "memory.change",
+                None,
+                false,
+            ),
+            (
+                "builder",
+                "submit_claim",
+                json!({"task": "t-1", "summary": "done"}),
+                "claim.submit",
+                Some("S-001e"),
+                false,
+            ),
+            (
+                "mayor",
+                "plaza_assign",
+                json!({"task": "t-1", "agent": 9}),
+                "task.assign",
+                Some("S-004a"),
+                false,
+            ),
+        ];
+        for (role, tool, input, op, permit, allowed) in cases {
+            let laws = Laws::load(&scratch(&format!("checked-{tool}")));
+            let verdict = laws.check("7", role, tool, &input);
+            assert!(
+                verdict.requested.iter().any(|o| o == op),
+                "{tool}: {verdict:?}"
+            );
+            assert!(verdict.forbid.is_empty(), "{tool}: {verdict:?}");
+            if allowed {
+                assert!(!verdict.unpermitted, "{tool}: {verdict:?}");
+            }
+            if let Some(id) = permit {
+                assert!(
+                    verdict.permit.iter().any(|p| p == id),
+                    "{tool}: {verdict:?}"
+                );
+            }
+        }
     }
 
     #[test]

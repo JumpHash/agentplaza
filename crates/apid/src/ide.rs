@@ -2530,7 +2530,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compare_without_a_file_list_is_the_git_hosts_fault() {
+    fn changes_refuse_a_compare_they_cannot_make() {
         let fake = Fake::new("rnolist", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
             p if p.contains("commits?sha=") => forge_ok(
                 200,
@@ -2541,20 +2541,18 @@ mod tests {
         });
         assert_eq!(
             status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
-            502
+            502,
+            "a compare with no file list is the git host's fault"
         );
-    }
-
-    #[test]
-    fn the_first_commit_has_nothing_before_it_to_compare_with() {
-        let fake = Fake::new("rroot", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
+        // The first commit has no parent to compare with.
+        let root = Fake::new("rroot", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
             p if p.contains("commits?sha=") => {
                 forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
             }
             _ => forge_ok(200, json!({"default_branch": "main"})),
         });
         assert_eq!(
-            status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
+            status_of(repo_changes(&root, &repo("p1-plaza", "main"), None)),
             400
         );
     }
@@ -2707,18 +2705,6 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_write_still_goes_through_its_tool() {
-        let fake = Fake::new("agentwrite", |_, _| {
-            ok(json!({ "path": "docs/a.txt", "hash": "new", "checkpoint": 7 }))
-        });
-        let body = json!({ "path": "docs/a.txt", "text": "two", "expected_hash": "old" });
-        let done = write_file(&fake, 12, &body).unwrap();
-        assert_eq!(done["hash"], json!("new"));
-        assert_eq!(fake.calls(), 1);
-        assert_eq!(fake.last_args()["expected_hash"], json!("old"));
-    }
-
-    #[test]
     fn tree_cleans_the_path_and_forwards_the_cursor() {
         let fake = Fake::new("tree", |_, _| ok(json!({ "entries": [], "next": null })));
         assert!(tree(&fake, 12, Some("docs/"), Some("0a")).is_ok());
@@ -2821,6 +2807,8 @@ mod tests {
         let body = json!({ "path": "docs/a.txt", "text": "two", "expected_hash": "old" });
         let done = write_file(&fake, 12, &body).unwrap();
         assert_eq!(done["hash"], json!("new"));
+        assert_eq!(fake.calls(), 1, "the write goes through its tool");
+        assert_eq!(fake.last_args()["expected_hash"], json!("old"));
 
         let rows = fake.db.ide_audit(Some("agent:12"), 10).unwrap();
         assert_eq!(rows.len(), 1);

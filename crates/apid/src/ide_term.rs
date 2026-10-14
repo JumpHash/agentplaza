@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn an_attach_frame_resumes_at_its_offset_or_at_the_start() {
+    fn every_client_frame_parses_to_its_variant() {
         assert_eq!(
             parse_client(r#"{"t":"attach","term":"term-1","offset":4096}"#),
             Ok(ClientFrame::Attach {
@@ -1090,12 +1090,9 @@ mod tests {
             Ok(ClientFrame::Attach {
                 term: "term-1".into(),
                 offset: 0
-            })
+            }),
+            "an attach without an offset resumes at the start"
         );
-    }
-
-    #[test]
-    fn input_resize_kill_and_ping_parse() {
         assert_eq!(
             parse_client(r#"{"t":"in","data":"aGkK"}"#),
             Ok(ClientFrame::Input(b"hi\n".to_vec()))

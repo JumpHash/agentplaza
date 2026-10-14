@@ -1477,59 +1477,6 @@ mod tests {
         String::from_utf8_lossy(&seen).to_string()
     }
 
-    #[test]
-    fn an_openrouter_messages_call_goes_upstream_with_its_bearer_key_x_api_key_and_referer() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let seen = read_request(&mut stream);
-            let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
-            std::io::Write::write_all(&mut stream, reply.as_bytes()).unwrap();
-            seen
-        });
-        let headers = [(
-            "HTTP-Referer".to_string(),
-            "https://plaza.example".to_string(),
-        )];
-        let body = json!({ "model": "anthropic/claude-x", "messages": [] });
-        let base = format!("http://{addr}/api/v1");
-        let resp = upstream_post(
-            "openrouter",
-            &base,
-            "sk-test-7",
-            "/v1/messages",
-            &headers,
-            &body,
-        )
-        .unwrap();
-        assert_eq!(resp.status().as_u16(), 200);
-        let seen = server.join().unwrap().to_lowercase();
-        assert!(seen.starts_with("post /api/v1/messages http/1.1"), "{seen}");
-        assert!(
-            seen.contains("authorization: bearer sk-test-7\r\n"),
-            "{seen}"
-        );
-        assert!(seen.contains("x-api-key: sk-test-7\r\n"), "{seen}");
-        assert!(
-            seen.contains("http-referer: https://plaza.example\r\n"),
-            "{seen}"
-        );
-    }
-
-    #[test]
-    fn an_anthropic_stream_tail_counts_input_from_start_and_final_output_from_the_last_delta() {
-        let tail = "event: message_start\n\
-data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n\
-event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}\n\n\
-event: message_delta\n\
-data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n\
-event: message_stop\n\
-data: {\"type\":\"message_stop\"}\n\n";
-        assert_eq!(tokens_in_sse(tail), Some(metered(25, 15, 0, 0, None)));
-    }
-
     fn metered(
         input: u64,
         output: u64,
@@ -1549,16 +1496,6 @@ data: {\"type\":\"message_stop\"}\n\n";
     }
 
     #[test]
-    fn buffered_bodies_carry_usage_at_the_top_level() {
-        let openai = json!({ "id": "c", "choices": [], "usage": { "prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19 } });
-        assert_eq!(tokens_in(&openai), Some(metered(12, 7, 0, 0, None)));
-        let anthropic =
-            json!({ "type": "message", "usage": { "input_tokens": 30, "output_tokens": 4 } });
-        assert_eq!(tokens_in(&anthropic), Some(metered(30, 4, 0, 0, None)));
-        assert_eq!(tokens_in(&json!({ "id": "x" })), None);
-    }
-
-    #[test]
     fn an_anthropic_stream_meters_its_cache_reads_and_writes_outside_its_input() {
         let tail = "event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_read_input_tokens\":300,\"cache_creation_input_tokens\":40,\"output_tokens\":1}}}\n\n\
@@ -1569,50 +1506,11 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
     }
 
     #[test]
-    fn openai_chat_input_excludes_the_cached_prompt_tokens() {
-        let body = json!({
-            "choices": [],
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 7,
-                "prompt_tokens_details": { "cached_tokens": 80 },
-            },
-        });
-        assert_eq!(tokens_in(&body), Some(metered(20, 7, 80, 0, None)));
-    }
-
-    #[test]
     fn openai_chat_stream_usage_chunk_meters_cached_tokens() {
         let tail = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
 data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2000,\"completion_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":1920}}}\n\n\
 data: [DONE]\n\n";
         assert_eq!(tokens_in_sse(tail), Some(metered(80, 9, 1920, 0, None)));
-    }
-
-    #[test]
-    fn responses_input_tokens_details_are_excluded_from_input() {
-        let completed = json!({
-            "type": "response.completed",
-            "response": { "usage": { "input_tokens": 500, "input_tokens_details": { "cached_tokens": 420 }, "output_tokens": 9 } },
-        });
-        assert_eq!(tokens_in(&completed), Some(metered(80, 9, 420, 0, None)));
-    }
-
-    #[test]
-    fn deepseek_meters_its_cache_hits_and_bills_the_misses_as_input() {
-        let with_miss = json!({
-            "usage": { "prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 70, "prompt_cache_miss_tokens": 30 },
-        });
-        assert_eq!(tokens_in(&with_miss), Some(metered(30, 5, 70, 0, None)));
-        // Without a miss count, the input is the prompt less its cache hits.
-        let hit_only = json!({ "usage": { "prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 70 } });
-        assert_eq!(tokens_in(&hit_only), Some(metered(30, 5, 70, 0, None)));
-    }
-
-    #[test]
-    fn cached_tokens_above_the_prompt_do_not_underflow_the_input() {
-        let body = json!({ "usage": { "prompt_tokens": 5, "prompt_tokens_details": { "cached_tokens": 9 } } });
-        assert_eq!(tokens_in(&body), Some(metered(0, 0, 9, 0, None)));
     }
 
     #[test]
@@ -1708,7 +1606,7 @@ data: [DONE]\n\n";
     #[test]
     fn a_broke_agent_is_refused_and_a_funded_one_passes() {
         let message = refusal(true, None, 0, 0).expect("no wallet, no task: refused");
-        assert!(message.contains("cannot pay for this model call"));
+        assert!(message.starts_with("cannot pay for this model call"));
         assert!(
             refusal(true, Some("job"), 0, 0)
                 .expect("an empty escrow and no wallet: refused")
@@ -1724,23 +1622,6 @@ data: [DONE]\n\n";
             refusal(true, Some("job"), 0, 25),
             None,
             "an empty escrow falls back to the wallet"
-        );
-    }
-
-    #[test]
-    fn a_broke_agent_is_refused_on_the_socket_path_with_the_relay_message() {
-        // `admit` (both sockets) sends the helper's message as its error frame, as `relay` sends it as the 402 body.
-        let socket = refusal(true, None, 0, 0).expect("a broke agent's socket call is refused");
-        assert!(socket.starts_with("cannot pay for this model call"));
-        assert_eq!(
-            refusal(true, None, 0, 25),
-            None,
-            "a funded agent's socket call is admitted"
-        );
-        assert_eq!(
-            refusal(false, None, 0, 0),
-            None,
-            "charging off: a socket call is admitted and nothing is charged"
         );
     }
 
@@ -1893,158 +1774,175 @@ data: [DONE]\n\n";
     }
 
     #[test]
-    fn an_openrouter_chat_call_goes_to_its_base_v1_with_the_bearer_key_and_attribution() {
-        let seen = post_to_mock(
-            "openrouter",
-            "/api/v1",
-            "test-key-openrouter",
-            "/v1/chat/completions",
-            &openrouter_attribution(),
-            "openai/gpt-x",
-        );
-        assert_eq!(seen.line, "post /api/v1/chat/completions http/1.1");
-        assert!(
-            seen.head
-                .contains("authorization: bearer test-key-openrouter\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(
-            seen.head
-                .contains("http-referer: https://agentplaza.io\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(
-            seen.head.contains("x-openrouter-title: agentplaza\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(!seen.head.contains("x-api-key:"), "{}", seen.head);
+    fn each_upstream_route_sends_its_own_auth_and_attribution_headers() {
+        let version = || ("anthropic-version".to_string(), "2023-06-01".to_string());
+        let with_version = |mut headers: Vec<(String, String)>| {
+            headers.push(version());
+            headers
+        };
+        // (provider, base prefix, path, headers, model, x-api-key sent, attribution sent)
+        let cases = [
+            (
+                "openrouter",
+                "/api/v1",
+                "/v1/chat/completions",
+                openrouter_attribution(),
+                "openai/gpt-x",
+                false,
+                true,
+            ),
+            (
+                "openrouter",
+                "/api/v1",
+                "/v1/messages",
+                with_version(openrouter_attribution()),
+                "anthropic/claude-sonnet-5-5",
+                true,
+                true,
+            ),
+            (
+                "opencode",
+                "/inference/v1",
+                "/v1/chat/completions",
+                vec![],
+                "deepseek-v4-pro",
+                false,
+                false,
+            ),
+            (
+                "opencode",
+                "/inference/v1",
+                "/v1/responses",
+                vec![],
+                "gpt-5.6-terra",
+                false,
+                false,
+            ),
+            (
+                "opencode",
+                "/inference/v1",
+                "/v1/messages",
+                vec![version()],
+                "claude-sonnet-5-5",
+                true,
+                false,
+            ),
+        ];
+        for (provider, prefix, path, headers, model, x_api_key, attribution) in cases {
+            let key = format!("test-key-{provider}");
+            let seen = post_to_mock(provider, prefix, &key, path, &headers, model);
+            assert_eq!(
+                seen.line,
+                format!("post {prefix}{} http/1.1", path.trim_start_matches("/v1")),
+                "{path}"
+            );
+            assert!(
+                seen.head
+                    .contains(&format!("authorization: bearer {key}\r\n")),
+                "{path}: {}",
+                seen.head
+            );
+            if x_api_key {
+                assert!(
+                    seen.head.contains(&format!("x-api-key: {key}\r\n")),
+                    "{path}: {}",
+                    seen.head
+                );
+            } else {
+                assert!(!seen.head.contains("x-api-key:"), "{path}: {}", seen.head);
+            }
+            if attribution {
+                assert!(
+                    seen.head
+                        .contains("http-referer: https://agentplaza.io\r\n"),
+                    "{path}: {}",
+                    seen.head
+                );
+                assert!(
+                    seen.head.contains("x-openrouter-title: agentplaza\r\n"),
+                    "{path}: {}",
+                    seen.head
+                );
+            } else {
+                assert!(
+                    !seen.head.contains("http-referer:"),
+                    "{path}: {}",
+                    seen.head
+                );
+            }
+        }
     }
 
     #[test]
-    fn an_openrouter_messages_call_goes_to_its_base_v1_with_x_api_key_and_attribution() {
-        let mut headers = openrouter_attribution();
-        headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
-        let seen = post_to_mock(
-            "openrouter",
-            "/api/v1",
-            "test-key-openrouter",
-            "/v1/messages",
-            &headers,
-            "anthropic/claude-sonnet-5-5",
-        );
-        assert_eq!(seen.line, "post /api/v1/messages http/1.1");
-        assert!(
-            seen.head
-                .contains("authorization: bearer test-key-openrouter\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(
-            seen.head.contains("x-api-key: test-key-openrouter\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(
-            seen.head
-                .contains("http-referer: https://agentplaza.io\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(
-            seen.head.contains("x-openrouter-title: agentplaza\r\n"),
-            "{}",
-            seen.head
-        );
+    fn opencode_refusals_name_the_endpoint_the_model_is_served_on() {
+        // (endpoint called, model, the endpoint the refusal names, an endpoint it must not name)
+        let cases = [
+            (
+                "/v1/messages",
+                "deepseek-v4-pro",
+                "/v1/chat/completions",
+                Some("/v1/responses"),
+            ),
+            ("/v1/responses", "claude-sonnet-5-5", "/v1/messages", None),
+            ("/v1/messages", "gpt-5.6-terra", "/v1/responses", None),
+        ];
+        for (called, model, names, not) in cases {
+            let message = opencode_endpoint_error(called, model).expect("refused");
+            assert!(message.contains(names), "{message}");
+            assert!(message.contains(model), "{message}");
+            if let Some(other) = not {
+                assert!(!message.contains(other), "{message}");
+            }
+        }
     }
-
     #[test]
-    fn an_opencode_chat_call_goes_to_its_inference_v1_with_the_bearer_key_and_no_attribution() {
-        let seen = post_to_mock(
-            "opencode",
-            "/inference/v1",
-            "test-key-opencode",
-            "/v1/chat/completions",
-            &[],
-            "deepseek-v4-pro",
-        );
-        assert_eq!(seen.line, "post /inference/v1/chat/completions http/1.1");
-        assert!(
-            seen.head
-                .contains("authorization: bearer test-key-opencode\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(!seen.head.contains("x-api-key:"), "{}", seen.head);
-        assert!(!seen.head.contains("http-referer:"), "{}", seen.head);
-    }
-
-    #[test]
-    fn an_opencode_responses_call_goes_to_its_inference_v1_with_the_bearer_key() {
-        let seen = post_to_mock(
-            "opencode",
-            "/inference/v1",
-            "test-key-opencode",
-            "/v1/responses",
-            &[],
-            "gpt-5.6-terra",
-        );
-        assert_eq!(seen.line, "post /inference/v1/responses http/1.1");
-        assert!(
-            seen.head
-                .contains("authorization: bearer test-key-opencode\r\n"),
-            "{}",
-            seen.head
-        );
-    }
-
-    #[test]
-    fn an_opencode_messages_call_goes_to_its_inference_v1_with_bearer_and_x_api_key() {
-        let headers = [("anthropic-version".to_string(), "2023-06-01".to_string())];
-        let seen = post_to_mock(
-            "opencode",
-            "/inference/v1",
-            "test-key-opencode",
-            "/v1/messages",
-            &headers,
-            "claude-sonnet-5-5",
-        );
-        assert_eq!(seen.line, "post /inference/v1/messages http/1.1");
-        assert!(
-            seen.head
-                .contains("authorization: bearer test-key-opencode\r\n"),
-            "{}",
-            seen.head
-        );
-        assert!(
-            seen.head.contains("x-api-key: test-key-opencode\r\n"),
-            "{}",
-            seen.head
-        );
-    }
-
-    #[test]
-    fn opencode_refuses_a_deepseek_model_on_messages_and_names_the_chat_completions_endpoint() {
-        let message = opencode_endpoint_error("/v1/messages", "deepseek-v4-pro").expect("refused");
-        assert!(message.contains("/v1/chat/completions"), "{message}");
-        assert!(message.contains("deepseek-v4-pro"), "{message}");
-        assert!(!message.contains("/v1/responses"), "{message}");
-    }
-
-    #[test]
-    fn opencode_refuses_a_claude_model_on_responses_and_names_the_messages_endpoint() {
-        let message =
-            opencode_endpoint_error("/v1/responses", "claude-sonnet-5-5").expect("refused");
-        assert!(message.contains("/v1/messages"), "{message}");
-        assert!(message.contains("claude-sonnet-5-5"), "{message}");
-    }
-
-    #[test]
-    fn opencode_refuses_a_gpt_model_on_messages_and_names_the_responses_endpoint() {
-        let message = opencode_endpoint_error("/v1/messages", "gpt-5.6-terra").expect("refused");
-        assert!(message.contains("/v1/responses"), "{message}");
-        assert!(message.contains("gpt-5.6-terra"), "{message}");
+    fn buffered_bodies_meter_each_providers_usage_shape() {
+        // (body, the usage it meters): input excludes the cached tokens in every shape.
+        let cases = [
+            (
+                json!({ "id": "c", "choices": [], "usage": { "prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19 } }),
+                metered(12, 7, 0, 0, None),
+            ),
+            (
+                json!({ "type": "message", "usage": { "input_tokens": 30, "output_tokens": 4 } }),
+                metered(30, 4, 0, 0, None),
+            ),
+            (
+                json!({
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 7,
+                        "prompt_tokens_details": { "cached_tokens": 80 },
+                    },
+                }),
+                metered(20, 7, 80, 0, None),
+            ),
+            (
+                json!({
+                    "type": "response.completed",
+                    "response": { "usage": { "input_tokens": 500, "input_tokens_details": { "cached_tokens": 420 }, "output_tokens": 9 } },
+                }),
+                metered(80, 9, 420, 0, None),
+            ),
+            (
+                json!({ "usage": { "prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 70, "prompt_cache_miss_tokens": 30 } }),
+                metered(30, 5, 70, 0, None),
+            ),
+            // Without a miss count, the input is the prompt less its cache hits.
+            (
+                json!({ "usage": { "prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 70 } }),
+                metered(30, 5, 70, 0, None),
+            ),
+            // Cached tokens above the prompt do not underflow the input.
+            (
+                json!({ "usage": { "prompt_tokens": 5, "prompt_tokens_details": { "cached_tokens": 9 } } }),
+                metered(0, 0, 9, 0, None),
+            ),
+        ];
+        for (body, want) in cases {
+            assert_eq!(tokens_in(&body), Some(want), "{body}");
+        }
+        assert_eq!(tokens_in(&json!({ "id": "x" })), None);
     }
 }
