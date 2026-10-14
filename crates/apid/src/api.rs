@@ -46,6 +46,7 @@ pub fn router() -> Router<App> {
     let router = crate::harness_control::routes(router);
     let router = crate::git::routes(router);
     let router = crate::ide::routes(router);
+    let router = crate::ide_term::routes(router);
     let router = crate::rules::routes(router);
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
