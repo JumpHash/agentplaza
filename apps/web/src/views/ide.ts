@@ -24,7 +24,7 @@ import { buildFrame, type DrawerTab, type Frame, type RightView } from './ide-fr
 import { sidebar } from './ide-sidebar';
 import { palette, type Palette } from './ide-palette';
 import { cidOf, closeOverlay, message, newCtx, readStore, VIEWS, type IdeCtx } from './ide-ctx';
-import { applyLayout, layoutEdges, MID_QUERY, onBreakpoint, readDrawerPrefs, readLayout, setDrawer, setLeft, setRightOpen } from './ide-layout';
+import { applyLayout, closeDrawerIfNarrow, layoutEdges, MID_QUERY, onBreakpoint, readDrawerPrefs, readLayout, setDrawer, toggleLeftPanel, toggleRightPanel } from './ide-layout';
 import { autoSelect, newAgent, openKey, selectAgent, selectWorkspace, setCentre, setRight } from './ide-select';
 import { lastAgentCid, loadChangedDirs, refreshProjects, scheduleRefresh } from './ide-data';
 import { openTab, reloadTab, save } from './ide-editing';
@@ -73,7 +73,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     root,
     requested,
     startFile,
-    layout: readLayout(window.innerWidth),
+    layout: readLayout(),
     drawerOpen: drawerPrefs.open,
     drawerTab: drawerPrefs.tab,
     dockHeight: drawerPrefs.height,
@@ -215,13 +215,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   /** The header toggles, the scrim and the drawer's own buttons. */
   function wireFrame(): void {
-    frame.sideToggle.addEventListener('click', () => setLeft(c, !c.layout.leftOpen));
-    frame.rightToggle.addEventListener('click', () => setRightOpen(c, !c.layout.rightOpen));
+    frame.sideToggle.addEventListener('click', () => toggleLeftPanel(c));
+    frame.rightToggle.addEventListener('click', () => toggleRightPanel(c));
     frame.consoleBtn.addEventListener('click', () => leaveIde(c));
-    frame.scrim.addEventListener('click', () => {
-      setLeft(c, false);
-      setRightOpen(c, false);
-    });
+    frame.scrim.addEventListener('click', () => closeDrawerIfNarrow(c));
     frame.drawer.close.addEventListener('click', () => setDrawer(c, false));
     for (const v of VIEWS) frame.centre.seg[v].addEventListener('click', () => setCentre(c, v));
     frame.centre.popout.addEventListener('click', () => {

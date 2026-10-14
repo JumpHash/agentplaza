@@ -33,15 +33,17 @@ export function clampSize(n: unknown, min: number, max: number, fallback: number
   return Math.min(max, Math.max(min, v));
 }
 
-/** The layout a first visit gets: both panels open on a wide window, both closed on a narrow one. */
-export function defaultLayout(width: number): Layout {
-  const narrow = isNarrow(width);
-  return { left: LEFT_SIZE.def, right: RIGHT_SIZE.def, leftOpen: !narrow, rightOpen: !narrow };
+/**
+ * The layout a first visit gets: both panels open. The saved open flags are the owner's choice for a panel that is docked;
+ * a narrow window shows the panels as a drawer and a sheet instead (see Sheets), and that never changes the saved flags.
+ */
+export function defaultLayout(): Layout {
+  return { left: LEFT_SIZE.def, right: RIGHT_SIZE.def, leftOpen: true, rightOpen: true };
 }
 
 /** The stored layout, with anything missing or out of range set to its default. Corrupt JSON is the default layout. */
-export function parseLayout(raw: string | null, width: number): Layout {
-  const base = defaultLayout(width);
+export function parseLayout(raw: string | null): Layout {
+  const base = defaultLayout();
   let v: Partial<Record<keyof Layout, unknown>> | null = null;
   try {
     v = raw === null ? null : (JSON.parse(raw) as Partial<Record<keyof Layout, unknown>>);
@@ -58,6 +60,56 @@ export function parseLayout(raw: string | null, width: number): Layout {
 }
 
 export const serializeLayout = (l: Layout): string => JSON.stringify(l);
+
+// ---- What the panels show -----------------------------------------------------------------------------------------
+// A panel is docked (its saved open flag decides), or it is a drawer (the side panel under NARROW_BELOW), or a sheet (the
+// right panel under 1200px, the view's MID_QUERY). The drawer and the sheet are open or shut as view state only: they
+// start shut on every mount and after every breakpoint change, a pick in them shuts them, and they are never saved.
+// Only an explicit toggle of a docked panel changes the saved flags.
+
+/** The drawer's and the sheet's open state. View only: never saved. */
+export interface Sheets {
+  drawer: boolean;
+  sheet: boolean;
+}
+export const SHUT: Sheets = { drawer: false, sheet: false };
+
+/** Whether the side panel shows: its drawer at a narrow width, else the saved choice. */
+export const leftShows = (layout: Layout, sheets: Sheets, narrow: boolean): boolean => (narrow ? sheets.drawer : layout.leftOpen);
+
+/** Whether the right panel shows: its sheet under the mid breakpoint (which includes the narrow width), else the saved choice. */
+export const rightShows = (layout: Layout, sheets: Sheets, mid: boolean): boolean => (mid ? sheets.sheet : layout.rightOpen);
+
+/** The answer of a rule: the layout and the sheets to keep, and whether the layout is saved (only a docked panel's choice is). */
+export interface Settled {
+  layout: Layout;
+  sheets: Sheets;
+  save: boolean;
+}
+
+/** An explicit toggle of the side panel. Docked: the saved flag flips and is saved. As a drawer: only the drawer flips. */
+export function toggleLeft(layout: Layout, sheets: Sheets, narrow: boolean): Settled {
+  if (narrow) return { layout, sheets: { ...sheets, drawer: !sheets.drawer }, save: false };
+  return { layout: { ...layout, leftOpen: !layout.leftOpen }, sheets, save: true };
+}
+
+/** An explicit toggle of the right panel. Docked: the saved flag flips and is saved. As a sheet: only the sheet flips. */
+export function toggleRight(layout: Layout, sheets: Sheets, mid: boolean): Settled {
+  if (mid) return { layout, sheets: { ...sheets, sheet: !sheets.sheet }, save: false };
+  return { layout: { ...layout, rightOpen: !layout.rightOpen }, sheets, save: true };
+}
+
+/** Opens the right panel for a tab or a search: its sheet at a mid width (view only), else its saved flag, saved when it was shut. */
+export function openRight(layout: Layout, sheets: Sheets, mid: boolean): Settled {
+  if (mid) return { layout, sheets: { ...sheets, sheet: true }, save: false };
+  if (layout.rightOpen) return { layout, sheets, save: false };
+  return { layout: { ...layout, rightOpen: true }, sheets, save: true };
+}
+
+/** A pick in the drawer or the sheet, the scrim, or Escape: each one that is shown at its width shuts. View only. */
+export function closeSheets(sheets: Sheets, narrow: boolean, mid: boolean): Sheets {
+  return { drawer: narrow ? false : sheets.drawer, sheet: mid ? false : sheets.sheet };
+}
 
 /**
  * A side panel's width for a dragged or stored size: kept within the panel's range, and within what is left of the

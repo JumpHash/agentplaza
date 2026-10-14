@@ -5,7 +5,7 @@ import type { IdeWorkspaceInfo, Project } from '../api';
 import { groupByProject, startAgent, projectOf } from '../ide/groups';
 import { centreViewsFor, rightViewsFor } from '../ide/layout';
 import type { WorkspaceKind } from '../ide/types';
-import { closeDrawerIfNarrow, setRightOpen } from './ide-layout';
+import { closeDrawerIfNarrow, openRightPanel } from './ide-layout';
 import { setWorkspace, showAgentWorkspace } from './ide-data';
 import { type IdeCtx } from './ide-ctx';
 import { chatPane } from './ide-chat';
@@ -37,8 +37,8 @@ export function setCentre(c: IdeCtx, v: CentreView): void {
 export function setRight(c: IdeCtx, v: RightView): void {
   c.rightView = v;
   if (!rightTabAllowed(c, v)) c.rightView = 'files';
-  if (!c.layout.rightOpen) setRightOpen(c, true);
-  else c.act.renderAll();
+  openRightPanel(c);
+  c.act.renderAll();
 }
 
 /** Opens a sidebar key: `agent:<cid>`, `term:<cid>` (the agent's terminal) or `ws:<workspace id>` (a repository or a workstation). */

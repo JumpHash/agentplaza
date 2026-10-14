@@ -122,11 +122,26 @@ export function onRemote(b: Buffer, hash: string): { action: 'none' | 'reload' |
 
 // ---- The workspace's state badge -------------------------------------------
 
-export type Badge = 'idle' | 'agent working' | 'saved' | 'conflict';
+/** A workstation's status as its badge shows it. */
+export type StationBadge = 'online' | 'offline' | 'draining';
+export type Badge = 'idle' | 'agent working' | 'saved' | 'conflict' | StationBadge;
 
-/** Conflict outranks the agent working, which outranks a save just made; nothing else is idle. */
-export function badgeOf(s: { conflict: boolean; agentWorking: boolean; saved: boolean }): Badge {
+/**
+ * A workstation's badge: draining while it takes no new work, online while its link is up, else offline (a revoked one is
+ * offline too). The station's record (`/v1/stations`) is the source.
+ */
+export function stationBadgeOf(s: { online: boolean; draining: boolean; revoked: boolean }): StationBadge {
+  if (s.revoked || !s.online) return 'offline';
+  return s.draining ? 'draining' : 'online';
+}
+
+/**
+ * Conflict outranks everything. A workstation shows its status and never the agent's working state (it has no agent). Else
+ * the agent working outranks a save just made; nothing else is idle.
+ */
+export function badgeOf(s: { conflict: boolean; agentWorking: boolean; saved: boolean; station?: StationBadge | null }): Badge {
   if (s.conflict) return 'conflict';
+  if (s.station) return s.station;
   if (s.agentWorking) return 'agent working';
   return s.saved ? 'saved' : 'idle';
 }

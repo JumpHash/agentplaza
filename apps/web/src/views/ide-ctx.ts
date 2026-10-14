@@ -4,9 +4,9 @@
 // editor paints the shell), it goes through `act`, which the controller wires. So no two of these modules import each other.
 
 import type { EditorState } from '@codemirror/state';
-import type { Agent, IdeCheckpoint, IdeWorkspaceInfo, Project, Task } from '../api';
+import type { Agent, IdeCheckpoint, IdeWorkspaceInfo, Project, StationView, Task } from '../api';
 import type { Buffer, Viewed } from '../ide/model';
-import type { Layout } from '../ide/layout';
+import { SHUT, type Layout, type Sheets } from '../ide/layout';
 import type { Entry, FileChange, IdeState, Stats } from '../ide/types';
 import type { Ide } from '../ide/wasm';
 import type { CentreView, DrawerTab, Frame, RightView } from './ide-frame';
@@ -104,7 +104,12 @@ export interface IdeCtx {
   dockHeight: number;
   narrow: boolean;
   mid: boolean;
+  /** The saved layout: the owner's open flags for a docked panel. A narrow window never changes them. */
   layout: Layout;
+  /** The drawer and the sheet's open state at a narrow width: view only, never saved (see ide/layout). */
+  sheets: Sheets;
+  /** The workstations (`/v1/stations`): a workstation's badge reads its status here. Refreshed with the projects. */
+  stations: StationView[];
   /** The file whose diff the review scrolls to, once it is drawn. */
   focusPath: string | null;
   /** Per-selection controllers: made on first use, disposed when the selection moves on. */
@@ -173,6 +178,8 @@ export function newCtx(init: { root: HTMLElement; requested: string | null; star
     narrow: init.narrow,
     mid: init.mid,
     layout: init.layout,
+    sheets: SHUT,
+    stations: [],
     focusPath: null,
     chat: null,
     activity: null,

@@ -2,7 +2,7 @@
 // DOM the controller built; none of them changes the state, except the review's scroll target, which is taken once.
 import { badge, empty, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { badgeOf, languageFor, stationCrumb } from '../ide/model';
+import { badgeOf, languageFor, stationBadgeOf, stationCrumb } from '../ide/model';
 import { centreViewsFor, hasDiff, hasTerminal, rightViewsFor } from '../ide/layout';
 import { rowStatus } from '../ide/view';
 import { VIEWS, refOf, repoNameOf, type IdeCtx } from './ide-ctx';
@@ -18,7 +18,16 @@ import { activityFor, approvalsFor, boardFor, confirmRestore, currentProject, ru
 import { centreAllowed } from './ide-select';
 import { applyLayout, closeDrawerIfNarrow } from './ide-layout';
 
-const TONE: Record<string, Tone> = { conflict: 'danger', 'agent working': 'info', saved: 'ok', idle: 'muted', held: 'danger' };
+const TONE: Record<string, Tone> = {
+  conflict: 'danger',
+  'agent working': 'info',
+  saved: 'ok',
+  idle: 'muted',
+  held: 'danger',
+  online: 'ok',
+  draining: 'warn',
+  offline: 'muted',
+};
 
 /** The whole screen, in the order the parts depend on. The sidebar follows the selection and the terminals that exist. */
 export function renderAll(c: IdeCtx): void {
@@ -61,9 +70,11 @@ export function renderSelection(c: IdeCtx): void {
 
 export function renderTop(c: IdeCtx): void {
   const conflict = [...c.tabsByPath.values()].some((t) => t.buf.conflict !== null);
-  const label: string = c.held ? 'held' : badgeOf({ conflict, agentWorking: c.agentWorking, saved: c.saved });
-  const project = currentProject(c);
   const ws = c.ws;
+  // A workstation's badge is its status: its record (`/v1/stations`), else the workspace list's, which lists only online ones.
+  const station = ws?.kind === 'station' ? stationBadgeOf(c.stations.find((s) => s.id === ws.owner) ?? { online: ws.status === 'online', draining: false, revoked: false }) : null;
+  const label: string = c.held ? 'held' : badgeOf({ conflict, agentWorking: c.agentWorking && c.cid !== null, saved: c.saved, station });
+  const project = currentProject(c);
   const parts = !ws
     ? ['IDE']
     : ws.kind === 'station'

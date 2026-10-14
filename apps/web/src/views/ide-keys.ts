@@ -7,7 +7,7 @@ import { hasTerminal } from '../ide/layout';
 import { osLabel } from '../ide/model';
 import { rowStatus, type PaletteItem } from '../ide/view';
 import { closeOverlay, inField, inTerminal, inTyping, refOf, repoNameOf, type IdeCtx } from './ide-ctx';
-import { closeDrawerIfNarrow, setDrawer, setLeft, setRightOpen } from './ide-layout';
+import { closeDrawerIfNarrow, setDrawer, toggleLeftPanel, toggleRightPanel } from './ide-layout';
 import { centreAllowed, selectAgent, selectWorkspace, setCentre, setRight } from './ide-select';
 import { openQuick, openSearch } from './ide-panels';
 import { openTab, save } from './ide-editing';
@@ -87,8 +87,8 @@ function runCommand(c: IdeCtx, id: string): void {
     if (centreAllowed(c, views[id])) setCentre(c, views[id]);
   } else if (rights[id]) setRight(c, rights[id]);
   else if (id === 'drawer') setDrawer(c, !c.drawerOpen);
-  else if (id === 'sidebar') setLeft(c, !c.layout.leftOpen);
-  else if (id === 'right') setRightOpen(c, !c.layout.rightOpen);
+  else if (id === 'sidebar') toggleLeftPanel(c);
+  else if (id === 'right') toggleRightPanel(c);
   else if (id === 'search') openSearch(c);
   else if (id === 'save') void save(c);
   else if (id === 'console') leaveIde(c);
@@ -98,15 +98,14 @@ function runCommand(c: IdeCtx, id: string): void {
 export function onKey(c: IdeCtx, e: KeyboardEvent): void {
   if (!c.alive) return;
   const mod = e.metaKey || e.ctrlKey;
-  const { layout } = c;
   /** The drawer's terminal: an agent's or a workstation's (a repository has none). */
   const termOk = hasTerminal(c.ws?.kind ?? null, c.cid !== null);
   if (mod && e.altKey && !e.shiftKey && e.code === 'KeyB') {
     e.preventDefault();
-    setLeft(c, !layout.leftOpen);
+    toggleLeftPanel(c);
   } else if (mod && e.altKey && !e.shiftKey && e.code === 'KeyJ') {
     e.preventDefault();
-    setRightOpen(c, !layout.rightOpen);
+    toggleRightPanel(c);
   } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     void openPalette(c);
@@ -131,7 +130,7 @@ export function onKey(c: IdeCtx, e: KeyboardEvent): void {
   } else if (e.key === 'Escape' && !e.defaultPrevented && c.overlay === null && !c.dom.pal.isOpen() && !document.querySelector('.modal-backdrop') && !inField(e.target)) {
     // A field's Escape (the editor's search, a note) is the field's. Otherwise: the help, then a narrow drawer, then the console.
     if (c.dom.help.isOpen()) c.dom.help.set(false);
-    else if ((c.narrow && layout.leftOpen) || (c.mid && layout.rightOpen)) closeDrawerIfNarrow(c);
+    else if ((c.narrow && c.sheets.drawer) || (c.mid && c.sheets.sheet)) closeDrawerIfNarrow(c);
     else leaveIde(c);
   }
 }

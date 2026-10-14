@@ -25,9 +25,9 @@ import { activitySplit, authorHue, buildChat, currentTask, filterPalette, format
 import { groupByProject, matchingRows, projectOf, sharedNames, sidebarGroups, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
 import { mentionAt, mentionOptions } from '../src/board/owner';
-import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed, groupWorkspaces, osLabel, pickerLabel, stationCrumb } from '../src/ide/model';
+import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, stationBadgeOf, viewedKey, withViewed, groupWorkspaces, osLabel, pickerLabel, stationCrumb } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
-import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout, hasDiff, hasTerminal, centreViewsFor, rightViewsFor, runsFor } from '../src/ide/layout';
+import { CENTRE_MIN, clampSize, closeSheets, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftShows, leftViewFor, openRight, originFallback, parseLayout, RIGHT_SIZE, rightShows, rightTabFor, SHUT, serializeLayout, toggleLeft, toggleRight, hasDiff, hasTerminal, centreViewsFor, rightViewsFor, runsFor } from '../src/ide/layout';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
@@ -517,6 +517,20 @@ sectionEnd('ide wrapper tests: ok');
 
   eq([badgeOf({ conflict: true, agentWorking: true, saved: true }), badgeOf({ conflict: false, agentWorking: true, saved: true })], ['conflict', 'agent working'], 'ide badge: conflict, then agent working');
   eq([badgeOf({ conflict: false, agentWorking: false, saved: true }), badgeOf({ conflict: false, agentWorking: false, saved: false })], ['saved', 'idle'], 'ide badge: saved, then idle');
+  // A workstation's badge is its status, never the agent working state (a workstation has no agent); conflict still comes first.
+  eq(badgeOf({ conflict: false, agentWorking: true, saved: true, station: 'draining' }), 'draining', 'ide badge: a workstation shows its status, not the agent working');
+  eq([badgeOf({ conflict: true, agentWorking: false, saved: false, station: 'online' }), badgeOf({ conflict: false, agentWorking: false, saved: false, station: 'offline' })], ['conflict', 'offline'], 'ide badge: a workstation’s conflict outranks its status');
+  eq(badgeOf({ conflict: false, agentWorking: false, saved: true, station: null }), 'saved', 'ide badge: no station is the agent kind’s badge');
+  eq(
+    [
+      stationBadgeOf({ online: true, draining: false, revoked: false }),
+      stationBadgeOf({ online: true, draining: true, revoked: false }),
+      stationBadgeOf({ online: false, draining: false, revoked: false }),
+      stationBadgeOf({ online: true, draining: false, revoked: true }),
+    ],
+    ['online', 'draining', 'offline', 'offline'],
+    'ide badge: a workstation is online, draining, or offline (a revoked one is offline)',
+  );
 
   // Viewed marks: per workspace, malformed storage reads as none, a changed diff is no longer viewed.
   eq(viewedKey('agent:7'), 'apz.ide.viewed.agent:7', 'ide viewed: the key names the workspace');
@@ -566,13 +580,12 @@ sectionEnd('ide view model tests: ok');
   // The layout: sizes kept in range, the stored layout read back safely, panels fitted to the window, the narrow
   // breakpoint, the screen the Console button returns to, and the panel an openIde link names.
   eq([clampSize(900, 180, 520, 260), clampSize('x', 180, 520, 260), clampSize(10.6, 180, 520, 260)], [520, 260, 180], 'ide layout: a size is clamped, and a non-number is the default');
-  eq(defaultLayout(1200), { left: 260, right: 380, leftOpen: true, rightOpen: true }, 'ide layout: both panels open on a wide window');
-  eq(defaultLayout(800), { left: 260, right: 380, leftOpen: false, rightOpen: false }, 'ide layout: both panels closed on a narrow window');
-  eq(parseLayout(null, 1200), defaultLayout(1200), 'ide layout: nothing stored is the default');
-  eq(parseLayout('{not json', 1200), defaultLayout(1200), 'ide layout: corrupt storage is the default');
-  eq(parseLayout('{"left":9999,"right":1,"leftOpen":false,"rightOpen":"yes"}', 1200), { left: LEFT_SIZE.max, right: RIGHT_SIZE.min, leftOpen: false, rightOpen: true }, 'ide layout: out-of-range sizes are clamped and a non-boolean open flag is the default');
+  eq(defaultLayout(), { left: 260, right: 380, leftOpen: true, rightOpen: true }, 'ide layout: both panels are open by default, whatever the window');
+  eq(parseLayout(null), defaultLayout(), 'ide layout: nothing stored is the default');
+  eq(parseLayout('{not json'), defaultLayout(), 'ide layout: corrupt storage is the default');
+  eq(parseLayout('{"left":9999,"right":1,"leftOpen":false,"rightOpen":"yes"}'), { left: LEFT_SIZE.max, right: RIGHT_SIZE.min, leftOpen: false, rightOpen: true }, 'ide layout: out-of-range sizes are clamped and a non-boolean open flag is the default');
   const kept = { left: 333, right: 401, leftOpen: false, rightOpen: true };
-  eq(parseLayout(serializeLayout(kept), 1200), kept, 'ide layout: a stored layout reads back as it was saved');
+  eq(parseLayout(serializeLayout(kept)), kept, 'ide layout: a stored layout reads back as it was saved');
   eq(
     [fitSize(900, 'left', 1000, 0), fitSize(900, 'right', 1000, 300), fitSize(900, 'right', 800, 400)],
     [LEFT_SIZE.max, 1000 - 44 - 300 - CENTRE_MIN, RIGHT_SIZE.min],
@@ -585,6 +598,32 @@ sectionEnd('ide view model tests: ok');
   eq([leftViewFor('changes'), leftViewFor('agent'), rightTabFor('agent'), rightTabFor('changes')], ['changes', null, 'agent', null], 'ide layout: a link’s panel is a left view or a right tab');
 }
 sectionEnd('ide layout tests: ok');
+
+{
+  // The panels on a narrow window are view state: the drawer and the sheet are never saved. Only an explicit toggle of a
+  // docked panel saves the owner's choice, and a window that grows back past the breakpoint shows that choice again.
+  const open = { left: 260, right: 380, leftOpen: true, rightOpen: true };
+  const stored = serializeLayout(open);
+  eq([leftShows(open, SHUT, true), rightShows(open, SHUT, true)], [false, false], 'ide panels: a narrow window starts with the drawer and the sheet shut');
+  const drawerOn = toggleLeft(open, SHUT, true);
+  eq([drawerOn.save, drawerOn.layout === open, leftShows(drawerOn.layout, drawerOn.sheets, true)], [false, true, true], 'ide panels: opening the drawer on a narrow window saves nothing');
+  const sheetOn = openRight(open, SHUT, true);
+  eq([sheetOn.save, rightShows(sheetOn.layout, sheetOn.sheets, true)], [false, true], 'ide panels: a tab in the right panel on a mid window opens the sheet and saves nothing');
+  eq(closeSheets(sheetOn.sheets, true, true), SHUT, 'ide panels: a pick, the scrim or Escape on a narrow window shuts the drawer and the sheet');
+  eq(closeSheets({ drawer: true, sheet: true }, false, true), { drawer: true, sheet: false }, 'ide panels: a pick at a mid width shuts the sheet and leaves the drawer alone');
+  eq(serializeLayout(open), stored, 'ide panels: the narrow actions leave the stored layout as it was');
+  // A docked toggle flips the saved flag and saves it.
+  const hidden = toggleLeft(open, SHUT, false);
+  eq([hidden.save, hidden.layout.leftOpen, leftShows(hidden.layout, hidden.sheets, false)], [true, false, false], 'ide panels: a docked toggle hides the side panel and is saved');
+  const rightHidden = toggleRight(open, SHUT, false);
+  eq([rightHidden.save, rightHidden.layout.rightOpen, rightShows(rightHidden.layout, rightHidden.sheets, false)], [true, false, false], 'ide panels: a docked toggle hides the right panel and is saved');
+  eq(toggleRight(open, SHUT, true).save, false, 'ide panels: a toggle of the right sheet on a mid window is view only');
+  eq([openRight(rightHidden.layout, SHUT, false).save, openRight(open, SHUT, false).save], [true, false], 'ide panels: a right panel opened from shut is saved open, one already open is not saved again');
+  // Growing the window: a closed drawer or sheet leaves no trace, so the saved choice shows again.
+  eq([leftShows(open, SHUT, false), rightShows(open, SHUT, false)], [true, true], 'ide panels: growing the window restores the saved choice, open by default');
+  eq(parseLayout(stored), open, 'ide panels: the stored layout reads back as the owner saved it');
+}
+sectionEnd('ide panels tests: ok');
 
 {
   // The workspace kinds: the picker's groups in order (an empty group is left out), the labels, and the views a kind has.

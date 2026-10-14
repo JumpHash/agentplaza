@@ -224,6 +224,11 @@ export async function refreshProjects(c: IdeCtx): Promise<void> {
   } catch {
     // The list the IDE has stays until the next poll.
   }
+  try {
+    c.stations = await api.stations();
+  } catch {
+    // A workstation's badge keeps the status the workspace list gave.
+  }
   if (c.alive) c.act.renderAll();
 }
 

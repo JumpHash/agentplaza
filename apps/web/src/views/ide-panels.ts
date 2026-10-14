@@ -12,7 +12,7 @@ import { closeOverlay, message, repoNameOf, type IdeCtx } from './ide-ctx';
 import { loadDir, restore, scheduleRefresh } from './ide-data';
 import { openTab } from './ide-editing';
 import { ideEmbeds } from './ide-rich';
-import { closeDrawerIfNarrow, setRightOpen } from './ide-layout';
+import { closeDrawerIfNarrow, openRightPanel } from './ide-layout';
 import { tasksPanel } from './ide-tasks';
 import { approvalsPanel, runPanel, type Panel as TabPanel } from './ide-tabs';
 
@@ -125,7 +125,7 @@ export function searchUi(c: IdeCtx): { el: HTMLElement; focus: () => void } | nu
 export function openSearch(c: IdeCtx): void {
   if (!c.ws) return;
   c.rightView = 'files';
-  if (!c.layout.rightOpen) setRightOpen(c, true);
+  openRightPanel(c);
   c.dom.searchHost.hidden = false;
   c.act.renderAll();
   searchUi(c)?.focus();
