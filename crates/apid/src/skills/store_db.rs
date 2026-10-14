@@ -435,16 +435,16 @@ fn total_bytes(next: &NewVersion) -> u64 {
 fn source_columns(
     source: &Source,
 ) -> (&str, Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
+    let kind = source.kind();
     match source {
-        Source::Built => ("built", None, None, None, None),
-        Source::Upload => ("upload", None, None, None, None),
+        Source::Built | Source::Upload => (kind, None, None, None, None),
         Source::Github {
             repo,
             git_ref,
             path,
             commit,
         } => (
-            "github",
+            kind,
             Some(repo.as_str()),
             git_ref.as_deref(),
             Some(path.as_str()),

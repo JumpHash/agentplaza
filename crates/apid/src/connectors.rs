@@ -1541,7 +1541,6 @@ fn vault_for(dir: &Path) -> Arc<crate::vault::Store> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
 
     fn scratch(name: &str) -> PathBuf {
         let dir =

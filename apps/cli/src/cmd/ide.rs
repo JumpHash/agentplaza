@@ -703,7 +703,10 @@ fn catch_interrupt() {
     INTERRUPTED.store(false, Ordering::SeqCst);
     // SAFETY: the handler only touches an atomic flag and calls `_exit`, both async-signal-safe.
     unsafe {
-        libc::signal(libc::SIGINT, on_interrupt as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            on_interrupt as *const () as libc::sighandler_t,
+        );
     }
 }
 
@@ -1525,9 +1528,9 @@ mod term {
     fn catch_session_signals() {
         // SAFETY: the handlers only store to an atomic, which a signal handler may do.
         unsafe {
-            libc::signal(libc::SIGWINCH, on_winch as libc::sighandler_t);
-            libc::signal(libc::SIGHUP, on_stop as libc::sighandler_t);
-            libc::signal(libc::SIGTERM, on_stop as libc::sighandler_t);
+            libc::signal(libc::SIGWINCH, on_winch as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGHUP, on_stop as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGTERM, on_stop as *const () as libc::sighandler_t);
         }
     }
 

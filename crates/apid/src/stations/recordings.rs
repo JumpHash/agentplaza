@@ -567,9 +567,7 @@ pub fn frame(app: &App, id: &str, seq: u64) -> Result<Option<Vec<u8>>, String> {
     if seq == 0 || seq > rec.frames {
         return Ok(None);
     }
-    app.deliverables
-        .get_object(&frame_key(&rec.station, id, seq))
-        .map(Some)
+    Objects::get(&*app.deliverables, &frame_key(&rec.station, id, seq)).map(Some)
 }
 
 /// The owner deletes a recording. Its row goes at once; its frames are deleted in the background.
