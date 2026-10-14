@@ -90,6 +90,15 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// The agent's newest `n` entries, oldest first (fewer when the log is shorter).
+    pub fn last(&self, cid: u64, n: usize) -> Vec<Entry> {
+        let agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
+        agents
+            .get(&cid)
+            .map(|log| log.iter().skip(log.len().saturating_sub(n)).cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// The agent's entries whose data mentions `needle` (case-insensitive),
     /// newest first, at most `limit`.
     pub fn search(&self, cid: u64, needle: &str, limit: usize) -> Vec<Entry> {
@@ -146,5 +155,20 @@ mod tests {
         assert_eq!(store.after(7, first, 10).len(), 1);
         assert_eq!(store.search(7, "readme", 10).len(), 1);
         assert!(store.after(9, 0, 10).is_empty());
+    }
+
+    #[test]
+    fn last_is_the_newest_entries_in_order() {
+        let (store, bus) = (Store::default(), Bus::default());
+        for i in 0..5 {
+            store.record(&bus, 7, 1, "model_request", json!({ "i": i }));
+        }
+        store.record(&bus, 8, 2, "work_start", json!({}));
+        let newest = store.last(7, 2);
+        assert_eq!(newest.iter().map(|e| e.data["i"].as_i64()).collect::<Vec<_>>(), vec![Some(3), Some(4)]);
+        assert!(newest[0].seq < newest[1].seq);
+        assert_eq!(store.last(7, 99).len(), 5, "a window longer than the log returns all of it");
+        assert_eq!(store.last(7, 0).len(), 0);
+        assert!(store.last(9, 3).is_empty());
     }
 }

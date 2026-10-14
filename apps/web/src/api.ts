@@ -426,6 +426,8 @@ export const api = {
   cancel: (cid: number) => post<{ cancelled: boolean }>(`/v1/agents/${cid}/cancel`),
   stop: (cid: number) => post<unknown>(`/v1/agents/${cid}/stop`),
   transcript: (cid: number, after = 0, limit = 1000) => get<Entry[]>(`/v1/agents/${cid}/transcript?after=${after}&limit=${limit}`),
+  /** The newest `last` entries, oldest first. The hub's `after` pages from the oldest, so a long log would hide its newest steps. */
+  transcriptLast: (cid: number, last = 1000) => get<Entry[]>(`/v1/agents/${cid}/transcript?last=${last}`),
 
   tasks: () => get<{ tasks: Task[] }>('/v1/tasks').then((r) => r.tasks),
   task: (id: string) => get<Task>(`/v1/tasks/${id}`),

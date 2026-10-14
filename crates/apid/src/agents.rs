@@ -954,12 +954,18 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
     crate::fleet::respond(crate::fleet::gateway(app, agent.cid, "POST", &format!("/v1/agents/{}/{action}", agent.cid), body.as_ref()))
 }
 
-/// The agent's transcript after entry `after`, at most `limit` (max 1000).
+/// The agent's transcript after entry `after`, at most `limit` (max 1000), oldest first. With
+/// `last=N` (max 1000) and no `after`, it is the newest N entries instead, still oldest first.
 fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
     let agent = match agent_at(app, params) {
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
+    if req.query_param("after").is_none() {
+        if let Some(last) = req.query_param("last").and_then(|v| v.parse::<usize>().ok()) {
+            return Response::json(200, &app.transcripts.last(agent.cid, last.min(1000)));
+        }
+    }
     let after = req.query_param("after").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     let limit = req.query_param("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
     Response::json(200, &app.transcripts.after(agent.cid, after, limit.min(1000)))

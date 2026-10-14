@@ -222,7 +222,7 @@ export function mount(root: HTMLElement): Cleanup {
     return el;
   };
 
-  const render = (): void => {
+  const draw = (): void => {
     if (!files.length) {
       replace(grid, empty('board', 'Nothing handed in yet. Agents deliver finished work with deliver_file.'));
       return;
@@ -235,6 +235,28 @@ export function mount(root: HTMLElement): Cleanup {
         (!q || (d.title || '').toLowerCase().includes(q) || d.name.toLowerCase().includes(q)),
     );
     replace(grid, ...(shown.length ? shown.map(card) : [h('p.faint', null, 'Nothing matches that search.')]));
+  };
+
+  const render = (): void => {
+    // A redraw keeps the card that had the focus (the arrow keys pick cards), so a refresh does not drop it.
+    const focused = document.activeElement;
+    const kept = focused instanceof HTMLElement && grid.contains(focused) ? focused.dataset.key : undefined;
+    draw();
+    if (kept) grid.querySelector<HTMLElement>(`[data-key="${CSS.escape(kept)}"]`)?.focus({ preventScroll: true });
+  };
+
+  /** Arrow keys move the focus card by card in the order drawn, as the desktop's Library does. Enter opens the focused card. */
+  const onArrow = (e: KeyboardEvent): void => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    if (document.querySelector('.modal-backdrop') || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable="true"]'))) return;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.lib-card'));
+    if (!cards.length) return;
+    const focusedCard = (document.activeElement as Element | null)?.closest<HTMLElement>('.lib-card');
+    const at = focusedCard ? cards.indexOf(focusedCard) : -1;
+    // Nothing picked yet: the first card, whichever arrow. The ends hold.
+    const next = at < 0 ? 0 : e.key === 'ArrowDown' ? at + 1 : at - 1;
+    e.preventDefault();
+    cards[Math.min(Math.max(next, 0), cards.length - 1)]?.focus();
   };
 
   const refresh = async (): Promise<void> => {
@@ -297,10 +319,12 @@ export function mount(root: HTMLElement): Cleanup {
   typeSelect.addEventListener('change', render);
   const timer = setInterval(render, 60_000);
   const off = on('file', () => void refresh());
+  document.addEventListener('keydown', onArrow);
   void refresh();
 
   return () => {
     off();
     clearInterval(timer);
+    document.removeEventListener('keydown', onArrow);
   };
 }

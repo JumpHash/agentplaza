@@ -153,7 +153,25 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let ticking: { el: HTMLElement; since: number }[] = []; // elapsed timers of the board
 
   const render = (): void => {
+    // A redraw keeps the card that had the focus (the arrow keys pick cards), so a live refresh does not drop it.
+    const focused = document.activeElement;
+    const kept = focused instanceof HTMLElement && root.contains(focused) ? focused.dataset.key : undefined;
     replace(root, id ? detailPage() : listPage());
+    if (kept) root.querySelector<HTMLElement>(`[data-key="${CSS.escape(kept)}"]`)?.focus({ preventScroll: true });
+  };
+
+  /** Arrow keys move the focus card by card in the order drawn (lane by lane), as the desktop's board_order does. */
+  const onArrow = (e: KeyboardEvent): void => {
+    if (id || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+    if (document.querySelector('.modal-backdrop') || (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable="true"]'))) return;
+    const cards = Array.from(root.querySelectorAll<HTMLElement>('.task-card'));
+    if (!cards.length) return;
+    const focusedCard = (document.activeElement as Element | null)?.closest<HTMLElement>('.task-card');
+    const at = focusedCard ? cards.indexOf(focusedCard) : -1;
+    // Nothing picked yet: the first card, whichever arrow. The ends hold.
+    const next = at < 0 ? 0 : e.key === 'ArrowDown' ? at + 1 : at - 1;
+    e.preventDefault();
+    cards[Math.min(Math.max(next, 0), cards.length - 1)]?.focus();
   };
 
   const loadTimeline = async (t: Task): Promise<void> => {
@@ -163,7 +181,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       return;
     }
     try {
-      timeline = timelineOf(t.id, await api.transcript(t.agent_cid));
+      timeline = timelineOf(t.id, await api.transcriptLast(t.agent_cid));
     } catch {
       timeline = [];
     }
@@ -286,14 +304,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     seen.add(t.id);
     lastState.set(t.id, t.state);
 
-    const poster = (t as Task & { poster?: string | null }).poster;
-    const who = h(
-      'div.task-who',
-      null,
-      h('span.task-dot', { class: `s-${statusOf(t.agent_cid)}` }),
-      assigneeLink(t.agent_cid),
-      poster ? h('span.faint', null, `by ${poster}`) : null,
-    );
+    const who = h('div.task-who', null, h('span.task-dot', { class: `s-${statusOf(t.agent_cid)}` }), assigneeLink(t.agent_cid));
 
     let detail: HTMLElement;
     if (col === 1) {
@@ -488,12 +499,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     }),
     agents.watch(() => render()),
   ];
+  document.addEventListener('keydown', onArrow);
   void load();
 
   return () => {
     clearTimeout(timer);
     clearInterval(clockTimer);
     offs.forEach((off) => off());
+    document.removeEventListener('keydown', onArrow);
     ticking = [];
     dismiss?.();
   };
