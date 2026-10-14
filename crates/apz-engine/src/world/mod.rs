@@ -243,6 +243,8 @@ pub struct Floor {
     pub world: World,
     pub hovered: Option<u64>,
     pub selected: Option<u64>,
+    /// The last selection the robots reacted to (a click on a robot reacts once: see `update_bots`).
+    pub reacted: Option<u64>,
     /// The view has been fitted to the districts once.
     pub fitted: bool,
     /// Seconds since the floor opened, and the wall clock (ms) of the last step.
@@ -301,6 +303,7 @@ impl Floor {
             world: World::default(),
             hovered: None,
             selected: None,
+            reacted: None,
             fitted: false,
             time: 0.0,
             now_ms: 0.0,

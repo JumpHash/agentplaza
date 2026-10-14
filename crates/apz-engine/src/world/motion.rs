@@ -25,6 +25,7 @@ const ROBOT_R: f32 = 0.55; // robot footprint radius for collisions
 const DEG: f32 = std::f32::consts::PI / 180.0;
 const STEER: [f32; 5] = [0.0, 30.0 * DEG, -30.0 * DEG, 60.0 * DEG, -60.0 * DEG]; // headings tried when blocked
 const DUST_N: usize = 90;
+const WAVE_SECS: f32 = 1.5; // how long a selected robot waves at the camera
 
 thread_local! {
     /// `Math.random()` for the floor: one seeded stream per thread.
@@ -433,6 +434,18 @@ impl Floor {
         for light in self.lit_by_role.values_mut() {
             light.lit = false;
         }
+        // A selected robot reacts once per selection: it waves at the camera (turning to face it, see below) and
+        // spawns hearts, then goes back to what it was doing. Only its heading and pose change; it is not moved.
+        if self.selected != self.reacted {
+            self.reacted = self.selected;
+            if let Some(cid) = self.selected {
+                if let Some(b) = self.bots.iter_mut().find(|b| b.agent.cid == cid) {
+                    b.robot.wave(WAVE_SECS);
+                    b.robot.fx("hearts");
+                }
+            }
+        }
+        let eye = self.orbit.camera(1.0).eye; // the eye's position does not depend on the aspect
         // The board's navigation walks the robots (nav.rs): one step with the goals set last frame, then each robot takes
         // its pose and sends its goal below. Without it, the robots walk straight on the engine's own layout.
         let walked = match self.nav.as_mut() {
@@ -583,6 +596,8 @@ impl Floor {
             };
             // The work's station or partner sets the heading where it has one (robot-work.ts facing).
             let want = if walked { self.work.facing(&work_bot(&self.bots[i])).or(want) } else { want };
+            // A waving robot turns to face the camera (its heading: local +Z is forward, as the walk's).
+            let want = if self.bots[i].robot.waving() { Some((eye.x - x).atan2(eye.z - y)) } else { want };
             if let Some(want) = want {
                 let d = want - self.bots[i].heading;
                 let diff = d.sin().atan2(d.cos());
@@ -877,5 +892,39 @@ mod tests {
         // One step of SPEED * dt = 0.08 straight toward +x (the target lies along grid x).
         assert!((bot.x - 0.08).abs() < 1e-4, "x = {}", bot.x);
         assert!(bot.y.abs() < 1e-4, "y = {}", bot.y);
+    }
+
+    #[test]
+    fn a_selected_robot_waves_at_the_camera_then_stops() {
+        let mut floor = Floor::new();
+        floor.districts.push(district());
+        // Wandering and socialising are parked, so the robot only stands where it is.
+        floor.bots.push(bot_at(&floor, 5, 2.0, 0.0, "idle"));
+        floor.step(0.05, 500.0, 0.0, 0.0);
+        assert!(!floor.bots[0].robot.waving(), "nothing is selected yet");
+
+        floor.selected = Some(5);
+        floor.step(0.05, 500.0, 0.0, 0.0);
+        let eye = floor.orbit.camera(1.0).eye;
+        let want = (eye.x - 2.0).atan2(eye.z);
+        for _ in 0..10 {
+            floor.step(0.05, 500.0, 0.0, 0.0); // 0.5 s in: still waving, and turned to the camera
+        }
+        let bot = &floor.bots[0];
+        assert!(bot.robot.waving(), "a selected robot waves");
+        let turn = (bot.heading - want).sin().atan2((bot.heading - want).cos());
+        assert!(turn.abs() < 0.05, "heading {} wants {want}", bot.heading);
+        assert!((bot.x - 2.0).abs() < 1e-6 && bot.y.abs() < 1e-6, "the robot is not moved");
+
+        for _ in 0..20 {
+            floor.step(0.05, 500.0, 0.0, 0.0); // 1.5 s in: the wave is over
+        }
+        assert!(!floor.bots[0].robot.waving(), "the wave stops after WAVE_SECS");
+
+        // The same selection reacts once: it does not wave again until the selection changes.
+        for _ in 0..5 {
+            floor.step(0.05, 500.0, 0.0, 0.0);
+        }
+        assert!(!floor.bots[0].robot.waving(), "one reaction per selection");
     }
 }

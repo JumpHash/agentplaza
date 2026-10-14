@@ -1,16 +1,18 @@
 //! Robot effects, as `robots/fx.ts`: small billboards and glow cones from one pool shared by every robot in the
-//! scene (sparks, zzz, dots, hearts, keys, steam, ink, glow). A robot spawns them under a bone; they move, grow and
-//! fade, then go back to the pool. The desktop has no sprite, so each billboard is a flat quad with a texture drawn
-//! in code, turned to the camera's usual view (the floor's isometric angle); a glow is a cone that hangs from its
-//! bone and is not turned. Not built: trail, and a glow's floor spot, since the desktop's Obj has no parent pointer
-//! and Fx only sees the head bone, so it cannot find the floor under the robot. The other kinds of clips.json
-//! (notes, bubbles, confetti) are logged once and do nothing.
+//! scene (sparks, zzz, dots, hearts, keys, steam, notes, bubbles, confetti, ink, trail, glow). A robot spawns them
+//! under a bone; they move, grow and fade, then go back to the pool. The desktop has no sprite, so each billboard is
+//! a flat quad with a texture drawn in code, turned to the camera's usual view (the floor's isometric angle); notes,
+//! bubbles and confetti wobble, and a confetti flake spins in its own plane (its tumble). A trail is left behind:
+//! its puffs are placed in the robot's parent frame, so they stay where the robot was as it walks (`Fx::spawn` with
+//! the robot's root and a point in that frame). A glow is a cone that hangs from its bone and is not turned. Not
+//! built: a glow's floor spot, since the desktop's Obj has no parent pointer and Fx only sees the head bone, so it
+//! cannot find the floor under the robot.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use glam::{Quat, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 use super::super::geometry::plane;
 use super::super::scene::{Color, Geo, Geometry, Mat, Material, Obj, Shading, Side, Tex, Texture};
@@ -24,8 +26,12 @@ pub const LIVE_MAX: usize = 60;
 const WARM: u32 = 0xffc46b;
 
 /// The kinds built now. A kind's index is its pool and texture.
-const KINDS: [&str; 8] = ["sparks", "zzz", "dots", "hearts", "keys", "steam", "ink", "glow"];
+const KINDS: [&str; 12] = ["sparks", "zzz", "dots", "hearts", "keys", "steam", "ink", "glow", "notes", "bubbles", "confetti", "trail"];
 const TEXTURE_SIZE: usize = 64;
+/// A note's colours, one picked per note (fx.ts's tints), and a confetti flake's, and a trail puff's.
+const NOTE_TINTS: [u32; 3] = [0x7a5cff, 0xff7ab6, 0x3fb6a8];
+const CONFETTI_TINTS: [u32; 5] = [0xff6b8a, 0xffc23d, 0x5bd1b5, 0x8fb8ff, 0xb08bff];
+const TRAIL_TINTS: [u32; 1] = [0x2ee6a6];
 /// The six spheres of an ink blot: (centre x, centre y, radius) on the texture, as fx.ts.
 const INK: [(f32, f32, f32); 6] = [(32.0, 32.0, 13.0), (22.0, 27.0, 11.0), (42.0, 27.0, 11.0), (21.0, 40.0, 10.0), (43.0, 40.0, 10.0), (32.0, 44.0, 11.0)];
 /// The three puffs of a steam cloud: (centre x, centre y, radius) on the texture, as fx.ts.
@@ -48,6 +54,8 @@ enum Fade {
     Linear,
     /// sin(πk): up and back down (a glow).
     Arc,
+    /// Full to 70% of the life, then out: 1 for k < 0.7, else (1 − k) / 0.3 (confetti).
+    Hold,
 }
 
 impl Fade {
@@ -57,6 +65,13 @@ impl Fade {
             Fade::Puff => (6.0 * k).min(1.0) * (1.0 - k),
             Fade::Linear => 1.0 - k,
             Fade::Arc => (PI * k).sin(),
+            Fade::Hold => {
+                if k < 0.7 {
+                    1.0
+                } else {
+                    (1.0 - k) / 0.3
+                }
+            }
         }
     }
 }
@@ -84,10 +99,34 @@ struct Look {
     /// A glow's cone: not turned to the camera, and drawn with its colour.
     cone: bool,
     additive: bool,
+    /// Sideways wobble, units (at 5 rad/s, each piece's own amplitude is 0.5–1.5 of this).
+    sway: f32,
+    /// Spin rate of a flake in its own plane, rad/s (each piece's own rate is 0.5–1.5 of this, in either direction).
+    spin: f32,
+    /// Random tints, one per piece; empty when the texture keeps its own colour.
+    tints: &'static [u32],
+    /// A trail puff: its position is in the robot's parent frame, so it stays where it was left.
+    stage: bool,
 }
 
 fn look_of(kind: usize) -> Look {
-    let base = Look { life: 0.5, size: 0.14, grow: [1.0, 1.0], rise: 0.0, rise_jitter: 0.0, spread: 0.0, peak: 1.0, fade: Fade::Squared, pop: false, cone: false, additive: false };
+    let base = Look {
+        life: 0.5,
+        size: 0.14,
+        grow: [1.0, 1.0],
+        rise: 0.0,
+        rise_jitter: 0.0,
+        spread: 0.0,
+        peak: 1.0,
+        fade: Fade::Squared,
+        pop: false,
+        cone: false,
+        additive: false,
+        sway: 0.0,
+        spin: 0.0,
+        tints: &[],
+        stage: false,
+    };
     match KINDS[kind] {
         "sparks" => Look { life: 0.5, size: 0.14, rise: 0.2, rise_jitter: 0.3, spread: 0.5, ..base },
         "zzz" => Look { life: 1.6, size: 0.24, grow: [0.7, 1.2], rise: 0.32, spread: 0.12, ..base },
@@ -96,6 +135,22 @@ fn look_of(kind: usize) -> Look {
         "keys" => Look { life: 0.4, size: 0.14, grow: [0.4, 1.1], rise: 0.25, spread: 0.12, pop: true, ..base },
         "steam" => Look { life: 1.2, size: 0.26, grow: [0.6, 1.9], rise: 0.3, spread: 0.08, peak: 0.85, fade: Fade::Puff, ..base },
         "ink" => Look { life: 1.0, size: 0.42, grow: [0.6, 1.3], rise: 0.04, peak: 0.8, fade: Fade::Linear, ..base },
+        // The rise is fx.ts's rise × (0.6 + 0.8·r): a base of 0.6 × rise, plus up to 0.8 × rise at random.
+        "notes" => Look { life: 1.4, size: 0.2, grow: [1.0, 1.1], rise: 0.24, rise_jitter: 0.32, spread: 0.1, sway: 0.12, tints: &NOTE_TINTS, ..base },
+        "bubbles" => Look { life: 1.4, size: 0.13, grow: [1.0, 1.25], rise: 0.18, rise_jitter: 0.24, spread: 0.05, sway: 0.04, ..base },
+        "confetti" => Look {
+            life: 1.8,
+            size: 0.13,
+            rise: -0.3,
+            rise_jitter: -0.4,
+            spread: 0.8,
+            sway: 0.03,
+            fade: Fade::Hold,
+            spin: 6.0,
+            tints: &CONFETTI_TINTS,
+            ..base
+        },
+        "trail" => Look { life: 6.0, size: 0.13, tints: &TRAIL_TINTS, stage: true, ..base },
         _ => Look { life: 1.0, size: 1.0, peak: 0.6, fade: Fade::Arc, cone: true, additive: true, ..base },
     }
 }
@@ -243,6 +298,39 @@ fn texel(kind: usize, x: f32, y: f32) -> ([f32; 3], f32) {
             }
             px
         }
+        "notes" => {
+            // A beamed pair of eighth notes, white (the piece's tint colours it): two heads, two stems and a beam.
+            let head = |cx: f32, cy: f32| ((x - cx) / 6.5).powi(2) + ((y - cy) / 4.5).powi(2) <= 1.0;
+            let stem_l = segment_distance((x, y), (27.5, 46.0), (27.5, 16.0)) <= 1.6;
+            let stem_r = segment_distance((x, y), (47.5, 42.0), (47.5, 12.0)) <= 1.6;
+            let beam = segment_distance((x, y), (27.5, 16.0), (47.5, 12.0)) <= 2.5;
+            ([255.0; 3], on(head(22.0, 46.0) || head(42.0, 42.0) || stem_l || stem_r || beam))
+        }
+        "bubbles" => {
+            // A translucent blue disc with a bright rim and a white glint at its top-left (fx.ts).
+            let d = (x - 32.0).hypot(y - 32.0);
+            let mut px = ([0.0; 3], 0.0);
+            if d <= 22.0 {
+                px = over(px, (hex(0xbee6ff), 0.25));
+            }
+            if (d - 22.0).abs() <= 2.5 {
+                px = over(px, (hex(0x9fd8ff), 1.0));
+            }
+            if (x - 24.0).hypot(y - 24.0) <= 5.0 {
+                px = over(px, (hex(0xffffff), 1.0));
+            }
+            px
+        }
+        "confetti" => {
+            // A white flake, wider than tall; its piece's tint colours it.
+            ([255.0; 3], on((10.0..54.0).contains(&x) && (22.0..42.0).contains(&y)))
+        }
+        "trail" => {
+            // A soft dot: a bright core, fading out at the rim (its tint colours it).
+            let d = (x - 32.0).hypot(y - 32.0) / 32.0;
+            let a = if d <= 0.6 { 1.0 - 0.05 * d / 0.6 } else { (0.95 * (1.0 - (d - 0.6) / 0.4)).max(0.0) };
+            ([255.0; 3], a)
+        }
         "glow" => {
             // A cone's texture: clear at the apex (the top row, uv v = 1), bright at the base (the bottom row).
             let t = y / TEXTURE_SIZE as f32;
@@ -364,6 +452,11 @@ struct Item {
     age: f32,
     vx: f32,
     vy: f32,
+    /// The wobble's amplitude and phase, and the flake's spin rate (rad/s), each its own.
+    sway: f32,
+    phase: f32,
+    spin: f32,
+    /// Where it was spawned: under the parent, or (a trail) in the parent's parent frame.
     at: Vec3,
 }
 
@@ -379,12 +472,13 @@ impl Fx {
     }
 
     /// Spawns one effect under `parent` at `at`, in the warm light's colour (a glow's colour only). False when the
-    /// kind is not built or the scene is full.
+    /// kind is not built or the scene is full. A trail is the exception: `parent` is the robot's root and `at` is in
+    /// the root's parent frame, where the puff is left.
     pub fn spawn(&mut self, kind: &str, parent: &Obj, at: Vec3) -> bool {
         self.spawn_colored(kind, parent, at, WARM)
     }
 
-    /// As `spawn`, with a glow's colour (hex, sRGB); the other kinds ignore it.
+    /// As `spawn`, with a glow's colour (hex, sRGB); the other kinds ignore it (a tinted piece takes its own tint).
     pub fn spawn_colored(&mut self, kind: &str, parent: &Obj, at: Vec3, color: u32) -> bool {
         let Some(k) = kind_index(kind) else {
             warn_once(&format!("effect \"{kind}\" is not built yet (a no-op)"));
@@ -395,22 +489,39 @@ impl Fx {
         }
         let look = look_of(k);
         let puff = take(k);
-        puff.obj.set_position(at.x, at.y, at.z).set_scalar(look.size);
-        puff.mat.get().color = if look.cone { Color::hex(color) } else { Color::WHITE };
-        puff.mat.get().opacity = look.peak * look.fade.value(0.0);
-        parent.add(&puff.obj);
         let vx = (self.rng.next() - 0.5) * look.spread;
         let mut vy = look.rise;
-        if look.rise_jitter > 0.0 {
+        if look.rise_jitter != 0.0 {
             vy += look.rise_jitter * self.rng.next();
         }
-        self.items.push(Item { puff, parent: parent.clone(), look, age: 0.0, vx, vy, at });
+        let sway = look.sway * (0.5 + self.rng.next());
+        let phase = self.rng.next() * TAU;
+        let spin = if look.spin > 0.0 { (if self.rng.next() < 0.5 { -1.0 } else { 1.0 }) * look.spin * (0.5 + self.rng.next()) } else { 0.0 };
+        // A glow takes the caller's colour; a piece with tints takes one of them at random; the rest keep white.
+        let rgb = if look.cone {
+            Some(color)
+        } else if !look.tints.is_empty() {
+            let n = look.tints.len();
+            Some(look.tints[((self.rng.next() * n as f32) as usize).min(n - 1)])
+        } else {
+            None
+        };
+        puff.mat.get().color = rgb.map_or(Color::WHITE, Color::hex);
+        puff.mat.get().opacity = look.peak * look.fade.value(0.0);
+        puff.obj.set_position(at.x, at.y, at.z).set_scalar(look.size);
+        parent.add(&puff.obj);
+        self.items.push(Item { puff, parent: parent.clone(), look, age: 0.0, vx, vy, sway, phase, spin, at });
         LIVE.fetch_add(1, Ordering::Relaxed);
         true
     }
 
     /// Advances every live effect: it moves, grows (a pop eases out), fades; and goes back to the pool when done.
-    pub fn update(&mut self, dt: f32) {
+    /// `frame` is the local matrix of the robot's root, the parent of each piece: a trail's puffs are placed in the
+    /// root's parent frame, so they are re-placed here through the root's current transform and stay where they were.
+    pub fn update(&mut self, dt: f32, frame: Mat4) {
+        let (scale, root_rot, _) = frame.to_scale_rotation_translation();
+        let inverse = frame.inverse();
+        let face = facing();
         let mut i = 0;
         while i < self.items.len() {
             let it = &mut self.items[i];
@@ -424,7 +535,18 @@ impl Fx {
             let k = it.age / look.life;
             let e = if look.pop { 1.0 - (1.0 - k).powi(3) } else { k };
             let s = look.size * (look.grow[0] + (look.grow[1] - look.grow[0]) * e);
-            it.puff.obj.set_position(it.at.x + it.vx * it.age, it.at.y + it.vy * it.age, it.at.z).set_scalar(s);
+            let obj = &it.puff.obj;
+            if look.stage {
+                let p = inverse.transform_point3(it.at);
+                obj.set_position(p.x, p.y, p.z).set_scalar(s / scale.x.max(1e-6)).set_quaternion(root_rot.inverse() * face);
+            } else {
+                let wobble = it.sway * (5.0 * it.age + it.phase).sin();
+                obj.set_position(it.at.x + it.vx * it.age + wobble, it.at.y + it.vy * it.age, it.at.z).set_scalar(s);
+                if !look.cone {
+                    let tumble = if it.spin != 0.0 { it.spin * it.age + it.phase } else { 0.0 };
+                    obj.set_quaternion(face * Quat::from_rotation_z(tumble));
+                }
+            }
             it.puff.mat.get().opacity = look.peak * look.fade.value(k);
             i += 1;
         }
@@ -447,4 +569,122 @@ impl Drop for Fx {
 /// A seed for one robot's effects (from its id): each robot's sprinkle differs.
 pub fn seed(n: u64) -> u32 {
     (n.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pool and the live count are shared, so the tests here run one at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The children under `parent` (not counting itself).
+    fn children_of(parent: &Obj) -> usize {
+        let mut n = 0;
+        parent.traverse(&mut |_: &Obj| n += 1);
+        n - 1
+    }
+
+    fn in_pool(kind: &str) -> bool {
+        let k = kind_index(kind).expect("a built kind");
+        POOL.lock().unwrap().iter().any(|p| p.kind == k)
+    }
+
+    #[test]
+    fn each_new_kind_spawns_moves_and_returns_to_the_pool() {
+        let _serial = serial();
+        for kind in ["notes", "bubbles", "confetti", "trail"] {
+            let root = Obj::group();
+            let mut fx = Fx::new(11);
+            assert!(fx.spawn(kind, &root, Vec3::new(0.0, 0.5, 0.0)), "{kind} spawns");
+            assert_eq!(fx.items.len(), 1, "{kind}");
+            assert_eq!(children_of(&root), 1, "{kind} is under its parent");
+            let start = fx.items[0].puff.obj.position();
+            fx.update(0.3, Mat4::IDENTITY);
+            let now = fx.items[0].puff.obj.position();
+            if kind == "trail" {
+                assert_eq!(now, start, "a trail stays where it was left");
+            } else {
+                assert!(now.distance(start) > 1e-3, "{kind} moves");
+            }
+            fx.update(6.5, Mat4::IDENTITY); // past every life (a trail's is 6 s)
+            assert!(fx.items.is_empty(), "{kind} is done");
+            assert_eq!(children_of(&root), 0, "{kind} leaves its parent");
+            assert!(in_pool(kind), "{kind} goes back to the pool");
+        }
+    }
+
+    #[test]
+    fn notes_rise_and_confetti_falls() {
+        let _serial = serial();
+        let root = Obj::group();
+        let mut fx = Fx::new(3);
+        assert!(fx.spawn("notes", &root, Vec3::ZERO));
+        assert!(fx.spawn("confetti", &root, Vec3::ZERO));
+        fx.update(0.2, Mat4::IDENTITY);
+        assert!(fx.items[0].puff.obj.position().y > 0.0, "a note rises");
+        assert!(fx.items[1].puff.obj.position().y < 0.0, "a flake falls");
+        fx.clear();
+    }
+
+    #[test]
+    fn confetti_and_notes_take_one_of_their_tints() {
+        let _serial = serial();
+        let root = Obj::group();
+        let mut fx = Fx::new(9);
+        for _ in 0..20 {
+            assert!(fx.spawn("confetti", &root, Vec3::ZERO));
+        }
+        let colors: Vec<Color> = fx.items.iter().map(|it| it.puff.mat.get().color).collect();
+        assert!(colors.iter().all(|c| CONFETTI_TINTS.iter().any(|t| *c == Color::hex(*t))));
+        assert!(colors.iter().any(|c| *c != colors[0]), "the flakes differ in colour");
+        fx.clear();
+        assert!(fx.spawn("notes", &root, Vec3::ZERO));
+        let note = fx.items[0].puff.mat.get().color;
+        assert!(NOTE_TINTS.iter().any(|t| note == Color::hex(*t)));
+        fx.clear();
+    }
+
+    #[test]
+    fn a_trail_puff_stays_where_the_robot_left_it() {
+        let _serial = serial();
+        let root = Obj::group();
+        root.set_position(3.0, 0.0, 0.0).set_scalar(2.0);
+        let mut fx = Fx::new(5);
+        let left = Vec3::new(1.0, 0.0, 2.0);
+        assert!(fx.spawn("trail", &root, left));
+        // The robot walks on and turns: the puff stays in the frame it was left in, at its own size.
+        root.set_position(-4.0, 0.0, 1.0).set_rotation(0.0, 1.2, 0.0);
+        let frame = root.local_matrix();
+        fx.update(0.1, frame);
+        let puff = &fx.items[0].puff.obj;
+        let world = frame.transform_point3(puff.position());
+        assert!(world.distance(left) < 1e-4, "the trail is at {world:?}");
+        let (world_scale, _, _) = (frame * puff.local_matrix()).to_scale_rotation_translation();
+        assert!((world_scale.x - 0.13).abs() < 1e-4, "the trail keeps its size: {}", world_scale.x);
+        fx.clear();
+    }
+
+    #[test]
+    fn the_new_textures_are_drawn() {
+        let at = |kind: &str, x: f32, y: f32| texel(kind_index(kind).expect("a built kind"), x, y).1;
+        assert_eq!(at("notes", 22.0, 46.0), 1.0, "a note's head");
+        assert_eq!(at("notes", 2.0, 2.0), 0.0);
+        assert_eq!(at("bubbles", 32.0, 10.0), 1.0, "a bubble's rim");
+        assert_eq!(at("bubbles", 2.0, 2.0), 0.0);
+        assert_eq!(at("confetti", 32.0, 32.0), 1.0);
+        assert_eq!(at("confetti", 2.0, 2.0), 0.0);
+        assert_eq!(at("trail", 32.0, 32.0), 1.0, "a trail's core");
+        assert_eq!(at("trail", 2.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn a_confetti_fade_holds_then_goes_out() {
+        assert_eq!(Fade::Hold.value(0.5), 1.0);
+        assert!((Fade::Hold.value(0.85) - 0.5).abs() < 1e-5);
+    }
 }

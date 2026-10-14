@@ -253,6 +253,8 @@ pub struct Robot {
     /// The clip whose effects are timed (its address), and each effect's timer.
     fx_clip: Option<usize>,
     fx_timer: Vec<f32>,
+    /// A wave in progress: the held clip it replaced (restored when the wave ends), and the time it ends.
+    wave_back: Option<(Option<Timed>, f32)>,
 }
 
 impl Robot {
@@ -314,6 +316,7 @@ impl Robot {
             fx: Fx::new(seed(ROBOTS.fetch_add(1, Ordering::Relaxed))),
             fx_clip: None,
             fx_timer: Vec::new(),
+            wave_back: None,
         };
         robot.apply_state(RobotState::Idle);
         robot.apply();
@@ -405,6 +408,11 @@ impl Robot {
 
     /// The clip playing now and its elapsed time: the body layer over a one-shot over a held clip over the state's clip.
     fn active(&mut self, t: f32) -> Option<(&'static Clip, f64)> {
+        if self.wave_back.is_some_and(|(_, until)| t >= until) {
+            if let Some((held, _)) = self.wave_back.take() {
+                self.held_clip = held;
+            }
+        }
         if let Some(b) = self.body {
             return Some((b.clip, f64::from(t - b.start)));
         }
@@ -461,7 +469,14 @@ impl Robot {
 
     fn spawn_at(&mut self, kind: &str, anchor: &str) {
         let (obj, at) = self.anchor(anchor);
-        self.fx.spawn(kind, &obj, at);
+        if kind == "trail" {
+            // A trail is left where the robot was: its puff goes under the root, at the bone's point in the root's
+            // parent frame (the frame the robot walks in), so it does not move with the robot.
+            let stage = self.group.world_matrix_of(&obj).map_or(at, |m| m.transform_point3(at));
+            self.fx.spawn(kind, &self.group, stage);
+        } else {
+            self.fx.spawn(kind, &obj, at);
+        }
     }
 
     /// Sets the joints to a clip's targets at once (a pose: no blend).
@@ -574,7 +589,7 @@ impl Robot {
         }
 
         self.apply();
-        self.fx.update(dt);
+        self.fx.update(dt, self.group.local_matrix());
         self.mats.eye.get().emissive_intensity = if self.state == RobotState::Working { self.eye_intensity + 0.3 * (5.0 * t).sin() } else { self.eye_intensity };
         if self.orchestrator {
             self.mats.light.get().emissive_intensity = 1.1 + 0.5 * (3.0 * t).sin();
@@ -601,13 +616,31 @@ impl Robot {
         };
         self.held_clip = Some(Timed { clip, start: self.last_t });
         self.once_clip = None;
+        self.wave_back = None;
         let now = self.last_t;
         self.snap_to(clip, now);
+    }
+
+    /// Waves for `secs` seconds: the wave pose, then the clip it replaced (the held one, if any) comes back. A wave
+    /// asked for while waving starts its time again; any other play or pose ends it.
+    pub fn wave(&mut self, secs: f32) {
+        let held = match self.wave_back.take() {
+            Some((held, _)) => held,
+            None => self.held_clip,
+        };
+        self.pose(RobotPose::Wave);
+        self.wave_back = Some((held, self.last_t + secs));
+    }
+
+    /// Whether a wave is in progress.
+    pub fn waving(&self) -> bool {
+        self.wave_back.is_some()
     }
 
     /// Plays a clip: held when it loops (or with `looped`), else a one-shot that returns to the state's clip.
     /// `None` ends a held clip.
     pub fn play(&mut self, clip_id: Option<&str>, looped: Option<bool>) {
+        self.wave_back = None;
         let Some(id) = clip_id else {
             self.held_clip = None;
             return;
