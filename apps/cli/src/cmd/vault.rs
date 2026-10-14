@@ -73,6 +73,49 @@ pub enum Cmd {
         #[arg(long = "bind", value_delimiter = ',')]
         bind: Vec<String>,
     },
+    /// A new value for an existing secret: a new version (the old ones stay for rollback). Its value
+    /// is read from stdin (when it is not a terminal) or a hidden prompt.
+    Rotate {
+        /// The entry's name, or its id (sec_...) when more than one entry holds the name.
+        name: String,
+    },
+    /// Make an earlier version the current one. Without --version, the newest one before the current.
+    Rollback {
+        /// The entry's name, or its id (sec_...).
+        name: String,
+        /// The version to return to (see `list` for the versions an entry keeps).
+        #[arg(long)]
+        version: Option<u64>,
+    },
+    /// Change a secret's label, scope or bindings. --bind adds bindings and --unbind removes them.
+    Edit {
+        /// The entry's name, or its id (sec_...).
+        name: String,
+        /// A new label (an empty one clears it).
+        #[arg(long)]
+        label: Option<String>,
+        /// Every node of the plaza. `plaza` is the only word.
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["plaza"]), conflicts_with = "nodes")]
+        scope: Option<String>,
+        /// Only these nodes, e.g. n0,n3.
+        #[arg(long, value_delimiter = ',', conflicts_with = "scope")]
+        nodes: Option<Vec<String>>,
+        /// A binding to add. Repeatable, or comma-separated.
+        #[arg(long = "bind", value_delimiter = ',')]
+        bind: Vec<String>,
+        /// A binding to remove. Repeatable, or comma-separated.
+        #[arg(long = "unbind", value_delimiter = ',')]
+        unbind: Vec<String>,
+    },
+    /// Check a secret the way its bound consumer would, on a node. Prints whether it passed and the
+    /// consumer's detail; no value is shown.
+    Test {
+        /// The entry's name, or its id (sec_...).
+        name: String,
+        /// The node to check on, e.g. n0 (default: this machine).
+        #[arg(long)]
+        node: Option<String>,
+    },
     /// Delete an entry by its id (see `list`). A .env import will not bring its name back.
     Rm {
         /// The entry's id, e.g. sec_...
@@ -80,6 +123,14 @@ pub enum Cmd {
         /// Skip the confirmation.
         #[arg(long)]
         yes: bool,
+    },
+    /// The consumers that read the vault (the providers, connectors and tools) and the entry each
+    /// node resolves to: an id, `missing`, or `out_of_scope`.
+    Consumers,
+    /// The key slots: a passphrase or the key file. The vault keeps at least one.
+    Slot {
+        #[command(subcommand)]
+        cmd: SlotCmd,
     },
     /// Move a .env file's keys into the vault. Discouraged: add a key with `set` instead.
     Import {
@@ -115,6 +166,29 @@ impl Kind {
             Kind::Generic => "generic",
         }
     }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SlotCmd {
+    /// Add a slot. A passphrase slot asks for the new passphrase. A key file slot is made by the hub,
+    /// in its own state directory (there is no path to give); the vault has one key file slot at most.
+    Add {
+        /// A passphrase slot: asks for the passphrase.
+        #[arg(long, conflicts_with = "keyfile")]
+        passphrase: bool,
+        /// A key file slot: the hub creates the key file.
+        #[arg(long, conflicts_with = "passphrase")]
+        keyfile: bool,
+    },
+    /// Remove a slot by its id (see `status`). The last slot stays. Removing the key file slot
+    /// destroys the key file.
+    Remove {
+        /// The slot's id, e.g. slt_...
+        id: String,
+        /// Skip the confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
@@ -200,8 +274,81 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 "scope": scope,
                 "bindings": bindings,
             });
-            let v = ctx.client.post("/v1/vault/secrets", &body)?;
+            let v = match post_status(ctx, "/v1/vault/secrets", &body) {
+                Ok(v) => v,
+                Err((409, message)) => {
+                    return Err(format!("{message}\nhint: to give {name} a new value, use `agentplaza vault rotate {name}`"));
+                }
+                Err((_, message)) => return Err(message),
+            };
             ctx.out(&v, |v| println!("stored {} as {} ({})", ctx::s(v, "name"), ctx::s(v, "id"), scope_text(&v["scope"])));
+        }
+        Cmd::Rotate { name } => {
+            let entry = find_entry(ctx, &name)?;
+            let value = secret(&format!("new value for {name}: "))?;
+            let path = format!("/v1/vault/secrets/{}/value", ctx::seg(ctx::s(&entry, "id")));
+            let v = ctx.client.put(&path, &json!({ "value": value }))?;
+            ctx.out(&v, |v| println!("rotated {} to v{}", ctx::s(v, "name"), ctx::text(v, "current")));
+        }
+        Cmd::Rollback { name, version } => {
+            let entry = find_entry(ctx, &name)?;
+            let target = rollback_target(&entry, version)?;
+            let path = format!("/v1/vault/secrets/{}/rollback", ctx::seg(ctx::s(&entry, "id")));
+            let v = ctx.client.post(&path, &json!({ "v": target }))?;
+            ctx.out(&v, |v| println!("{} is back on v{}", ctx::s(v, "name"), ctx::text(v, "current")));
+        }
+        Cmd::Edit { name, label, scope, nodes, bind, unbind } => {
+            let entry = find_entry(ctx, &name)?;
+            let scope = if scope.is_some() || nodes.is_some() { Some(scope_value(nodes.as_deref())?) } else { None };
+            let bindings = if bind.is_empty() && unbind.is_empty() {
+                None
+            } else {
+                Some(merged_bindings(&current_bindings(&entry), &parse_bindings(&bind)?, &parse_bindings(&unbind)?)?)
+            };
+            let body = edit_body(label.as_deref(), scope, bindings.as_deref())?;
+            let path = format!("/v1/vault/secrets/{}", ctx::seg(ctx::s(&entry, "id")));
+            let v = ctx.client.patch(&path, &body)?;
+            ctx.out(&v, |v| {
+                let bound: Vec<&str> = array(&v["bindings"]).iter().filter_map(Value::as_str).collect();
+                let bound = if bound.is_empty() { "none".to_string() } else { bound.join(",") };
+                println!("saved {} (scope {}, bindings {bound})", ctx::s(v, "name"), scope_text(&v["scope"]));
+            });
+        }
+        Cmd::Test { name, node } => {
+            if let Some(node) = &node {
+                parse_nodes(std::slice::from_ref(node))?;
+            }
+            let entry = find_entry(ctx, &name)?;
+            let path = format!("/v1/vault/secrets/{}/test", ctx::seg(ctx::s(&entry, "id")));
+            let v = ctx.client.post(&path, &test_body(node.as_deref()))?;
+            ctx.out(&v, |v| ctx::fields(&[("ok", ctx::text(v, "ok")), ("detail", ctx::text(v, "detail"))]));
+            if v["ok"] != json!(true) {
+                return Err(format!("the check of {} failed", ctx::s(&entry, "name")));
+            }
+        }
+        Cmd::Consumers => {
+            let v = ctx.client.get("/v1/vault/consumers")?;
+            ctx.out(&v, |v| {
+                let rows: Vec<Vec<String>> = array(v).iter().map(consumer_row).collect();
+                ctx::table(&["binding", "label", "wants", "per node"], &rows);
+            });
+        }
+        Cmd::Slot { cmd: SlotCmd::Add { passphrase, keyfile } } => {
+            let body = match (passphrase, keyfile) {
+                (true, false) => slot_body(Some(&secret("passphrase for the new slot: ")?)),
+                (false, true) => slot_body(None),
+                _ => return Err("give one kind of slot: --passphrase or --keyfile".into()),
+            };
+            let v = ctx.client.post("/v1/vault/slots", &body)?;
+            ctx.out(&v, print_status);
+        }
+        Cmd::Slot { cmd: SlotCmd::Remove { id, yes } } => {
+            if !confirm(yes, &format!("Remove slot {id}? Removing the key file slot destroys the key file."))? {
+                println!("cancelled");
+                return Ok(());
+            }
+            let v = ctx.client.delete(&format!("/v1/vault/slots/{}", ctx::seg(&id)))?;
+            ctx.out(&v, print_status);
         }
         Cmd::Rm { id, yes } => {
             if !confirm(yes, &format!("Delete entry {id}? Its value is gone, and a .env import will not bring it back."))? {
@@ -279,19 +426,19 @@ fn print_import(v: &Value) {
 fn print_status(v: &Value) {
     let slots: Vec<String> = array(&v["slots"]).iter().map(|s| format!("{} ({})", ctx::s(s, "id"), ctx::s(s, "kind"))).collect();
     let nodes: Vec<String> = array(&v["nodes"]).iter().map(|n| format!("{} ({})", ctx::s(n, "name"), ctx::s(n, "id"))).collect();
-    let audit = match v.get("audit_ok") {
-        Some(Value::Bool(true)) => "ok",
-        Some(Value::Bool(false)) => "BROKEN",
-        _ => "unknown",
-    };
     let mut pairs = vec![
         ("state", ctx::s(v, "state").to_string()),
         ("entries", ctx::text(v, "entries")),
         ("slots", if slots.is_empty() { "none".to_string() } else { slots.join(", ") }),
         ("nodes", nodes.join(", ")),
-        ("audit", audit.to_string()),
-        ("rekeyed", ctx::when(&v["rekeyed_ms"])),
+        ("audit", audit_label(v).to_string()),
     ];
+    if !v["env_file_keys"].is_null() {
+        pairs.push(("env file keys", ctx::text(v, "env_file_keys")));
+    }
+    if !v["rekeyed_ms"].is_null() {
+        pairs.push(("rekeyed", ctx::when(&v["rekeyed_ms"])));
+    }
     if !v["tampered"].is_null() {
         pairs.push(("tampered", ctx::text(v, "tampered")));
     }
@@ -341,6 +488,137 @@ fn entry_row(e: &Value) -> Vec<String> {
         ctx::text(e, "use_count"),
         last_used,
     ]
+}
+
+/// A POST whose refusal keeps its HTTP status: (status, the hub's `error` text). The shared client
+/// drops the status, and `set` needs it to tell a name that is taken (409) from other refusals.
+fn post_status(ctx: &Ctx, path: &str, body: &Value) -> Result<Value, (u16, String)> {
+    let (status, value) = apz_http::client::request_json(&ctx.client.target, "POST", path, Some(body), ctx.client.timeout)
+        .map_err(|e| (0, format!("{} {path}: {e}", ctx.client.base())))?;
+    if (200..300).contains(&status) {
+        return Ok(value);
+    }
+    let message = value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("POST {path}: HTTP {status}"));
+    Err((status, message))
+}
+
+/// The entry a command names: looked up in the vault's list (see [`pick_entry`]).
+fn find_entry(ctx: &Ctx, arg: &str) -> Result<Value, String> {
+    let list = ctx.client.get("/v1/vault/secrets")?;
+    pick_entry(array(&list), arg).cloned()
+}
+
+/// The entry `arg` names: by id when it starts with `sec_`, else by name. A name that two or more
+/// entries hold (one per node set) is refused with their ids, so the caller can pick one.
+fn pick_entry<'a>(entries: &'a [Value], arg: &str) -> Result<&'a Value, String> {
+    let by_id = arg.starts_with("sec_");
+    let found: Vec<&Value> = entries.iter().filter(|e| ctx::s(e, if by_id { "id" } else { "name" }) == arg).collect();
+    match found.as_slice() {
+        [one] => Ok(*one),
+        [] if by_id => Err(format!("no secret has the id {arg}")),
+        [] => Err(format!("no secret is called {arg}")),
+        many => {
+            let ids: Vec<&str> = many.iter().map(|e| ctx::s(e, "id")).collect();
+            Err(format!("{arg} is held by {} entries ({}): name one by its id", many.len(), ids.join(", ")))
+        }
+    }
+}
+
+/// The version a rollback returns to: the one asked for (it must be kept, and not be the current
+/// one), else the newest version before the current one.
+fn rollback_target(entry: &Value, asked: Option<u64>) -> Result<u64, String> {
+    let name = ctx::s(entry, "name");
+    let current = entry["current"].as_u64().unwrap_or(0);
+    let kept: Vec<u64> = array(&entry["versions"]).iter().filter_map(|v| v["v"].as_u64()).collect();
+    match asked {
+        Some(v) if !kept.contains(&v) => {
+            let listed: Vec<String> = kept.iter().map(|k| format!("v{k}")).collect();
+            let listed = if listed.is_empty() { "none".to_string() } else { listed.join(", ") };
+            Err(format!("{name} keeps no v{v} (it keeps {listed})"))
+        }
+        Some(v) if v == current => Err(format!("v{v} is already the current version of {name}")),
+        Some(v) => Ok(v),
+        None => kept
+            .iter()
+            .copied()
+            .filter(|v| *v < current)
+            .max()
+            .ok_or_else(|| format!("{name} has no earlier version to return to")),
+    }
+}
+
+/// The bindings an entry has now, as the hub lists them.
+fn current_bindings(entry: &Value) -> Vec<String> {
+    array(&entry["bindings"]).iter().filter_map(Value::as_str).map(str::to_string).collect()
+}
+
+/// The bindings after an edit: the current ones without `unbind`, plus `bind`; sorted, no repeats.
+/// Removing a binding the entry does not have is refused, so a typo does not pass silently.
+fn merged_bindings(current: &[String], bind: &[String], unbind: &[String]) -> Result<Vec<String>, String> {
+    if let Some(missing) = unbind.iter().find(|b| !current.contains(b)) {
+        return Err(format!("{missing} is not one of its bindings"));
+    }
+    let mut out: Vec<String> = current.iter().filter(|b| !unbind.contains(b)).cloned().collect();
+    out.extend(bind.iter().cloned());
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// The PATCH body of `edit`: only the fields given. Refused when none is.
+fn edit_body(label: Option<&str>, scope: Option<Value>, bindings: Option<&[String]>) -> Result<Value, String> {
+    let mut body = serde_json::Map::new();
+    if let Some(label) = label {
+        body.insert("label".into(), json!(label));
+    }
+    if let Some(scope) = scope {
+        body.insert("scope".into(), scope);
+    }
+    if let Some(bindings) = bindings {
+        body.insert("bindings".into(), json!(bindings));
+    }
+    if body.is_empty() {
+        return Err("nothing to change: give --label, --scope, --nodes, --bind or --unbind".into());
+    }
+    Ok(Value::Object(body))
+}
+
+/// The body of `test`: the node to check on, or none (this machine).
+fn test_body(node: Option<&str>) -> Value {
+    json!({ "node": node })
+}
+
+/// The body of `slot add`: a passphrase slot carries the passphrase; a key file slot carries nothing,
+/// since the hub makes the key file itself.
+fn slot_body(passphrase: Option<&str>) -> Value {
+    match passphrase {
+        Some(passphrase) => json!({ "kind": "passphrase", "passphrase": passphrase }),
+        None => json!({ "kind": "keyfile" }),
+    }
+}
+
+/// One row of `consumers`: the binding, its label, the name it wants, and each node's entry.
+fn consumer_row(c: &Value) -> Vec<String> {
+    let per_node: Vec<String> = c["per_node"]
+        .as_object()
+        .map(|map| map.iter().map(|(node, state)| format!("{node}: {}", state.as_str().unwrap_or("?"))).collect())
+        .unwrap_or_default();
+    vec![
+        ctx::s(c, "binding").to_string(),
+        ctx::s(c, "label").to_string(),
+        ctx::s(c, "wants").to_string(),
+        if per_node.is_empty() { "—".to_string() } else { per_node.join(", ") },
+    ]
+}
+
+/// The audit's state as the status shows it: `audit_ok` true, false, or null when it was not checked.
+fn audit_label(v: &Value) -> &'static str {
+    match v.get("audit_ok") {
+        Some(Value::Bool(true)) => "ok",
+        Some(Value::Bool(false)) => "BROKEN",
+        Some(Value::Null) => "not checked",
+        _ => "unknown",
+    }
 }
 
 /// A scope as the people read it: `plaza`, or `nodes n0,n3`.
@@ -690,5 +968,101 @@ mod tests {
         assert_eq!(distinct.len(), 3, "A, B and C");
         let imported: BTreeSet<String> = distinct.iter().cloned().collect();
         assert!(shred_verdict(&distinct, &imported, 0).is_ok());
+    }
+
+    #[test]
+    fn the_new_commands_parse() {
+        assert!(matches!(parse(&["rotate", "ANTHROPIC_API_KEY"]), Ok(Cmd::Rotate { .. })));
+        assert!(matches!(parse(&["rollback", "KEY"]), Ok(Cmd::Rollback { version: None, .. })));
+        assert!(matches!(parse(&["rollback", "KEY", "--version", "2"]), Ok(Cmd::Rollback { version: Some(2), .. })));
+        assert!(matches!(parse(&["edit", "KEY"]), Ok(Cmd::Edit { .. })));
+        assert!(matches!(parse(&["test", "KEY"]), Ok(Cmd::Test { node: None, .. })));
+        assert!(matches!(parse(&["test", "KEY", "--node", "n3"]), Ok(Cmd::Test { node: Some(_), .. })));
+        assert!(matches!(parse(&["consumers"]), Ok(Cmd::Consumers)));
+        assert!(matches!(parse(&["slot", "add", "--passphrase"]), Ok(Cmd::Slot { cmd: SlotCmd::Add { passphrase: true, keyfile: false } })));
+        assert!(matches!(parse(&["slot", "add", "--keyfile"]), Ok(Cmd::Slot { cmd: SlotCmd::Add { passphrase: false, keyfile: true } })));
+        assert!(matches!(parse(&["slot", "remove", "slt_abc", "--yes"]), Ok(Cmd::Slot { cmd: SlotCmd::Remove { yes: true, .. } })));
+    }
+
+    #[test]
+    fn the_new_commands_take_no_secret_value_as_an_argument() {
+        assert!(parse(&["rotate", "ANTHROPIC_API_KEY", "sk-ant-secret"]).is_err());
+        assert!(parse(&["rotate", "ANTHROPIC_API_KEY", "--value", "x"]).is_err());
+        assert!(parse(&["edit", "KEY", "--value", "x"]).is_err());
+        assert!(parse(&["slot", "add", "--passphrase", "hunter2"]).is_err());
+        assert!(parse(&["slot", "add", "--keyfile", "/tmp/key"]).is_err(), "the hub makes the key file: no path");
+        assert!(parse(&["slot", "add", "--passphrase", "--keyfile"]).is_err(), "one kind of slot");
+        assert!(parse(&["edit", "KEY", "--scope", "plaza", "--nodes", "n0"]).is_err());
+    }
+
+    #[test]
+    fn an_entry_is_picked_by_name_or_by_id() {
+        let entries = vec![
+            json!({ "id": "sec_a", "name": "KEY", "scope": { "kind": "nodes", "nodes": ["n0"] } }),
+            json!({ "id": "sec_b", "name": "KEY", "scope": { "kind": "nodes", "nodes": ["n3"] } }),
+            json!({ "id": "sec_c", "name": "OTHER" }),
+        ];
+        assert_eq!(pick_entry(&entries, "OTHER").unwrap()["id"], "sec_c");
+        assert_eq!(pick_entry(&entries, "sec_b").unwrap()["id"], "sec_b");
+        assert!(pick_entry(&entries, "KEY").unwrap_err().contains("sec_a, sec_b"), "a shared name lists the ids");
+        assert!(pick_entry(&entries, "MISSING").is_err());
+        assert!(pick_entry(&entries, "sec_zzz").is_err());
+    }
+
+    #[test]
+    fn a_rollback_goes_to_the_asked_version_or_the_one_before_the_current() {
+        let entry = json!({ "name": "KEY", "current": 3, "versions": [{ "v": 1 }, { "v": 2 }, { "v": 3 }] });
+        assert_eq!(rollback_target(&entry, None).unwrap(), 2);
+        assert_eq!(rollback_target(&entry, Some(1)).unwrap(), 1);
+        assert!(rollback_target(&entry, Some(3)).is_err(), "already current");
+        assert!(rollback_target(&entry, Some(9)).is_err(), "not kept");
+        let first = json!({ "name": "KEY", "current": 1, "versions": [{ "v": 1 }] });
+        assert!(rollback_target(&first, None).is_err(), "nothing before the first");
+    }
+
+    #[test]
+    fn an_edit_adds_and_removes_bindings_and_refuses_an_unknown_removal() {
+        let current = strings(&["provider:anthropic", "hf"]);
+        assert_eq!(
+            merged_bindings(&current, &strings(&["connector:slack"]), &strings(&["hf"])).unwrap(),
+            strings(&["connector:slack", "provider:anthropic"])
+        );
+        assert_eq!(merged_bindings(&current, &strings(&["hf"]), &[]).unwrap(), strings(&["hf", "provider:anthropic"]));
+        assert!(merged_bindings(&current, &[], &strings(&["mcp:github"])).is_err());
+    }
+
+    #[test]
+    fn an_edit_body_holds_only_the_fields_given() {
+        assert_eq!(edit_body(Some("ci"), None, None).unwrap(), json!({ "label": "ci" }));
+        assert_eq!(edit_body(None, Some(json!({ "kind": "plaza" })), None).unwrap(), json!({ "scope": { "kind": "plaza" } }));
+        assert_eq!(edit_body(Some(""), None, Some(&strings(&["hf"]))).unwrap(), json!({ "label": "", "bindings": ["hf"] }));
+        assert!(edit_body(None, None, None).is_err());
+    }
+
+    #[test]
+    fn the_test_and_slot_bodies_carry_only_what_the_hub_takes() {
+        assert_eq!(test_body(Some("n3")), json!({ "node": "n3" }));
+        assert_eq!(test_body(None), json!({ "node": null }));
+        assert_eq!(slot_body(Some("a passphrase")), json!({ "kind": "passphrase", "passphrase": "a passphrase" }));
+        assert_eq!(slot_body(None), json!({ "kind": "keyfile" }));
+    }
+
+    #[test]
+    fn a_consumer_row_names_each_node_entry() {
+        let row = consumer_row(&json!({
+            "binding": "provider:anthropic",
+            "label": "Anthropic",
+            "wants": "ANTHROPIC_API_KEY",
+            "per_node": { "n0": "sec_a", "n3": "missing" },
+        }));
+        assert_eq!(row, strings(&["provider:anthropic", "Anthropic", "ANTHROPIC_API_KEY", "n0: sec_a, n3: missing"]));
+    }
+
+    #[test]
+    fn a_null_audit_is_not_checked() {
+        assert_eq!(audit_label(&json!({ "audit_ok": null })), "not checked");
+        assert_eq!(audit_label(&json!({ "audit_ok": true })), "ok");
+        assert_eq!(audit_label(&json!({ "audit_ok": false })), "BROKEN");
+        assert_eq!(audit_label(&json!({})), "unknown");
     }
 }
