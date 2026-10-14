@@ -541,150 +541,89 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_level() {
-        let mut default_map = create_default_store();
-
-        let mut map1 = default_map.clone();
-        map1.remove("index0/type");
-        let engine = CacheEngine::new(&map1);
+    fn test_cache_missing_type_is_reported() {
+        let mut map = create_default_store();
+        map.remove("index0/type");
+        let engine = CacheEngine::new(&map);
         let res = CacheEntry::from_index(0, engine.store.as_ref());
         // We did create the level file but we still do not have the type file.
         assert!(matches!(res.unwrap_err(), CacheInfoError::MissingCacheType));
-
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "shared cpu map, coherency line size, size, number of sets",
-        );
-
-        // Now putting some invalid values in the type and level files.
-        let mut map2 = default_map.clone();
-        map2.insert("index0/level".to_string(), "d".to_string());
-        let engine = CacheEngine::new(&map2);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for level: invalid digit found in string"
-        );
-
-        default_map.insert("index0/type".to_string(), "Instructionn".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for type: Instructionn"
-        );
     }
 
+    /// Each row puts one value into index0 on top of the default store and
+    /// checks the reported error. A valid value leaves the other fields listed
+    /// as missing; a bad one names the field it came from.
     #[test]
-    fn test_cache_shared_cpu_map() {
-        let mut default_map = create_default_store();
-
-        default_map.insert(
-            "index0/shared_cpu_map".to_string(),
-            "00000000,00000001".to_string(),
-        );
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "coherency line size, size, number of sets"
-        );
-
-        default_map.insert(
-            "index0/shared_cpu_map".to_string(),
-            "00000000,0000000G".to_string(),
-        );
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for shared_cpu_map: invalid digit found in string"
-        );
-
-        default_map.insert("index0/shared_cpu_map".to_string(), "00000000".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for shared_cpu_map: 00000000"
-        );
-    }
-
-    #[test]
-    fn test_cache_coherency() {
-        let mut default_map = create_default_store();
-
-        default_map.insert("index0/coherency_line_size".to_string(), "64".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            "shared cpu map, size, number of sets",
-            format!("{}", res.unwrap_err())
-        );
-
-        default_map.insert(
-            "index0/coherency_line_size".to_string(),
-            "Instruction".to_string(),
-        );
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for coherency_line_size: invalid digit found in \
-             string"
-        );
-    }
-
-    #[test]
-    fn test_cache_size() {
-        let mut default_map = create_default_store();
-
-        default_map.insert("index0/size".to_string(), "64K".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "shared cpu map, coherency line size, number of sets",
-        );
-
-        default_map.insert("index0/size".to_string(), "64".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for size: 64"
-        );
-
-        default_map.insert("index0/size".to_string(), "64Z".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for size: 64Z"
-        );
-    }
-
-    #[test]
-    fn test_cache_no_sets() {
-        let mut default_map = create_default_store();
-
-        default_map.insert("index0/number_of_sets".to_string(), "64".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            "shared cpu map, coherency line size, size",
-            format!("{}", res.unwrap_err())
-        );
-
-        default_map.insert("index0/number_of_sets".to_string(), "64K".to_string());
-        let engine = CacheEngine::new(&default_map);
-        let res = CacheEntry::from_index(0, engine.store.as_ref());
-        assert_eq!(
-            format!("{}", res.unwrap_err()),
-            "Invalid cache configuration found for number_of_sets: invalid digit found in string"
-        );
+    fn test_cache_field_errors() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "index0/level",
+                "d",
+                "Invalid cache configuration found for level: invalid digit found in string",
+            ),
+            (
+                "index0/type",
+                "Instructionn",
+                "Invalid cache configuration found for type: Instructionn",
+            ),
+            (
+                "index0/shared_cpu_map",
+                "00000000,00000001",
+                "coherency line size, size, number of sets",
+            ),
+            (
+                "index0/shared_cpu_map",
+                "00000000,0000000G",
+                "Invalid cache configuration found for shared_cpu_map: invalid digit found in string",
+            ),
+            (
+                "index0/shared_cpu_map",
+                "00000000",
+                "Invalid cache configuration found for shared_cpu_map: 00000000",
+            ),
+            (
+                "index0/coherency_line_size",
+                "64",
+                "shared cpu map, size, number of sets",
+            ),
+            (
+                "index0/coherency_line_size",
+                "Instruction",
+                "Invalid cache configuration found for coherency_line_size: invalid digit found in string",
+            ),
+            (
+                "index0/size",
+                "64K",
+                "shared cpu map, coherency line size, number of sets",
+            ),
+            (
+                "index0/size",
+                "64",
+                "Invalid cache configuration found for size: 64",
+            ),
+            (
+                "index0/size",
+                "64Z",
+                "Invalid cache configuration found for size: 64Z",
+            ),
+            (
+                "index0/number_of_sets",
+                "64",
+                "shared cpu map, coherency line size, size",
+            ),
+            (
+                "index0/number_of_sets",
+                "64K",
+                "Invalid cache configuration found for number_of_sets: invalid digit found in string",
+            ),
+        ];
+        for (key, value, want) in cases {
+            let mut map = create_default_store();
+            map.insert(key.to_string(), value.to_string());
+            let engine = CacheEngine::new(&map);
+            let res = CacheEntry::from_index(0, engine.store.as_ref());
+            assert_eq!(format!("{}", res.unwrap_err()), *want, "{key}={value}");
+        }
     }
 
     #[test]
@@ -693,7 +632,6 @@ mod tests {
         let mut non_l1_caches: Vec<CacheEntry> = Vec::new();
         // We use sysfs for extracting the cache information.
         read_cache_config(&mut l1_caches, &mut non_l1_caches).unwrap();
-        assert_eq!(l1_caches.len(), 2);
         assert_eq!(l1_caches.len(), 2);
     }
 
