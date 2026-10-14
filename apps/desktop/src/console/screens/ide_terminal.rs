@@ -572,6 +572,18 @@ fn serve(socket: &mut Socket, st: &mut Session, out: &mut mpsc::Sender<Msg>) -> 
         if out.is_closed() {
             return Outcome::Closed;
         }
+        // The hub learns the view's size once the shell is open, and again whenever it changes. It goes
+        // before the queued commands, so a re-attached shell has its size before the next keystrokes.
+        let shell_open = st.term.is_some() && !st.attaching;
+        if let Some((cols, rows)) = st.size
+            && shell_open
+            && st.sent_size != Some((cols, rows))
+        {
+            if let Err(err) = send(socket, st, resize_frame(cols, rows)) {
+                return Outcome::Dropped(err.to_string());
+            }
+            st.sent_size = Some((cols, rows));
+        }
         if let Err(outcome) = drain(st, Some(&mut *socket), out) {
             return outcome;
         }
@@ -608,17 +620,6 @@ fn serve(socket: &mut Socket, st: &mut Session, out: &mut mpsc::Sender<Msg>) -> 
             }
             st.sent_size = Some((cols, rows));
             st.opening = true;
-        }
-        // The hub learns the view's size once the shell is open, and again whenever it changes.
-        let shell_open = st.term.is_some() && !st.attaching;
-        if let Some((cols, rows)) = st.size
-            && shell_open
-            && st.sent_size != Some((cols, rows))
-        {
-            if let Err(err) = send(socket, st, resize_frame(cols, rows)) {
-                return Outcome::Dropped(err.to_string());
-            }
-            st.sent_size = Some((cols, rows));
         }
         if st.last_sent.elapsed() >= PING_EVERY
             && let Err(err) = send(socket, st, ping_frame())
