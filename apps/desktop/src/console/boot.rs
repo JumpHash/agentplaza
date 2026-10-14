@@ -437,8 +437,8 @@ pub fn view(state: &State) -> Element<'_, Msg> {
 fn chooser(state: &State) -> Element<'_, Msg> {
     let busy = state.busy;
     let mut page: Vec<Element<'_, Msg>> = vec![
-        ui::mono("AgentPlaza", 13.0, crate::theme::palette().ink).into(),
-        ui::mono("How do you want to run it?", 30.0, crate::theme::palette().ink).into(),
+        ui::sans("AgentPlaza", 13.0, crate::theme::palette().ink).into(),
+        ui::sans("How do you want to run it?", 30.0, crate::theme::palette().ink).into(),
     ];
     if let Some(choice) = state.remembered {
         let label = format!("Continue: {}", choice.title());
@@ -474,7 +474,7 @@ fn chooser(state: &State) -> Element<'_, Msg> {
 /// One square option card: icon, title, one serif sentence. Clicking it picks the option.
 fn option_card(choice: Choice, busy: bool) -> Element<'static, Msg> {
     let icon: Element<'static, Msg> = ui::icon(choice.icon(), 22.0, crate::theme::palette().ink);
-    let body = column![icon, ui::mono(choice.title(), 14.0, crate::theme::palette().ink), ui::prose(choice.sentence())].spacing(12);
+    let body = column![icon, ui::sans(choice.title(), 14.0, crate::theme::palette().ink), ui::prose(choice.sentence())].spacing(12);
     let card = button(body)
         .width(Length::Fill)
         .height(Length::Fixed(180.0))
@@ -499,7 +499,7 @@ fn option_card(choice: Choice, busy: bool) -> Element<'static, Msg> {
 fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     let busy = state.busy;
     let head = row![
-        column![ui::mono(choice.title(), 26.0, crate::theme::palette().ink), ui::faint(choice.sentence())].spacing(4),
+        column![ui::sans(choice.title(), 26.0, crate::theme::palette().ink), ui::faint(choice.sentence())].spacing(4),
         Space::new().width(Length::Fill),
         ui::btn("Back", None, Kind::Ghost, (!busy && state.fixing.is_none()).then_some(Msg::Back)),
     ]
@@ -575,7 +575,7 @@ fn requirements(state: &State) -> Element<'_, Msg> {
             _ => Space::new().into(),
         };
         let line = row![
-            ui::mono(check.label, 13.0, crate::theme::palette().ink),
+            ui::sans(check.label, 13.0, crate::theme::palette().ink),
             ui::faint(check.detail.clone()),
             Space::new().width(Length::Fill),
             action,

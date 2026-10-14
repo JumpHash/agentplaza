@@ -24,9 +24,9 @@ const FEED_MAX: usize = 40;
 const FLEET_COLS: usize = 4;
 /// The web's `info` tone (dark ground): a working agent.
 const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
-const SERIF_BOLD: Font = Font { weight: Weight::Bold, ..theme::SERIF };
-const SERIF_ITALIC: Font = Font { style: FontStyle::Italic, ..theme::SERIF };
-const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::MONO };
+const SANS_BOLD: Font = Font { weight: Weight::Bold, ..theme::SANS };
+const SANS_ITALIC: Font = Font { style: FontStyle::Italic, ..theme::SANS };
+const SANS_MEDIUM: Font = Font { weight: Weight::Medium, ..theme::SANS };
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -264,9 +264,9 @@ fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
 /// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line.
 fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
     let body = column![
-        text(value).font(ui::MONO_BOLD).size(34.0).color(crate::theme::palette().ink),
-        text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(crate::theme::palette().ink_3),
-        text(sub).font(SERIF_ITALIC).size(13.0).color(crate::theme::palette().ink_2),
+        text(value).font(ui::SANS_BOLD).size(34.0).color(crate::theme::palette().ink),
+        text(label.to_string()).font(SANS_MEDIUM).size(10.5).color(crate::theme::palette().ink_3),
+        text(sub).font(SANS_ITALIC).size(13.0).color(crate::theme::palette().ink_2),
     ]
     .spacing(6);
     container(body)
@@ -292,7 +292,7 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
     };
     let head = row![
         ui::icon::<Msg>("orchestrator", 15.0, crate::theme::palette().ink),
-        text(name(orch).to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink),
+        text(name(orch).to_string()).font(ui::SANS_SEMIBOLD).size(11.5).color(crate::theme::palette().ink),
         ui::faint(orch.role_label.clone()),
         marker_tag(status, tone, filled),
     ]
@@ -308,7 +308,7 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
             }
             text_editor::Binding::from_key_press(press)
         })
-        .font(theme::SERIF)
+        .font(theme::SANS)
         .size(15.0)
         .padding(Padding { top: 6.0, right: 0.0, bottom: 7.0, left: 0.0 })
         .height(Length::Fixed(84.0))
@@ -321,7 +321,7 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
         });
 
     let mut body = column![
-        text(format!("Plans the work and delegates it to the fleet · {}", orch.model)).font(theme::SERIF).size(15.0).color(crate::theme::palette().ink_2),
+        text(format!("Plans the work and delegates it to the fleet · {}", orch.model)).font(theme::SANS).size(15.0).color(crate::theme::palette().ink_2),
         column![goal, rule(crate::theme::palette().ink)],
         row![
             ui::faint("Ctrl+Enter to send"),
@@ -364,7 +364,7 @@ fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
                     row![
                         ui::faint(ago(now, item.at_ms)).width(Length::Fixed(72.0)),
                         link(&who, 13.0, Msg::Go(Id::Agent(item.cid))),
-                        text(item.line.clone()).font(theme::SERIF).size(13.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None).width(Length::Fill),
+                        text(item.line.clone()).font(theme::SANS).size(13.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None).width(Length::Fill),
                     ]
                     .spacing(8)
                     .align_y(Vertical::Center),
@@ -411,7 +411,7 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         None => a.role_label.clone(),
     };
     let body = column![
-        row![marker(tone, filled), text(name(a)).font(SERIF_BOLD).size(13.0).color(crate::theme::palette().ink)]
+        row![marker(tone, filled), text(name(a)).font(SANS_BOLD).size(13.0).color(crate::theme::palette().ink)]
             .spacing(8)
             .align_y(Vertical::Center),
         ui::faint(sub),
@@ -451,7 +451,7 @@ fn card<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>, flush: bool) -> Elem
 
 /// A card's title: mono, semibold, uppercase.
 fn card_title<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink).into()
+    text(title.to_string()).font(ui::SANS_SEMIBOLD).size(11.5).color(crate::theme::palette().ink).into()
 }
 
 /// An empty state: an icon, a bold mono line, a faint serif sentence; centred.
@@ -459,8 +459,8 @@ fn empty<'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, Msg> {
     container(
         column![
             ui::icon::<Msg>(icon_name, 16.0, crate::theme::palette().ink_3),
-            text(title.to_string()).font(ui::MONO_BOLD).size(13.0).color(crate::theme::palette().ink),
-            text(sentence.to_string()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_3),
+            text(title.to_string()).font(ui::SANS_BOLD).size(13.0).color(crate::theme::palette().ink),
+            text(sentence.to_string()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink_3),
         ]
         .spacing(10)
         .align_x(iced::alignment::Horizontal::Center),
@@ -473,7 +473,7 @@ fn empty<'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, Msg> {
 
 /// A status tag: a square marker and an uppercase mono label in its colour.
 fn marker_tag<'a>(label: &str, color: Color, filled: bool) -> Element<'a, Msg> {
-    row![marker(color, filled), text(label.to_uppercase()).font(MONO_MEDIUM).size(10.5).color(color)]
+    row![marker(color, filled), text(label.to_string()).font(SANS_MEDIUM).size(10.5).color(color)]
         .spacing(7)
         .align_y(Vertical::Center)
         .into()
@@ -492,7 +492,7 @@ fn marker<'a>(color: Color, filled: bool) -> Element<'a, Msg> {
 
 /// A text link: serif, underlined, as the web's links are.
 fn link<'a>(label: &str, size: f32, on_press: Msg) -> Element<'a, Msg> {
-    let spans: Vec<Span<'_, ()>> = vec![span(label.to_string()).underline(true).font(theme::SERIF).size(size).color(crate::theme::palette().ink)];
+    let spans: Vec<Span<'_, ()>> = vec![span(label.to_string()).underline(true).font(theme::SANS).size(size).color(crate::theme::palette().ink)];
     button(rich_text(spans))
         .on_press(on_press)
         .padding(0)

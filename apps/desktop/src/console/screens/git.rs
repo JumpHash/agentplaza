@@ -18,9 +18,9 @@ use crate::console::Ctx;
 use crate::theme::{self};
 
 /// Serif semibold: a pull request's title.
-const SERIF_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
 /// Serif bold: a review's author.
-const SERIF_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SERIF };
+const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
 
 // ---- Data (the shapes of `apps/web/src/api.ts`) ----------------------------------------------
 
@@ -760,11 +760,11 @@ fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn repo_row<'a>(r: &Repo) -> Element<'a, Msg> {
     let description = if r.description.is_empty() { "No description".to_string() } else { r.description.clone() };
-    let name = text(r.name.clone()).font(ui::MONO_SEMIBOLD).size(14.0).color(INK);
+    let name = text(r.name.clone()).font(ui::SANS_SEMIBOLD).size(14.0).color(INK);
     let info = column![name, ui::prose(description).size(13.0).color(INK_2)].spacing(2);
     let pulls = if r.open_prs == 1 { "pull request" } else { "pull requests" };
     let meta = column![
-        ui::mono(r.default_branch.clone(), 11.0, INK_3),
+        ui::sans(r.default_branch.clone(), 11.0, INK_3),
         ui::faint(format!("{} open {pulls}", r.open_prs)),
         ui::faint(format!("updated {}", ago(&r.updated_at))),
     ]
@@ -835,7 +835,7 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
         if let Some(source) = &readme.text {
             // The web shows the README as plain text in a file box, not rendered.
             let body = container(ui::prose(source.clone()).size(14.0)).padding([12, 14]);
-            items.push(filebox(ui::mono("README.md", 13.0, INK).into(), body.into()));
+            items.push(filebox(ui::sans("README.md", 13.0, INK).into(), body.into()));
         }
     }
     column(items).spacing(14).into()
@@ -852,7 +852,7 @@ fn crumbs<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     for (i, (label_text, to)) in crumb_trail(&state.repo, &state.path).into_iter().enumerate() {
         if i > 0 {
-            items.push(ui::mono("/", 13.0, INK_3).into());
+            items.push(ui::sans("/", 13.0, INK_3).into());
         }
         items.push(link(&label_text, Msg::Dir(to)));
     }
@@ -876,7 +876,7 @@ fn dir_table<'a>(tree: &[Entry]) -> Element<'a, Msg> {
         rows.push(
             row![
                 cell(Length::Fill, link(&label, on_press)),
-                cell(Length::Fixed(120.0), container(ui::mono(size, 13.0, INK_2)).width(Length::Fill).align_x(Alignment::End)),
+                cell(Length::Fixed(120.0), container(ui::sans(size, 13.0, INK_2)).width(Length::Fill).align_x(Alignment::End)),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
@@ -903,7 +903,7 @@ fn file_block<'a>(path: &str, file: &'a FileView) -> Element<'a, Msg> {
                     .enumerate()
                     .map(|(i, line)| {
                         row![
-                            container(ui::mono((i + 1).to_string(), 13.0, INK_3)).width(Length::Fixed(44.0)).padding([0, 8]).align_x(Alignment::End),
+                            container(ui::sans((i + 1).to_string(), 13.0, INK_3)).width(Length::Fixed(44.0)).padding([0, 8]).align_x(Alignment::End),
                             rule_col(),
                             ui::mono(line.to_string(), 13.0, INK),
                         ]
@@ -954,7 +954,7 @@ fn rule_col<'a>() -> Element<'a, Msg> {
 
 /// A bare link in mono (the web's `.git-link`): crumbs, folder and file names, the trail.
 fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
-    button(ui::mono(label_text.to_string(), 13.0, INK))
+    button(ui::sans(label_text.to_string(), 13.0, INK))
         .padding(0)
         .style(|_: &Theme, _| button::Style { background: None, text_color: INK, ..Default::default() })
         .on_press(msg)
@@ -963,7 +963,7 @@ fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
 
 /// A repository's project chip: a ruled box in serif 12 (the web's `.git-chip`).
 fn chip<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
-    button(text(label_text.to_string()).font(theme::SERIF).size(12.0).color(INK_2))
+    button(text(label_text.to_string()).font(theme::SANS).size(12.0).color(INK_2))
         .padding([1, 8])
         .style(|_: &Theme, status: button::Status| {
             let edge = if matches!(status, button::Status::Hovered) { INK_2 } else { crate::theme::palette().rule };
@@ -992,12 +992,12 @@ fn commits_view<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn commit_row<'a>(k: &Commit) -> Element<'a, Msg> {
     row![
-        cell(Length::Fixed(80.0), ui::mono(k.short.clone(), 13.0, INK_2)),
+        cell(Length::Fixed(80.0), ui::sans(k.short.clone(), 13.0, INK_2)),
         cell(Length::Fill, ui::prose(first_line(&k.message).to_string()).size(14.0)),
         cell(Length::Fixed(140.0), ui::faint(k.author.clone())),
         cell(Length::Fixed(90.0), ui::faint(ago(&k.at))),
         cell(Length::Fixed(60.0), ui::mono(format!("+{}", k.additions), 13.0, crate::theme::palette().ok)),
-        cell(Length::Fixed(60.0), ui::mono(format!("−{}", k.deletions), 13.0, crate::theme::palette().crit)),
+        cell(Length::Fixed(60.0), ui::sans(format!("−{}", k.deletions), 13.0, crate::theme::palette().crit)),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
@@ -1023,7 +1023,7 @@ fn branches_view<'a>(state: &'a State) -> Element<'a, Msg> {
     for b in &state.data.branches {
         rows.push(
             row![
-                cell(Length::Fixed(200.0), ui::mono(b.name.clone(), 13.0, INK)),
+                cell(Length::Fixed(200.0), ui::sans(b.name.clone(), 13.0, INK)),
                 cell(Length::Fill, ui::prose(first_line(&b.commit.message).to_string()).size(14.0)),
                 cell(Length::Fixed(140.0), ui::faint(b.commit.author.clone())),
                 cell(Length::Fixed(90.0), ui::faint(ago(&b.commit.at))),
@@ -1062,10 +1062,10 @@ fn pulls_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn pull_row<'a>(p: &Pull) -> Element<'a, Msg> {
     button(
         row![
-            cell(Length::Fixed(60.0), ui::mono(format!("#{}", p.number), 13.0, INK_2)),
-            cell(Length::Fill, text(p.title.clone()).font(SERIF_SEMIBOLD).size(15.0).color(INK)),
+            cell(Length::Fixed(60.0), ui::sans(format!("#{}", p.number), 13.0, INK_2)),
+            cell(Length::Fill, text(p.title.clone()).font(SANS_SEMIBOLD).size(15.0).color(INK)),
             cell(Length::Fixed(80.0), state_badge(p)),
-            cell(Length::Fixed(220.0), ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2)),
+            cell(Length::Fixed(220.0), ui::sans(format!("{} → {}", p.head, p.base), 12.0, INK_2)),
             cell(Length::Fixed(120.0), ui::faint(p.author.clone())),
             review_badge(&p.review),
             ui::faint(format!("{} comments", p.comments)),
@@ -1092,19 +1092,19 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     // The trail sits above the title, as on the web (repo / Pull requests / #n).
     let trail = row![
         link(&state.repo, Msg::Tab(Tab::Code)),
-        ui::mono("/", 13.0, INK_3),
+        ui::sans("/", 13.0, INK_3),
         link("Pull requests", Msg::Tab(Tab::Pulls)),
-        ui::mono("/", 13.0, INK_3),
-        ui::mono(format!("#{}", p.number), 13.0, INK_2),
+        ui::sans("/", 13.0, INK_3),
+        ui::sans(format!("#{}", p.number), 13.0, INK_2),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
     let mut meta = row![
-        ui::mono(format!("#{}", p.number), 13.0, INK_2),
+        ui::sans(format!("#{}", p.number), 13.0, INK_2),
         state_badge(p),
         review_badge(&p.review),
         ui::faint(p.author.clone()),
-        ui::mono(format!("{} → {}", p.head, p.base), 12.0, INK_2),
+        ui::sans(format!("{} → {}", p.head, p.base), 12.0, INK_2),
         ui::faint(format!("updated {}", ago(&p.updated_at))),
     ]
     .spacing(12)
@@ -1189,7 +1189,7 @@ fn discussion_view<'a>(state: &'a State, d: &'a PullDetail) -> Element<'a, Msg> 
 
 /// One comment: its author and age, then its text.
 fn comment_row<'a>(c: &Comment) -> Element<'a, Msg> {
-    let head = row![text(c.author.clone()).font(SERIF_BOLD).size(14.0).color(INK), ui::faint(ago(&c.at))]
+    let head = row![text(c.author.clone()).font(SANS_BOLD).size(14.0).color(INK), ui::faint(ago(&c.at))]
         .spacing(10)
         .align_y(Alignment::Center);
     column![head, ui::prose(c.body.clone()).size(14.0)].spacing(6).into()
@@ -1199,7 +1199,7 @@ fn file_row<'a>(f: &PullFile) -> Element<'a, Msg> {
     row![
         cell(Length::Fill, ui::mono(f.path.clone(), 13.0, INK)),
         cell(Length::Fixed(60.0), ui::mono(format!("+{}", f.additions), 13.0, crate::theme::palette().ok)),
-        cell(Length::Fixed(60.0), ui::mono(format!("−{}", f.deletions), 13.0, crate::theme::palette().crit)),
+        cell(Length::Fixed(60.0), ui::sans(format!("−{}", f.deletions), 13.0, crate::theme::palette().crit)),
     ]
     .spacing(12)
     .padding([6, 0])
@@ -1216,7 +1216,7 @@ fn review_row<'a>(rv: &Review) -> Element<'a, Msg> {
         Tone::Muted
     };
     let head = row![
-        text(rv.author.clone()).font(SERIF_BOLD).size(14.0).color(INK),
+        text(rv.author.clone()).font(SANS_BOLD).size(14.0).color(INK),
         ui::badge(&s.replace('_', " "), tone),
         ui::faint(ago(&rv.at)),
     ]
@@ -1249,15 +1249,15 @@ fn diff_view<'a>(diff: &str) -> Element<'a, Msg> {
 /// A diff line's text colour, tint and font, by its marker.
 fn diff_style(line: &str) -> (Color, Option<Color>, Font) {
     if line.starts_with("@@") {
-        (INK_3, Some(Color { a: 0.06, ..crate::theme::palette().ink }), theme::MONO)
+        (INK_3, Some(Color { a: 0.06, ..crate::theme::palette().ink }), theme::SANS)
     } else if line.starts_with("+++") || line.starts_with("---") {
-        (INK_2, None, ui::MONO_SEMIBOLD)
+        (INK_2, None, ui::SANS_SEMIBOLD)
     } else if line.starts_with('+') {
-        (INK, Some(Color { a: 0.12, ..crate::theme::palette().ok }), theme::MONO)
+        (INK, Some(Color { a: 0.12, ..crate::theme::palette().ok }), theme::SANS)
     } else if line.starts_with('-') {
-        (INK, Some(Color { a: 0.12, ..crate::theme::palette().crit }), theme::MONO)
+        (INK, Some(Color { a: 0.12, ..crate::theme::palette().crit }), theme::SANS)
     } else {
-        (INK, None, theme::MONO)
+        (INK, None, theme::SANS)
     }
 }
 

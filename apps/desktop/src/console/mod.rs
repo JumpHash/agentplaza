@@ -364,12 +364,16 @@ pub fn run() -> iced::Result {
         .theme(|_: &Console| crate::theme::theme())
         .subscription(subscription)
         // The register's faces (assets/fonts, SIL OFL 1.1): embedded, so the app needs no install.
+        // Inter is the interface and reading face, and the default font; Martian Mono is for code only.
+        .default_font(crate::theme::SANS)
+        .font(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-Medium.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-SemiBold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-Bold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Inter-Italic.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/MartianMono-Regular.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/MartianMono-Medium.ttf").as_slice())
         .font(include_bytes!("../../../../assets/fonts/MartianMono-Bold.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Regular.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Semibold.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/SourceSerif4-Italic.ttf").as_slice())
         // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
         .window(iced::window::Settings {
             size: snapshot_size().unwrap_or(iced::Size::new(1360.0, 880.0)),

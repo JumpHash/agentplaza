@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use super::{agent_side, ide, sanctions, Id};
 use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::{client, events, ui, Ctx};
-use crate::theme::{SERIF};
+use crate::theme::{SANS};
 
 /// The profile and infractions refresh at most this often; the transcript on every poll.
 const EXTRAS_EVERY: Duration = Duration::from_secs(15);
@@ -201,7 +201,7 @@ fn live_views<'a>(turn: &'a LiveTurn) -> Vec<Element<'a, Msg>> {
         .iter()
         .map(|piece| match piece {
             Piece::Text(body) => text(body.as_str()).width(Length::Fill).into(),
-            Piece::Tool(name) => text(format!("→ {name}")).font(ui::MONO_SEMIBOLD).size(12.0).color(crate::theme::palette().ink).into(),
+            Piece::Tool(name) => text(format!("→ {name}")).font(ui::SANS_SEMIBOLD).size(12.0).color(crate::theme::palette().ink).into(),
         })
         .collect()
 }
@@ -531,7 +531,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
 
 /// The web's head: the back link on its own line, the actions right-aligned under it.
 fn head<'a>(actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let back = button(text("Agents").font(SERIF).size(13.0).color(crate::theme::palette().ink_3))
+    let back = button(text("Agents").font(SANS).size(13.0).color(crate::theme::palette().ink_3))
         .padding(0)
         .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: crate::theme::palette().ink_3, border: Border::default(), ..Default::default() })
         .on_press(Msg::Go(Id::Agents));
@@ -607,15 +607,15 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         _ => ("Offline", ui::Tone::Muted),
     };
 
-    let name = agent_name(a).to_uppercase();
+    let name = agent_name(a);
     let initial = name.chars().next().map(String::from).unwrap_or_else(|| "A".to_string());
-    let stamp = container(text(if orchestrator { "ORCHESTRATOR" } else { "CITIZEN" }).font(ui::MONO_BOLD).size(11.0).color(crate::theme::palette().signal))
+    let stamp = container(text(if orchestrator { "ORCHESTRATOR" } else { "CITIZEN" }).font(ui::SANS_BOLD).size(11.0).color(crate::theme::palette().signal))
         .padding([4, 8])
         .style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().signal));
     // The web's portrait: the agent's own robot (the shared offscreen render), with the letter tile under it as the fallback.
     let cid = u(a, "cid");
     let body_hue = agent_hue(cid);
-    let letter = container(ui::mono(initial, 64.0, crate::theme::palette().ink))
+    let letter = container(ui::sans(initial, 64.0, crate::theme::palette().ink))
         .width(Length::Fixed(PORTRAIT))
         .height(Length::Fixed(PORTRAIT))
         .center_x(Length::Fixed(PORTRAIT))
@@ -642,13 +642,13 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
             background: Some(stripe.into()),
             ..Default::default()
         }),
-        container(text(s(a, "role_label").to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink)).padding([6, 10]).style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().ink)),
+        container(text(s(a, "role_label").to_string()).font(ui::SANS_SEMIBOLD).size(11.5).color(crate::theme::palette().ink)).padding([6, 10]).style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().ink)),
     ]
     .height(Length::Shrink);
-    let tags = row![role_chip, ui::mono(s(a, "model"), 12.0, crate::theme::palette().ink_2), ui::faint(format!("agent #{}", u(a, "cid")))]
+    let tags = row![role_chip, ui::sans(s(a, "model"), 12.0, crate::theme::palette().ink_2), ui::faint(format!("agent #{}", u(a, "cid")))]
         .spacing(12)
         .align_y(Alignment::Center);
-    let ident = column![row![text(name).font(ui::MONO_BOLD).size(34.0).color(crate::theme::palette().ink), ui::badge(status_text, status_tone)].spacing(12).align_y(Alignment::Center), tags]
+    let ident = column![row![text(name).font(ui::SANS_BOLD).size(34.0).color(crate::theme::palette().ink), ui::badge(status_text, status_tone)].spacing(12).align_y(Alignment::Center), tags]
         .spacing(12)
         .width(Length::Fill);
 
@@ -795,8 +795,8 @@ fn sanction_row<'a>(s: &'a sanctions::Sanction) -> Element<'a, Msg> {
     let mut line = column![
         row![
             ui::badge(&s.sanction, tone),
-            ui::mono(s.law.clone(), 12.0, crate::theme::palette().ink),
-            ui::mono(s.severity.clone(), 12.0, crate::theme::palette().ink_2),
+            ui::sans(s.law.clone(), 12.0, crate::theme::palette().ink),
+            ui::sans(s.severity.clone(), 12.0, crate::theme::palette().ink_2),
             ui::faint(offences),
             Space::new().width(Length::Fill),
             ui::faint(ago(s.at_ms)),
@@ -835,7 +835,7 @@ fn left(until_ms: u64) -> String {
 
 /// A profile tile: its label, its figure (text or a meter) and its caption, on paper.
 fn tile<'a>(label: &'static str, value: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
-    container(column![text(label.to_uppercase()).font(ui::MONO_SEMIBOLD).size(11.0).color(crate::theme::palette().ink_2), value, ui::mono(sub, 11.0, crate::theme::palette().ink_3)].spacing(6))
+    container(column![text(label.to_string()).font(ui::SANS_SEMIBOLD).size(11.0).color(crate::theme::palette().ink_2), value, ui::sans(sub, 11.0, crate::theme::palette().ink_3)].spacing(6))
         .padding([12, 14])
         .width(Length::Fill)
         .style(ui::frame(Some(crate::theme::palette().paper), crate::theme::palette().rule))
@@ -843,7 +843,7 @@ fn tile<'a>(label: &'static str, value: Element<'a, Msg>, sub: String) -> Elemen
 }
 
 fn figure<'a>(value: String) -> Element<'a, Msg> {
-    text(value).font(ui::MONO_BOLD).size(22.0).color(crate::theme::palette().ink).into()
+    text(value).font(ui::SANS_BOLD).size(22.0).color(crate::theme::palette().ink).into()
 }
 
 fn figure_faint<'a>(value: &'static str) -> Element<'a, Msg> {
@@ -866,7 +866,7 @@ fn meter<'a>(value: f64, max: f64, fill: Color, caption: String) -> Element<'a, 
         bar = bar.push(Space::new().width(Length::FillPortion(100 - pct)).height(Length::Fill));
     }
     let track = container(bar).width(Length::Fill).height(Length::Fixed(14.0)).style(ui::frame(Some(crate::theme::palette().sheet), crate::theme::palette().ink));
-    column![track, text(caption).font(ui::MONO_SEMIBOLD).size(12.0).color(crate::theme::palette().ink)].spacing(4).width(Length::Fill).into()
+    column![track, text(caption).font(ui::SANS_SEMIBOLD).size(12.0).color(crate::theme::palette().ink)].spacing(4).width(Length::Fill).into()
 }
 
 fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -1014,12 +1014,12 @@ fn details_card<'a>(a: &'a Value) -> Element<'a, Msg> {
     let vm = a.get("vm").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "—".to_string());
     let rows: Vec<Element<'a, Msg>> = vec![
         kv("CID", ui::mono(u(a, "cid").to_string(), 13.0, crate::theme::palette().ink).into()),
-        kv("Run", ui::mono(run, 13.0, crate::theme::palette().ink).into()),
-        kv("VM", ui::mono(vm, 13.0, crate::theme::palette().ink).into()),
+        kv("Run", ui::sans(run, 13.0, crate::theme::palette().ink).into()),
+        kv("VM", ui::sans(vm, 13.0, crate::theme::palette().ink).into()),
         kv("Connected", ui::prose(when(a, "connected_at_ms")).into()),
         kv("Last seen", ui::prose(when(a, "last_seen_ms")).into()),
-        kv("Tokens in", ui::mono(compact(f(usage, "input_tokens")), 13.0, crate::theme::palette().ink).into()),
-        kv("Tokens out", ui::mono(compact(f(usage, "output_tokens")), 13.0, crate::theme::palette().ink).into()),
+        kv("Tokens in", ui::sans(compact(f(usage, "input_tokens")), 13.0, crate::theme::palette().ink).into()),
+        kv("Tokens out", ui::sans(compact(f(usage, "output_tokens")), 13.0, crate::theme::palette().ink).into()),
     ];
     ui::card("Details", column(rows).spacing(8).into())
 }

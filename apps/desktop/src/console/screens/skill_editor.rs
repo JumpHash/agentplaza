@@ -1414,7 +1414,7 @@ fn tree_row<'a>(l: &'a Loaded, path: &str, changed: bool) -> Element<'a, Msg> {
 fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = Vec::new();
     if l.selected == SKILL_MD {
-        parts.push(row![ui::mono(SKILL_MD, 13.0, palette().ink), ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs))].spacing(12).align_y(Alignment::Center).into());
+        parts.push(row![ui::sans(SKILL_MD, 13.0, palette().ink), ui::btn_sm("Save as", None, ui::Kind::Secondary, Some(Msg::SaveAs))].spacing(12).align_y(Alignment::Center).into());
         parts.push(text_pane(&l.skill_md, true, Msg::EditSkill));
     } else if let Some(e) = l.selected_entry() {
         let mut head: Vec<Element<'_, Msg>> = vec![ui::mono(e.path.clone(), 13.0, palette().ink).into(), ui::faint(format!("{} bytes", e.size())).into()];
@@ -1467,7 +1467,7 @@ fn findings(l: &Loaded) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint(format!("{} errors · {} warnings · {} infos · score {}", r.errors, r.warnings, r.infos, r.score)).into()];
     if r.findings.iter().any(|f| f.rule == "script") {
         parts.push(
-            ui::mono("This skill contains code. Agents may run it in their own VMs. Read it before publishing.", 13.0, ui::Tone::Warn.color()).into(),
+            ui::sans("This skill contains code. Agents may run it in their own VMs. Read it before publishing.", 13.0, ui::Tone::Warn.color()).into(),
         );
     }
     if r.findings.is_empty() {
@@ -1586,7 +1586,7 @@ fn history_tab(l: &Loaded) -> Element<'_, Msg> {
         .map(|e| {
             let version = e.version.map_or_else(String::new, |v| format!("v{v}"));
             row![
-                ui::mono(e.action.clone(), 12.0, palette().ink),
+                ui::sans(e.action.clone(), 12.0, palette().ink),
                 ui::faint(version),
                 ui::faint(e.actor.clone()),
                 ui::faint(mcp_hub::ago(now, e.at_ms)),
@@ -1601,7 +1601,7 @@ fn history_tab(l: &Loaded) -> Element<'_, Msg> {
 
 fn version_row<'a>(l: &'a Loaded, v: &'a VersionMeta) -> Element<'a, Msg> {
     let n = v.version;
-    let mut head: Vec<Element<'a, Msg>> = vec![ui::mono(format!("v{n}"), 13.0, palette().ink).into(), ui::badge(&format!("score {}", v.score), score_tone(v.score))];
+    let mut head: Vec<Element<'a, Msg>> = vec![ui::sans(format!("v{n}"), 13.0, palette().ink).into(), ui::badge(&format!("score {}", v.score), score_tone(v.score))];
     if l.summary.active_version == Some(n) {
         head.push(ui::badge("live", ui::Tone::Signal));
     }
@@ -1649,7 +1649,7 @@ fn viewing(v: &Version) -> Element<'_, Msg> {
     let stale = if v.stale { " · stale" } else { "" };
     let mut parts: Vec<Element<'_, Msg>> = vec![
         row![
-            ui::mono(format!("v{} · score {} · {} findings{stale}", v.version, v.score, v.findings.len()), 12.0, palette().ink_3),
+            ui::sans(format!("v{} · score {} · {} findings{stale}", v.version, v.score, v.findings.len()), 12.0, palette().ink_3),
             ui::btn_sm("Close", None, ui::Kind::Ghost, Some(Msg::CloseView)),
         ]
         .spacing(12)
@@ -1665,7 +1665,7 @@ fn finding_row(f: &Finding) -> Element<'static, Msg> {
     let place = if f.line == 0 { format!("{} · file", f.path) } else { format!("{} · line {}", f.path, f.line) };
     row![
         ui::badge(f.severity.as_str(), severity_tone(f.severity)),
-        ui::mono(place, 12.0, palette().ink_3),
+        ui::sans(place, 12.0, palette().ink_3),
         ui::prose(f.message.clone()),
         ui::mono(f.rule.clone(), 11.0, palette().ink_3),
     ]
@@ -1676,7 +1676,7 @@ fn finding_row(f: &Finding) -> Element<'static, Msg> {
 
 fn compare(d: &Diff) -> Element<'_, Msg> {
     let side = |v: &VersionMeta| {
-        ui::mono(format!("v{} · score {} · {} errors, {} warnings", v.version, v.score, v.errors, v.warnings), 12.0, palette().ink)
+        ui::sans(format!("v{} · score {} · {} errors, {} warnings", v.version, v.score, v.errors, v.warnings), 12.0, palette().ink)
     };
     let mut lines: Vec<Element<'_, Msg>> = Vec::new();
     for line in &d.skill_md {

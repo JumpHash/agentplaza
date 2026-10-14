@@ -20,11 +20,11 @@ use crate::console::{client, events, Ctx};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
-const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SERIF };
+const TITLE_FONT: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
 /// Bold mono, for lane counts and the elapsed time.
-const MONO_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
-/// Serif italic, for the line an empty lane shows.
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
+const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+/// Inter italic, for the line an empty lane shows.
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
 
 /// The four lanes: their label and the line an empty lane shows.
 const LANES: [(&str, &str); 4] = [
@@ -748,7 +748,7 @@ fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
 }
 
 fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
-    column![ui::mono(value.to_string(), 22.0, crate::theme::palette().ink), ui::label(label)].spacing(2).into()
+    column![ui::sans(value.to_string(), 22.0, crate::theme::palette().ink), ui::label(label)].spacing(2).into()
 }
 
 /// The four lanes, each full height, with a line when empty.
@@ -780,9 +780,9 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
     let mark = container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
     let head = row![
         mark,
-        text(label.to_uppercase()).font(MONO_BOLD).size(11.5).color(crate::theme::palette().ink),
+        text(label.to_string()).font(SANS_BOLD).size(11.5).color(crate::theme::palette().ink),
         Space::new().width(Length::Fill),
-        text(count.to_string()).font(MONO_BOLD).size(12.0).color(crate::theme::palette().ink_2),
+        text(count.to_string()).font(SANS_BOLD).size(12.0).color(crate::theme::palette().ink_2),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -810,8 +810,8 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
                 .unwrap_or_else(|| "waiting for the first step…".to_string());
             column![
                 stripe(),
-                container(mono_text(clip(&line, 36), 11.5, crate::theme::palette().ink_2)).width(Length::Fill).clip(true),
-                meta_row(meta_text("elapsed".to_string()), ui::mono(fmt_elapsed(now - t.updated_at), 12.0, crate::theme::palette().ink).into()),
+                container(sans_text(clip(&line, 36), 11.5, crate::theme::palette().ink_2)).width(Length::Fill).clip(true),
+                meta_row(meta_text("elapsed".to_string()), ui::sans(fmt_elapsed(now - t.updated_at), 12.0, crate::theme::palette().ink).into()),
             ]
             .spacing(8)
             .width(Length::Fill)
@@ -843,9 +843,9 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
         ),
     };
     let top = row![
-        mono_text(t.id.clone(), 11.0, crate::theme::palette().ink_3),
+        sans_text(t.id.clone(), 11.0, crate::theme::palette().ink_3),
         Space::new().width(Length::Fill),
-        mono_text(clip(&role, 18).to_uppercase(), 10.5, crate::theme::palette().ink_2),
+        sans_text(clip(&role, 18), 10.5, crate::theme::palette().ink_2),
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill);
@@ -894,20 +894,20 @@ fn stripe<'a>() -> Element<'a, Msg> {
 }
 
 /// Mono text, for the card's labels and figures.
-fn mono_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s).font(theme::MONO).size(size).color(color).wrapping(Wrapping::None).into()
+fn sans_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
+    text(s).font(theme::SANS).size(size).color(color).wrapping(Wrapping::None).into()
 }
 
 
 /// The faint mono of a card's footer.
 fn meta_text<'a>(s: String) -> Element<'a, Msg> {
-    mono_text(s, 11.5, crate::theme::palette().ink_3)
+    sans_text(s, 11.5, crate::theme::palette().ink_3)
 }
 
-/// Serif text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
+/// Interface text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
 /// run past the card.
 fn serif_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s).font(theme::SERIF).size(size).color(color).wrapping(Wrapping::WordOrGlyph).into()
+    text(s).font(theme::SANS).size(size).color(color).wrapping(Wrapping::WordOrGlyph).into()
 }
 
 /// A footer line: the left item at the left edge, the right item at the right edge.
@@ -919,7 +919,7 @@ fn meta_row<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, 
 fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
     match cid {
         None => ui::faint("Unassigned").into(),
-        Some(cid) => button(ui::mono(agent_name(&state.agents, cid), 11.5, crate::theme::palette().ink))
+        Some(cid) => button(ui::sans(agent_name(&state.agents, cid), 11.5, crate::theme::palette().ink))
             .padding(0.0)
             .style(button::text)
             .on_press(Msg::Go(Id::Agent(cid)))
@@ -976,7 +976,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         kv("State", ui::badge(&label_of(&t.state), tone_of_state(&t.state))),
         kv("Role", ui::faint(role).into()),
         kv("Assignee", assignee_link(state, t.agent_cid)),
-        kv("Budget", ui::mono(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()),
+        kv("Budget", ui::sans(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()),
         kv("Created", ui::faint(ago(t.created_at)).into()),
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
@@ -1019,7 +1019,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         main_parts.push(section("Result", ui::markdown(n)));
     }
 
-    let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::mono(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);
+    let head = column![ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3), ui::sans(title_of(&t.goal), 22.0, crate::theme::palette().ink)].spacing(4);
     let main = column(main_parts).spacing(22).width(Length::FillPortion(3));
     let side = column![section("Facts", column(side_parts).spacing(10).into()), section("Timeline", steps)]
         .spacing(22)
@@ -1029,7 +1029,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn timeline_row<'a>(e: &'a EntryRecord) -> Element<'a, Msg> {
     let color = if e.kind == "error" { crate::theme::palette().crit } else { crate::theme::palette().ink };
-    row![ui::mono(clock(e.at_ms), 11.0, crate::theme::palette().ink_3), ui::mono(describe(e), 12.0, color)]
+    row![ui::sans(clock(e.at_ms), 11.0, crate::theme::palette().ink_3), ui::sans(describe(e), 12.0, color)]
         .spacing(12)
         .into()
 }

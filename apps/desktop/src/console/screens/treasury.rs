@@ -17,11 +17,11 @@ use serde_json::{json, Value};
 use super::usage::usd;
 use super::Id;
 use crate::console::{chart, client::{self, Client}, events, ui, Ctx};
-use crate::theme::{self, MONO};
+use crate::theme::{self, SANS};
 
-const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
-const AMOUNT: Font = Font { weight: font::Weight::Semibold, ..theme::MONO };
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
+const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+const AMOUNT: Font = Font { weight: font::Weight::Semibold, ..theme::SANS };
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
 
 const ANIM: Duration = Duration::from_millis(600);
 const DAY_MS: u64 = 86_400_000;
@@ -816,11 +816,11 @@ impl canvas::Program<Msg> for FlowChart {
             frame.fill_rectangle(tl, size, crate::theme::palette().sheet);
             frame.stroke(&Path::rectangle(tl, size), Stroke::default().with_color(crate::theme::palette().ink).with_width(1.0));
             frame.fill_text(canvas::Text {
-                content: label.to_uppercase(),
+                content: label.to_string(),
                 position: at(x + 12.0, y + 12.0),
                 color: crate::theme::palette().ink_3,
                 size: Pixels(10.5 * scale),
-                font: MONO,
+                font: SANS,
                 ..canvas::Text::default()
             });
             frame.fill_text(canvas::Text {
@@ -869,7 +869,7 @@ impl canvas::Program<Msg> for FlowChart {
                     position: at((from.0 + to.0) / 2.0, (from.1 + to.1) / 2.0 - 6.0),
                     color: crate::theme::palette().ink_2,
                     size: Pixels(10.5 * scale),
-                    font: MONO,
+                    font: SANS,
                     align_x: alignment::Horizontal::Center.into(),
                     ..canvas::Text::default()
                 });
@@ -924,7 +924,7 @@ fn caption(frame: &mut canvas::Frame, content: String, at: Point, color: Color, 
         position: at,
         color,
         size: Pixels(size),
-        font: MONO,
+        font: SANS,
         align_x: if right { alignment::Horizontal::Right.into() } else { alignment::Horizontal::Left.into() },
         ..canvas::Text::default()
     });
@@ -1063,8 +1063,8 @@ fn legend<'a>(series: &[chart::Series], hidden: &BTreeSet<String>, format: fn(f6
                     let (key_ink, value_ink) = if off { (p.ink_3, p.ink_3) } else { (p.ink_2, p.ink) };
                     let entry = row![
                         swatch,
-                        iced::widget::text(key.clone()).font(MONO).size(11.0).color(key_ink).wrapping(Wrapping::None),
-                        iced::widget::text(value.clone()).font(MONO).size(11.0).color(value_ink).wrapping(Wrapping::None),
+                        iced::widget::text(key.clone()).font(SANS).size(11.0).color(key_ink).wrapping(Wrapping::None),
+                        iced::widget::text(value.clone()).font(SANS).size(11.0).color(value_ink).wrapping(Wrapping::None),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center);
@@ -1148,10 +1148,10 @@ fn balance_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
         sort_head("In circulation", 2, BalanceSort::Circulating, state.balance_sort, state.balance_asc, Msg::BalanceSort),
         sort_head("Treasury", 2, BalanceSort::Treasury, state.balance_sort, state.balance_asc, Msg::BalanceSort),
     ];
-    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
+    let figure = |x: f64| cell(2, true, ui::sans(money(x), 12.0, crate::theme::palette().ink));
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for p in points {
-        let label = cell(3, false, ui::mono(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2));
+        let label = cell(3, false, ui::sans(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2));
         lines = lines.push(ui::hairline());
         lines = lines.push(row![label, figure(p.budget), figure(p.circulating), figure(p.treasury)].spacing(8).align_y(Alignment::Center));
     }
@@ -1182,11 +1182,11 @@ fn flow_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     for (i, kind) in kinds.iter().enumerate() {
         heads.push(sort_head(&kind_label(kind), 2, FlowSort::Kind(i), state.flow_sort, state.flow_asc, Msg::FlowSort));
     }
-    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
+    let figure = |x: f64| cell(2, true, ui::sans(money(x), 12.0, crate::theme::palette().ink));
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for p in points {
         let mut cells: Vec<Element<'a, Msg>> = vec![
-            cell(3, false, ui::mono(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2)),
+            cell(3, false, ui::sans(point_label(p.at as i64, hourly), 11.5, crate::theme::palette().ink_2)),
             figure(p.entries),
         ];
         cells.extend(kinds.iter().map(|k| figure(p.by_kind.get(k).copied().unwrap_or(0.0))));
@@ -1194,7 +1194,7 @@ fn flow_table<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
         lines = lines.push(row(cells).spacing(8).align_y(Alignment::Center));
     }
     let mut foot: Vec<Element<'a, Msg>> = vec![
-        cell(3, false, ui::mono("Total".to_string(), 11.5, crate::theme::palette().ink_2)),
+        cell(3, false, ui::sans("Total".to_string(), 11.5, crate::theme::palette().ink_2)),
         figure(d.points.iter().map(|p| p.entries).sum::<f64>()),
     ];
     foot.extend(kinds.iter().map(|k| figure(d.points.iter().map(|p| p.by_kind.get(k).copied().unwrap_or(0.0)).sum::<f64>())));
@@ -1222,9 +1222,9 @@ fn flow_value(p: &Bucket, sort: FlowSort, kinds: &[String]) -> f64 {
 
 /// One series row, in the order of `SERIES_COLUMNS`.
 fn series_cells<'a>(p: &Bucket, label: String) -> Vec<Element<'a, Msg>> {
-    let figure = |x: f64| cell(2, true, ui::mono(money(x), 12.0, crate::theme::palette().ink));
+    let figure = |x: f64| cell(2, true, ui::sans(money(x), 12.0, crate::theme::palette().ink));
     vec![
-        cell(3, false, ui::mono(label, 11.5, crate::theme::palette().ink_2)),
+        cell(3, false, ui::sans(label, 11.5, crate::theme::palette().ink_2)),
         figure(p.minted),
         figure(p.escrowed),
         figure(p.paid),
@@ -1305,7 +1305,7 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     let mut lines = column![row(heads).spacing(8)].spacing(8);
     for w in wallets {
         let role = d.roster.iter().find(|m| m.cid == w.cid).map_or_else(|| "—".to_string(), |m| m.role_label.clone());
-        let name = button(iced::widget::text(w.name.clone()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink))
+        let name = button(iced::widget::text(w.name.clone()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink))
             .padding(0.0)
             .style(link)
             .on_press(Msg::Go(Id::Agent(w.cid)));
@@ -1314,11 +1314,11 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
         lines = lines.push(
             row![
                 cell(3, false, name),
-                cell(2, false, iced::widget::text(role).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_2)),
-                cell(2, true, ui::mono(money(w.balance), 12.5, crate::theme::palette().ink)),
-                cell(2, true, ui::mono(w.earned.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
-                cell(2, true, ui::mono(w.spent.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
-                cell(3, false, row![share_bar(share), ui::mono(format!("{:.1}%", share * 100.0), 11.0, crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center)),
+                cell(2, false, iced::widget::text(role).font(theme::SANS).size(14.0).color(crate::theme::palette().ink_2)),
+                cell(2, true, ui::sans(money(w.balance), 12.5, crate::theme::palette().ink)),
+                cell(2, true, ui::sans(w.earned.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
+                cell(2, true, ui::sans(w.spent.map_or_else(|| "—".to_string(), money), 12.5, crate::theme::palette().ink)),
+                cell(3, false, row![share_bar(share), ui::sans(format!("{:.1}%", share * 100.0), 11.0, crate::theme::palette().ink_2)].spacing(10).align_y(Alignment::Center)),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1326,11 +1326,11 @@ fn wallets_card<'a>(d: &Data, state: &State) -> Element<'a, Msg> {
     }
     // The totals row, as the web's: balance, earned and spent summed (a wallet with no profile counts 0).
     let sum = |f: &dyn Fn(&Wallet) -> f64| d.wallets.iter().map(f).sum::<f64>();
-    let bold = |v: String| ui::mono(v, 12.5, crate::theme::palette().ink);
+    let bold = |v: String| ui::sans(v, 12.5, crate::theme::palette().ink);
     lines = lines.push(ui::hairline());
     lines = lines.push(
         row![
-            cell(3, false, iced::widget::text("Total").font(theme::SERIF).size(14.0).color(crate::theme::palette().ink)),
+            cell(3, false, iced::widget::text("Total").font(theme::SANS).size(14.0).color(crate::theme::palette().ink)),
             cell(2, false, Space::new()),
             cell(2, true, bold(money(sum(&|w| w.balance)))),
             cell(2, true, bold(money(sum(&|w| w.earned.unwrap_or(0.0))))),
@@ -1425,9 +1425,9 @@ fn entry_row<'a>(e: &Entry, alpha: f32) -> Element<'a, Msg> {
         let memo = ellipsize(&memo, (room / SERIF15_CHAR) as usize);
         row![
             container(ui::mono(id.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(56.0)).clip(true),
-            container(ui::mono(when.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(92.0)).clip(true),
+            container(ui::sans(when.clone(), 11.5, fade(crate::theme::palette().ink_3))).width(Length::Fixed(92.0)).clip(true),
             container(ui::badge::<Msg>(&kind, tone)).width(Length::Fixed(120.0)).clip(true),
-            container(iced::widget::text(memo).font(theme::SERIF).size(15.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
+            container(iced::widget::text(memo).font(theme::SANS).size(15.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
                 .width(Length::Fill)
                 .clip(true),
             container(iced::widget::text(amount.clone()).font(AMOUNT).size(14.0).color(fade(crate::theme::palette().ink)).wrapping(Wrapping::None))
@@ -1515,7 +1515,7 @@ fn sort_head<'a, T: Copy + PartialEq>(label: &str, portion: u16, value: T, curre
     } else {
         ""
     };
-    let content = button(iced::widget::text(format!("{}{arrow}", label.to_uppercase())).font(MONO).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
+    let content = button(iced::widget::text(format!("{label}{arrow}")).font(SANS).size(11.0).color(if active { crate::theme::palette().ink } else { crate::theme::palette().ink_3 }))
         .style(link)
         .padding(0)
         .on_press(make(value));

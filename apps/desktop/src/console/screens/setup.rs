@@ -114,7 +114,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     );
     let intro = ui::faint(onboard::copy_text("setup.intro"));
     let rows = onboard::rows(state.status.as_ref(), state.local.as_deref()).into_iter().map(|r| {
-        row![ui::mono(r.label, 12.0, ui::INK_2), Space::new().width(Length::Fill), ui::badge(&r.detail, r.tone)]
+        row![ui::sans(r.label, 12.0, ui::INK_2), Space::new().width(Length::Fill), ui::badge(&r.detail, r.tone)]
             .spacing(10)
             .align_y(Alignment::Center)
             .into()
@@ -449,7 +449,7 @@ fn check_line<'a>(item: CheckRow) -> Element<'a, Msg> {
         _ => Space::new().into(),
     };
     row![
-        column![ui::mono(item.label, 12.0, ui::INK_2), ui::faint(item.detail)].spacing(4).width(Length::Fill),
+        column![ui::sans(item.label, 12.0, ui::INK_2), ui::faint(item.detail)].spacing(4).width(Length::Fill),
         ui::badge(status_word(item.tone), item.tone),
         fix,
     ]

@@ -21,7 +21,7 @@ use crate::console::chart;
 use crate::console::client::{self, Client};
 use crate::console::lab_api::{self, JobEvent, JobEventsPage, JobPlan, JobRun, JobView, SeriesPoint};
 use crate::console::{ui, Ctx};
-use crate::theme::{MONO};
+use crate::theme::{SANS};
 
 /// Live lines kept for the screen: the newest this many (the charts read them as they arrive).
 const LIVE_KEPT: usize = 2_000;
@@ -540,7 +540,7 @@ fn stage_cell<'a>(stage: &Stage) -> Element<'a, Msg> {
         StageState::Current => crate::theme::palette().signal,
         StageState::Pending | StageState::Skipped => crate::theme::palette().rule,
     };
-    let mut lines = column![ui::mono(stage.label, 12.0, crate::theme::palette().ink), ui::mono(lab_common::time(stage.at.unwrap_or(0)), 11.0, crate::theme::palette().ink_3)].spacing(4);
+    let mut lines = column![ui::sans(stage.label, 12.0, crate::theme::palette().ink), ui::sans(lab_common::time(stage.at.unwrap_or(0)), 11.0, crate::theme::palette().ink_3)].spacing(4);
     if !stage.sub.is_empty() {
         lines = lines.push(ui::faint(stage.sub.clone()));
     }
@@ -556,11 +556,11 @@ fn stage_cell<'a>(stage: &Stage) -> Element<'a, Msg> {
 // ---- Shared pieces ---------------------------------------------------------------------------
 
 fn txt<'a>(content: impl Into<String>) -> Element<'a, Msg> {
-    ui::mono(content.into(), 12.5, crate::theme::palette().ink).into()
+    ui::sans(content.into(), 12.5, crate::theme::palette().ink).into()
 }
 
 fn stat<'a>(label: &str, value: String) -> Element<'a, Msg> {
-    container(column![ui::label(label), ui::mono(value, 14.0, crate::theme::palette().ink)].spacing(6))
+    container(column![ui::label(label), ui::sans(value, 14.0, crate::theme::palette().ink)].spacing(6))
         .padding([12, 16])
         .width(Length::Fill)
         .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
@@ -591,7 +591,7 @@ fn share_cell<'a>(share: f64) -> Element<'a, Msg> {
         container(Space::new().width(Length::Fill).height(6.0))
             .width(Length::FillPortion((100 - pct).max(1)))
             .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
-        ui::mono(lab_common::percent(share), 11.0, crate::theme::palette().ink_2).width(Length::Fixed(44.0)),
+        ui::sans(lab_common::percent(share), 11.0, crate::theme::palette().ink_2).width(Length::Fixed(44.0)),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -715,10 +715,10 @@ fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
     };
     let rounds = plan.rounds.map_or_else(|| "—".to_string(), |r| r.to_string());
     let meta: Vec<Element<'a, Msg>> = vec![
-        ui::mono(format!("Devices {}", plan.devices_total), 11.0, crate::theme::palette().ink_3).into(),
-        ui::mono(format!("Inner steps {}", plan.inner_steps), 11.0, crate::theme::palette().ink_3).into(),
-        ui::mono(format!("Staleness {}", plan.staleness), 11.0, crate::theme::palette().ink_3).into(),
-        ui::mono(format!("Rounds {rounds}"), 11.0, crate::theme::palette().ink_3).into(),
+        ui::sans(format!("Devices {}", plan.devices_total), 11.0, crate::theme::palette().ink_3).into(),
+        ui::sans(format!("Inner steps {}", plan.inner_steps), 11.0, crate::theme::palette().ink_3).into(),
+        ui::sans(format!("Staleness {}", plan.staleness), 11.0, crate::theme::palette().ink_3).into(),
+        ui::sans(format!("Rounds {rounds}"), 11.0, crate::theme::palette().ink_3).into(),
     ];
     let datasets = if plan.datasets.is_empty() {
         "—".to_string()
@@ -726,7 +726,7 @@ fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
         plan.datasets.iter().map(|(name, id)| format!("{name} {id}")).collect::<Vec<_>>().join(", ")
     };
     let kv = |label: &str, value: String| -> Element<'a, Msg> {
-        row![ui::faint(label.to_string()).width(Length::Fixed(96.0)), ui::mono(value, 11.5, crate::theme::palette().ink_2).width(Length::Fill)]
+        row![ui::faint(label.to_string()).width(Length::Fixed(96.0)), ui::sans(value, 11.5, crate::theme::palette().ink_2).width(Length::Fill)]
             .spacing(10)
             .align_y(Alignment::Center)
             .into()
@@ -749,7 +749,7 @@ fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
 
 /// The web's `.lab-job-back`: a mono link in the signal ink, underlined.
 fn back_link<'a>() -> Element<'a, Msg> {
-    let spans: Vec<iced::widget::text::Span<'a>> = vec![span("Back to Jobs").font(MONO).size(13.0).color(crate::theme::palette().signal_ink).underline(true)];
+    let spans: Vec<iced::widget::text::Span<'a>> = vec![span("Back to Jobs").font(SANS).size(13.0).color(crate::theme::palette().signal_ink).underline(true)];
     let label: Element<'a, Msg> = rich_text(spans).into();
     button(label)
         .on_press(Msg::Go(Id::LabJobs))
@@ -783,8 +783,8 @@ fn island_cell<'a>(isl: &'a lab_api::Island) -> Element<'a, Msg> {
         .collect();
     let mut lines = column![
         row![ui::mono(format!("island {}", isl.id), 12.5, crate::theme::palette().ink), ui::badge(non_empty(Some(isl.backend.as_str())).as_str(), ui::Tone::Signal)].spacing(8).align_y(Alignment::Center),
-        row![ui::faint("Leader"), ui::mono(non_empty(Some(isl.leader.as_str())), 11.0, crate::theme::palette().ink_2)].spacing(10),
-        row![ui::faint("Rendezvous"), ui::mono(non_empty(Some(isl.rdzv.as_str())), 11.0, crate::theme::palette().ink_2)].spacing(10),
+        row![ui::faint("Leader"), ui::sans(non_empty(Some(isl.leader.as_str())), 11.0, crate::theme::palette().ink_2)].spacing(10),
+        row![ui::faint("Rendezvous"), ui::sans(non_empty(Some(isl.rdzv.as_str())), 11.0, crate::theme::palette().ink_2)].spacing(10),
     ]
     .spacing(6);
     for m in machines {
@@ -806,7 +806,7 @@ fn charts_body<'a>(points: &[SeriesPoint]) -> Element<'a, Msg> {
     for pair in specs.chunks(2) {
         let mut cells: Vec<Element<'a, Msg>> = Vec::new();
         for spec in pair {
-            let summary = ui::mono(spec.summary.clone(), 11.0, crate::theme::palette().ink_2);
+            let summary = ui::sans(spec.summary.clone(), 11.0, crate::theme::palette().ink_2);
             let body: Element<'a, Msg> = if spec.values.len() < 2 {
                 summary.into()
             } else {
@@ -915,7 +915,7 @@ fn budget_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
             .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule_faint.into()), ..Default::default() }),
     ];
     column![
-        ui::mono(format!("{} of {} GPU-h used ({})", dash2(used), dash2(budget), lab_common::percent(ratio)), 12.5, crate::theme::palette().ink),
+        ui::sans(format!("{} of {} GPU-h used ({})", dash2(used), dash2(budget), lab_common::percent(ratio)), 12.5, crate::theme::palette().ink),
         bar,
     ]
     .spacing(8)
@@ -938,7 +938,7 @@ fn outputs_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
         parts.push(ui::faint("No outputs yet.").into());
     } else {
         for o in &v.outputs {
-            parts.push(ui::mono(o.clone(), 12.0, crate::theme::palette().ink_2).into());
+            parts.push(ui::sans(o.clone(), 12.0, crate::theme::palette().ink_2).into());
         }
     }
     if v.outputs_remote {
@@ -1094,11 +1094,11 @@ mod cancel_check {
         assert_eq!(state.view.as_ref().map(|v| v.status.as_str()), Some("running"));
 
         // The header's Cancel job button opens the confirmation (the first match in the view).
-        press(&mut state, &ctx, "CANCEL JOB");
+        press(&mut state, &ctx, "Cancel job");
         assert!(state.confirming, "the header button opens the confirmation");
 
         // The confirmation's Cancel job button is the second match; its message is ConfirmCancel.
-        press(&mut state, &ctx, NthText { text: "CANCEL JOB", nth: 1, seen: 0 });
+        press(&mut state, &ctx, NthText { text: "Cancel job", nth: 1, seen: 0 });
         assert!(!state.confirming, "confirming closes once the cancel is asked for");
         assert!(state.cancelling, "the cancel request is in flight");
 

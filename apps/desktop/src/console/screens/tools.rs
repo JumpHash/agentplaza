@@ -22,7 +22,7 @@ const DISC_PAGE: usize = 10;
 const DISC_KINDS: [&str; 5] = ["cli", "library", "service", "api", "technique"];
 const SECTIONS: [&str; 4] = ["Enabled", "Configured", "Needs a key", "Coming soon"];
 
-const SERIF_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SERIF };
+const SANS_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..theme::SANS };
 
 // ---- The hub's shapes (as apps/web/src/api.ts types them) -----------------------------------
 
@@ -786,7 +786,7 @@ fn dot<'a>(tone: ui::Tone) -> Element<'a, Msg> {
 
 /// A section title (the web's `.prov-group-title`): small mono caps over a rule.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    column![ui::mono(title.to_uppercase(), 11.0, crate::theme::palette().ink), rule_line(crate::theme::palette().rule)].spacing(6).width(Length::Fill).into()
+    column![ui::sans(title.to_string(), 11.0, crate::theme::palette().ink), rule_line(crate::theme::palette().rule)].spacing(6).width(Length::Fill).into()
 }
 
 /// A connector's logo box (the web's 48px `.logo.lg`): its brand mark, else its initials.
@@ -795,7 +795,7 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
         ui::brand_logo(&c.brand, 26.0)
     } else {
         let letters: String = c.label.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
-        text(letters).font(ui::MONO_BOLD).size(13.0).color(crate::theme::palette().ink).into()
+        text(letters).font(ui::SANS_BOLD).size(13.0).color(crate::theme::palette().ink).into()
     };
     container(inner)
         .width(Length::Fixed(48.0))
@@ -808,7 +808,7 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
 
 /// A card's title in the web's serif semibold, one line.
 fn card_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string()).font(SERIF_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None).into()
+    text(label.to_string()).font(SANS_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None).into()
 }
 
 fn checks_box<'a>(checks: &[String]) -> Element<'a, Msg> {
@@ -969,7 +969,7 @@ fn proposal_card<'a>(p: &Proposal) -> Element<'a, Msg> {
         let chips: Vec<Element<'a, Msg>> = s
             .fields
             .iter()
-            .map(|f| chip(ui::mono(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, crate::theme::palette().ink_2)))
+            .map(|f| chip(ui::sans(format!("{}{}", f.label, if f.required { " *" } else { "" }), 11.0, crate::theme::palette().ink_2)))
             .collect();
         body = body.push(row(chips).spacing(6));
     }
@@ -1124,7 +1124,7 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
     }
     actions.push(ui::btn("Remove", None, ui::Kind::Ghost, Some(Msg::OpenRemove(t.name.clone(), t.version))));
 
-    let title = iced::widget::text(format!("x_{}", t.name)).font(ui::MONO_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None);
+    let title = iced::widget::text(format!("x_{}", t.name)).font(ui::SANS_SEMIBOLD).size(16.5).color(crate::theme::palette().ink).wrapping(Wrapping::None);
     let mut body = column![
         card_head(None, title.into(), t.description.clone()),
         between(vec![
@@ -1136,7 +1136,7 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
     ]
     .spacing(12);
     if !t.requires.is_empty() {
-        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::mono(r.clone(), 11.0, crate::theme::palette().ink_2))).collect();
+        let reqs: Vec<Element<'a, Msg>> = t.requires.iter().map(|r| chip(ui::sans(r.clone(), 11.0, crate::theme::palette().ink_2))).collect();
         body = body.push(row(reqs).spacing(8));
     }
     if let Some(note) = &t.review_note {
@@ -1187,7 +1187,7 @@ fn files_body<'a>(state: &State, name: &str, version: u64, shown: &Option<(Strin
         Some((_, text)) => text.clone(),
         None => "Pick a file to see its content.".to_string(),
     };
-    let viewer = container(ui::mono(content, 12.0, crate::theme::palette().ink_2)).padding(12).width(Length::Fill).style(boxed);
+    let viewer = container(ui::sans(content, 12.0, crate::theme::palette().ink_2)).padding(12).width(Length::Fill).style(boxed);
     column![list, viewer].spacing(12).into()
 }
 
@@ -1234,8 +1234,8 @@ impl std::fmt::Display for KindChoice {
 /// One found tool, as a row over a rule (the web's `.disc-row`).
 fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
     let mut name = row![
-        text(d.name.clone()).font(SERIF_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
-        chip(ui::mono(d.kind.clone(), 11.0, crate::theme::palette().ink_2)),
+        text(d.name.clone()).font(SANS_SEMIBOLD).size(15.0).color(crate::theme::palette().ink).wrapping(Wrapping::None),
+        chip(ui::sans(d.kind.clone(), 11.0, crate::theme::palette().ink_2)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1253,22 +1253,22 @@ fn found_row<'a>(d: &Discovery, expanded: bool) -> Element<'a, Msg> {
         ui::btn("Remove", None, ui::Kind::Danger, Some(Msg::OpenRemoveFound(d.id.clone(), d.name.clone()))),
     ]
     .spacing(8);
-    let what = container(text(d.what_for.clone()).font(theme::SERIF).size(14.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None))
+    let what = container(text(d.what_for.clone()).font(theme::SANS).size(14.0).color(crate::theme::palette().ink_2).wrapping(Wrapping::None))
         .width(Length::Fill)
         .height(Length::Fixed(18.0))
         .clip(true);
-    let by = ui::mono(format!("by {} · {} endorsements", d.by, d.endorsed_by.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None);
+    let by = ui::sans(format!("by {} · {} endorsements", d.by, d.endorsed_by.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None);
     let summary = column![name, row![what, by].spacing(8).align_y(Alignment::Center)].spacing(4).width(Length::Fill);
     let mut body = column![row![summary, actions].spacing(12).align_y(Alignment::Center)].spacing(10);
 
     if expanded {
         let mut details = column![
-            container(ui::mono(d.how.clone(), 12.0, crate::theme::palette().ink_2)).padding(10).width(Length::Fill).style(boxed),
+            container(ui::sans(d.how.clone(), 12.0, crate::theme::palette().ink_2)).padding(10).width(Length::Fill).style(boxed),
             ui::prose(d.verdict.clone()),
         ]
         .spacing(8);
         if !d.tags.is_empty() {
-            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::mono(t.clone(), 11.0, crate::theme::palette().ink_2))).collect();
+            let tags: Vec<Element<'a, Msg>> = d.tags.iter().map(|t| chip(ui::sans(t.clone(), 11.0, crate::theme::palette().ink_2))).collect();
             details = details.push(row(tags).spacing(8));
         }
         // Agents write these URLs, so only web links are shown (as the proposal review does).
@@ -1285,7 +1285,7 @@ fn pager<'a>(page: usize, pages: usize) -> Element<'a, Msg> {
     row![
         Space::new().width(Length::Fill),
         ui::btn("Previous", None, ui::Kind::Ghost, (page > 1).then_some(Msg::Page(-1))),
-        ui::mono(format!("page {page} of {pages}"), 11.0, crate::theme::palette().ink_3),
+        ui::sans(format!("page {page} of {pages}"), 11.0, crate::theme::palette().ink_3),
         ui::btn("Next", None, ui::Kind::Ghost, (page < pages).then_some(Msg::Page(1))),
     ]
     .spacing(10)
@@ -1306,7 +1306,7 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
     // The web's toolbar: one line of search, the kind picker and the count.
     let search = text_input("Search name, use, tags, by", &state.query)
         .on_input(Msg::Query)
-        .font(theme::MONO)
+        .font(theme::SANS)
         .size(13.0)
         .padding([6, 8])
         .style(theme::input);
@@ -1317,7 +1317,7 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
     let toolbar = row![
         container(search).width(Length::Fill),
         kind,
-        ui::mono(format!("{} found", state.toolbox.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None),
+        ui::sans(format!("{} found", state.toolbox.len()), 11.0, crate::theme::palette().ink_3).wrapping(Wrapping::None),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -1389,7 +1389,7 @@ fn modal_layer<'a>(state: &State) -> Option<Element<'a, Msg>> {
             .into(),
         ),
     };
-    let mut col = column![ui::mono(title, 16.0, crate::theme::palette().ink), body].spacing(14);
+    let mut col = column![ui::sans(title, 16.0, crate::theme::palette().ink), body].spacing(14);
     if let Some(error) = &state.modal_error {
         col = col.push(ui::error_line(error));
     }

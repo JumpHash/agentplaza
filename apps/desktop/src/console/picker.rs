@@ -257,7 +257,7 @@ pub fn view<'a, M: Clone + 'a>(state: &'a Picker, choices: &'a [Choice], current
         trigger_row = trigger_row.push(ui::brand_logo(&c.provider, 16.0));
     }
     let (shown, color) = if current.is_empty() { ("Choose a model".to_string(), crate::theme::palette().ink_3) } else { (current.to_string(), crate::theme::palette().ink) };
-    trigger_row = trigger_row.push(ui::mono(shown, 12.0, color));
+    trigger_row = trigger_row.push(ui::sans(shown, 12.0, color));
     trigger_row = trigger_row.push(Space::new().width(Length::Fill));
     trigger_row = trigger_row.push(ui::icon("chevron-down", 14.0, crate::theme::palette().ink_3));
     let trigger = button(trigger_row).on_press(wrap(PickerMsg::Toggle)).width(Length::Fill).padding([6, 10]).style(plain);
@@ -273,7 +273,7 @@ pub fn view<'a, M: Clone + 'a>(state: &'a Picker, choices: &'a [Choice], current
         let hits = matching(choices, &state.query);
         let search = text_input("Search models", &state.query)
             .on_input(move |s| wrap(PickerMsg::Query(s)))
-            .font(crate::theme::MONO)
+            .font(crate::theme::SANS)
             .padding(6)
             .size(12.0)
             .style(crate::theme::input);
@@ -319,7 +319,7 @@ fn model_row<'a, M: Clone + 'a>(c: &'a Choice, current: &str, wrap: fn(PickerMsg
     let is_current = c.id == current;
     let name = display_name(c);
     let model = split_id(&c.id).1;
-    let mut line = row![ui::mono(name.to_string(), 12.0, crate::theme::palette().ink)].spacing(8).align_y(Alignment::Center);
+    let mut line = row![ui::sans(name.to_string(), 12.0, crate::theme::palette().ink)].spacing(8).align_y(Alignment::Center);
     if model != name {
         line = line.push(ui::faint(model.to_string()));
     }

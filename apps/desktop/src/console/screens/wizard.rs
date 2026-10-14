@@ -589,7 +589,7 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
 pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
     let _ = ctx;
     let last = wizard.step + 1 == STEPS.len();
-    let head = row![ui::mono("Spawn agents", 13.0, crate::theme::palette().ink), ui::btn("Close", None, Kind::Ghost, Some(WizardMsg::Close))]
+    let head = row![ui::sans("Spawn agents", 13.0, crate::theme::palette().ink), ui::btn("Close", None, Kind::Ghost, Some(WizardMsg::Close))]
         .spacing(12)
         .align_y(Alignment::Center);
     let steps = row(STEPS.iter().enumerate().map(|(i, name)| {
@@ -666,7 +666,7 @@ fn body_for<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
             column![review_step(w), reject_panel(w)].spacing(14).into(),
         ),
     };
-    column![ui::mono(heading, 14.0, crate::theme::palette().ink), content].spacing(14).into()
+    column![ui::sans(heading, 14.0, crate::theme::palette().ink), content].spacing(14).into()
 }
 
 /// The orchestrator's reason and the owner's instruction, shown above the purpose step.
@@ -695,7 +695,7 @@ fn reject_panel<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         .height(Length::Fixed(96.0))
         .on_action(WizardMsg::RejectEdit);
     column![
-        ui::mono("Reject this proposal", 13.0, crate::theme::palette().ink),
+        ui::sans("Reject this proposal", 13.0, crate::theme::palette().ink),
         field("Reason", reason.into(), "The orchestrator reads this note."),
         send,
     ]
@@ -761,7 +761,7 @@ fn role_preview<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     };
     let d = &role.def;
     column![
-        ui::mono(d.title.clone(), 13.0, crate::theme::palette().ink),
+        ui::sans(d.title.clone(), 13.0, crate::theme::palette().ink),
         ui::faint(format!("{}, an existing role", role.id)),
         read_only("Purpose", d.purpose.clone()),
         read_only("Responsibilities", list_text(&d.responsibilities)),
@@ -856,7 +856,7 @@ fn new_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
 fn count_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let stepper = row![
         ui::btn("−", None, Kind::Secondary, (w.count > 1).then_some(WizardMsg::Count(w.count.saturating_sub(1)))),
-        ui::mono(w.count.to_string(), 13.0, crate::theme::palette().ink),
+        ui::sans(w.count.to_string(), 13.0, crate::theme::palette().ink),
         ui::btn("+", None, Kind::Secondary, (w.count < MAX_AGENTS).then_some(WizardMsg::Count(w.count + 1))),
     ]
     .spacing(8)

@@ -14,13 +14,13 @@ use serde_json::{json, Value};
 use super::wizard::{self, ProposalView, WizardMsg};
 use super::{sanctions, Id};
 use crate::console::{client, ui, Ctx};
-use crate::theme::{SERIF};
+use crate::theme::{SANS};
 
-const STRONG: Font = Font { weight: font::Weight::Semibold, ..SERIF };
+const STRONG: Font = Font { weight: font::Weight::Semibold, ..SANS };
 
 /// A section heading (the web's `.approvals-subhead`: mono semibold caps).
 fn subhead<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_uppercase()).font(ui::MONO_BOLD).size(16.0).color(crate::theme::palette().ink).into()
+    text(title.to_string()).font(ui::SANS_BOLD).size(16.0).color(crate::theme::palette().ink).into()
 }
 
 #[derive(Debug, Default)]
@@ -571,7 +571,7 @@ fn frame<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
 
 /// The tool input, as pretty JSON on paper.
 fn code_box<'a>(source: String) -> Element<'a, Msg> {
-    container(ui::mono(source, 13.0, crate::theme::palette().ink_2))
+    container(ui::sans(source, 13.0, crate::theme::palette().ink_2))
         .padding(Padding { top: 10.0, right: 12.0, bottom: 10.0, left: 12.0 })
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {

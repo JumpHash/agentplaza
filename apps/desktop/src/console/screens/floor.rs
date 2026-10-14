@@ -345,12 +345,12 @@ fn card<'a>(state: &'a State, l: &Label, w: f32, h: f32) -> Element<'a, Msg> {
         _ => ui::Tone::Ok,
     };
     let body = column![
-        row![ui::mono(l.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&l.role, l.hue)]
+        row![ui::sans(l.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&l.role, l.hue)]
             .spacing(8)
             .align_y(Alignment::Center),
         ui::mono(l.line.clone(), 11.0, crate::theme::palette().ink_3),
         row![ui::label("Status"), ui::badge(&status, tone)].spacing(10).align_y(Alignment::Center),
-        row![ui::label("Model"), ui::mono(model, 11.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center),
+        row![ui::label("Model"), ui::sans(model, 11.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center),
         ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Go(Id::Agent(l.cid)))),
     ]
     .spacing(10);
@@ -379,7 +379,7 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
     let mut facts_col = column![].spacing(5);
     for (label_text, value) in facts(m, now_millis()) {
         facts_col = facts_col.push(
-            row![container(ui::label(label_text)).width(Length::Fixed(76.0)), ui::mono(value, 10.5, crate::theme::palette().ink)]
+            row![container(ui::label(label_text)).width(Length::Fixed(76.0)), ui::sans(value, 10.5, crate::theme::palette().ink)]
                 .spacing(8)
                 .align_y(Alignment::Start),
         );
@@ -401,17 +401,17 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
 
     let model = format!("{} · {}", m.kind, m.model.as_deref().unwrap_or("model unknown"));
     let body = column![
-        row![ui::mono(m.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&m.kind, KIND_HUE)]
+        row![ui::sans(m.name.clone(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), role_tag(&m.kind, KIND_HUE)]
             .spacing(8)
             .align_y(Alignment::Center),
-        ui::mono(model, 11.0, crate::theme::palette().ink_3),
+        ui::sans(model, 11.0, crate::theme::palette().ink_3),
         row![ui::label("Status"), ui::badge(&m.status, status_tone(&m.status))].spacing(10).align_y(Alignment::Center),
         facts_col,
-        row![ui::label("Agents"), ui::mono(format!("{working} working, {idle} idle"), 11.0, crate::theme::palette().ink)]
+        row![ui::label("Agents"), ui::sans(format!("{working} working, {idle} idle"), 11.0, crate::theme::palette().ink)]
             .spacing(10)
             .align_y(Alignment::Center),
         names,
-        ui::btn("ENTER", None, ui::Kind::Primary, Some(Msg::Enter(m.id.clone()))),
+        ui::btn("Enter", None, ui::Kind::Primary, Some(Msg::Enter(m.id.clone()))),
     ]
     .spacing(10);
     let card = container(body)
@@ -453,7 +453,7 @@ fn key<'a>(colour: Color, name: &str) -> Element<'a, Msg> {
         border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     });
-    row![swatch, ui::mono(name.to_string(), 10.5, crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center).into()
+    row![swatch, ui::sans(name.to_string(), 10.5, crate::theme::palette().ink)].spacing(6).align_y(Alignment::Center).into()
 }
 
 /// The role as a square tag with a 3 px stripe in the district's colour.
@@ -463,8 +463,8 @@ fn role_tag<'a>(role: &str, hue: f32) -> Element<'a, Msg> {
         background: Some(Color::from_rgb(rgb[0], rgb[1], rgb[2]).into()),
         ..Default::default()
     });
-    let text = role.replace('_', " ").to_uppercase();
-    container(row![stripe, ui::mono(text, 9.5, crate::theme::palette().ink)].spacing(4).align_y(Alignment::Center))
+    let text = role.replace('_', " ");
+    container(row![stripe, ui::sans(text, 9.5, crate::theme::palette().ink)].spacing(4).align_y(Alignment::Center))
         .padding([1, 5])
         .style(|_: &Theme| container::Style {
             border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },

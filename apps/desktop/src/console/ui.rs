@@ -2,20 +2,18 @@
 //! sheets, ink rules, the orange signal for the owner's hand, square corners, mono for titles,
 //! labels and figures, serif for prose. Screens build from these, never from raw colours.
 
-use iced::font::{Style as FontStyle, Weight};
+use iced::font::Weight;
 use iced::widget::{button, column, container, rich_text, row, scrollable, span, svg, text, Space};
 use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Theme};
 
 pub use crate::theme::{INK, INK_2, INK_3, PAPER, RULE, RULE_FAINT, SHEET, SIGNAL};
-use crate::theme::{MONO, SERIF};
+use crate::theme::{MONO, READING, SANS, TYPE_BADGE, TYPE_CODE, TYPE_ITEM, TYPE_META, TYPE_PAGE, TYPE_PROSE, TYPE_SECTION, TYPE_UI};
+pub use crate::theme::{SANS_BOLD, SANS_ITALIC, SANS_MEDIUM, SANS_SEMIBOLD};
 
-/// Martian Mono at the web's chrome weights: 500 for badges, 600 for card heads and tabs, 700 for
-/// empty-state titles. The console embeds Regular, Medium and Bold, so 600 renders as Bold.
-const MONO_MEDIUM: Font = Font { weight: Weight::Medium, ..MONO };
+/// Martian Mono for code and the ids, hashes and paths where alignment matters: 600 for a code head,
+/// 700 for the strongest. The console embeds Regular, Medium and Bold, so 600 renders as Bold.
 pub const MONO_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..MONO };
 pub const MONO_BOLD: Font = Font { weight: Weight::Bold, ..MONO };
-/// Source Serif 4 in italic: the error line.
-const SERIF_ITALIC: Font = Font { style: FontStyle::Italic, ..SERIF };
 
 /// A semantic tone for badges, notices and buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,24 +39,29 @@ impl Tone {
     }
 }
 
-/// Mono text at `size` in `color`.
+/// Martian Mono at `size` in `color`: code, ids, hashes, paths and raw output, where the letters must line up.
 pub fn mono<'a>(content: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
     text(content).font(MONO).size(size).color(color)
 }
 
-/// Serif prose.
+/// Inter at `size` in `color`: the interface text (labels, names, values, sentences).
+pub fn sans<'a>(content: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
+    text(content).font(SANS).size(size).color(color)
+}
+
+/// Reading prose: Inter at the prose size, at the reading line height.
 pub fn prose<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).font(SERIF).size(15.0).color(crate::theme::palette().ink)
+    text(content).font(SANS).size(TYPE_PROSE).line_height(READING).color(crate::theme::palette().ink)
 }
 
-/// Faint serif, for secondary lines.
+/// Secondary text: Inter at the metadata size, in ink-3.
 pub fn faint<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
-    text(content).font(SERIF).size(13.0).color(crate::theme::palette().ink_3)
+    text(content).font(SANS).size(TYPE_META).color(crate::theme::palette().ink_3)
 }
 
-/// A small uppercase mono label (10.5px, as the web's `.stat .label` and `.kv dt`).
+/// A field label (the web's `.stat .label` and `.kv dt`): Inter 600 at the badge size, in ink-3, as written.
 pub fn label<'a>(content: &str) -> text::Text<'a> {
-    text(content.to_uppercase()).font(MONO).size(10.5).color(crate::theme::palette().ink_3)
+    text(content.to_string()).font(SANS_SEMIBOLD).size(TYPE_BADGE).color(crate::theme::palette().ink_3)
 }
 
 /// A lucide icon at `size`, tinted `color`.
@@ -123,9 +126,9 @@ pub fn view_head_with_intro<'a, M: 'a>(title: &str, intro: &str, actions: Vec<El
 }
 
 fn head_line<'a, M: 'a>(title: &str, intro: Option<&str>, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
-    let mut heading = column![text(title.to_uppercase()).font(MONO).size(28.0).color(crate::theme::palette().ink)].spacing(6);
+    let mut heading = column![text(title.to_string()).font(SANS_SEMIBOLD).size(TYPE_PAGE).color(crate::theme::palette().ink)].spacing(6);
     if let Some(intro) = intro {
-        heading = heading.push(text(intro.to_string()).font(SERIF).size(14.0).color(crate::theme::palette().ink_2));
+        heading = heading.push(text(intro.to_string()).font(SANS).size(TYPE_UI).color(crate::theme::palette().ink_2));
     }
     let mut line = row![heading].align_y(Alignment::End).spacing(16);
     line = line.push(Space::new().width(Length::Fill));
@@ -142,7 +145,7 @@ fn head_line<'a, M: 'a>(title: &str, intro: Option<&str>, actions: Vec<Element<'
 /// A card: a ruled section of the sheet. Its mono head (600, 11.5px, ink, caps) sits over a rule;
 /// the body is padded 16, as the web's `.card-head` and `.card-body`.
 pub fn card<'a, M: 'a>(title: &str, body: Element<'a, M>) -> Element<'a, M> {
-    let head = container(text(title.to_uppercase()).font(MONO_SEMIBOLD).size(11.5).color(crate::theme::palette().ink))
+    let head = container(text(title.to_string()).font(SANS_SEMIBOLD).size(TYPE_SECTION).color(crate::theme::palette().ink))
         .padding(Padding { top: 12.0, right: 16.0, bottom: 10.0, left: 16.0 })
         .width(Length::Fill);
     let under_head = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
@@ -190,7 +193,7 @@ pub fn badge<'a, M: 'a>(content: &str, tone: Tone) -> Element<'a, M> {
             border: Border { color: marker, width: 1.0, radius: 0.0.into() },
             ..Default::default()
         });
-    row![square, text(content.to_uppercase()).font(MONO_MEDIUM).size(11.0).color(ink)]
+    row![square, text(content.to_string()).font(SANS_SEMIBOLD).size(TYPE_BADGE).color(ink)]
         .spacing(7)
         .align_y(Alignment::Center)
         .into()
@@ -231,7 +234,7 @@ fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind:
         inner = inner.push(icon(name, size.icon, fg));
     }
     // The label sets no colour of its own: it takes the button style's text_color, so the hover ink reaches it.
-    inner = inner.push(text(label_text.to_uppercase()).font(MONO).size(size.text));
+    inner = inner.push(text(label_text.to_string()).font(SANS_MEDIUM).size(size.text));
     let b = button(inner).padding(size.padding).style(move |_: &Theme, status: button::Status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let (bg, border) = match kind {
@@ -263,9 +266,9 @@ fn sized_btn<'a, M: Clone + 'a>(label_text: &str, icon_name: Option<&str>, kind:
 /// otherwise serif.
 pub fn link<'a, M: Clone + 'a>(label_text: &str, msg: M, mono: bool) -> Element<'a, M> {
     let body = if mono {
-        text(label_text.to_string()).font(MONO).size(12.0)
+        text(label_text.to_string()).font(MONO).size(TYPE_META)
     } else {
-        text(label_text.to_string()).font(SERIF).size(14.0)
+        text(label_text.to_string()).font(SANS).size(TYPE_UI)
     };
     let underline = container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
         background: Some(crate::theme::palette().ink_3.into()),
@@ -302,7 +305,7 @@ where
             }));
         }
         let on = *value == selected;
-        let cell = button(text(name.to_uppercase()).font(MONO).size(11.0))
+        let cell = button(text(name.to_string()).font(SANS_MEDIUM).size(TYPE_META))
             .padding([6, 11])
             .height(Length::Fixed(SEG_HEIGHT))
             .style(move |_: &Theme, status: button::Status| {
@@ -346,7 +349,7 @@ where
         let bar = if on { crate::theme::palette().signal } else { Color::TRANSPARENT };
         // The text carries no colour of its own: it takes the button's state colour.
         let body = column![
-            container(text(name.to_uppercase()).font(MONO_SEMIBOLD).size(11.5)).padding(Padding {
+            container(text(name.to_string()).font(SANS_SEMIBOLD).size(TYPE_UI)).padding(Padding {
                 top: 10.0,
                 right: 0.0,
                 bottom: 8.0,
@@ -386,8 +389,8 @@ pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element
     container(
         column![
             icon(icon_name, 16.0, crate::theme::palette().ink_3),
-            text(title.to_string()).font(MONO_BOLD).size(13.0).color(crate::theme::palette().ink),
-            text(sentence.to_string()).font(SERIF).size(14.0).color(crate::theme::palette().ink_3),
+            text(title.to_string()).font(SANS_SEMIBOLD).size(TYPE_ITEM).color(crate::theme::palette().ink),
+            text(sentence.to_string()).font(SANS).size(TYPE_UI).color(crate::theme::palette().ink_3),
         ]
         .spacing(10)
         .align_x(Alignment::Center),
@@ -400,12 +403,12 @@ pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element
 
 /// An inline error line: serif italic in crit, as the web's `.error-text`.
 pub fn error_line<'a, M: 'a>(message: &str) -> Element<'a, M> {
-    text(message.to_string()).font(SERIF_ITALIC).size(14.0).color(crate::theme::palette().crit).into()
+    text(message.to_string()).font(SANS_ITALIC).size(TYPE_UI).color(crate::theme::palette().crit).into()
 }
 
 /// A faint "Loading…" line.
 pub fn loading<'a, M: 'a>() -> Element<'a, M> {
-    mono("Loading…", 12.0, crate::theme::palette().ink_3).into()
+    sans("Loading…", TYPE_META, crate::theme::palette().ink_3).into()
 }
 
 /// Agent-written markdown in the design language: mono headings (a hairline under the first),
@@ -630,17 +633,17 @@ fn block_view<'a, M: 'a>(block: Block) -> Element<'a, M> {
                 2 => 15.0,
                 _ => 13.0,
             };
-            let head = mono(title, size, crate::theme::palette().ink);
+            let head = text(title).font(SANS_SEMIBOLD).size(size).color(crate::theme::palette().ink);
             if level == 1 {
                 column![head, hairline()].spacing(8).width(Length::Fill).into()
             } else {
                 head.into()
             }
         }
-        Block::Para(body) => rich_para(inline(&body), SERIF, 15.0, crate::theme::palette().ink),
+        Block::Para(body) => rich_para(inline(&body), SANS, TYPE_PROSE, crate::theme::palette().ink),
         Block::List(items) => column(items.into_iter().map(item_view).collect::<Vec<_>>()).spacing(4).width(Length::Fill).into(),
         Block::Code(code) => container(
-            scroll_x(text(code).font(MONO).size(12.5).color(crate::theme::palette().ink)),
+            scroll_x(text(code).font(MONO).size(TYPE_CODE).color(crate::theme::palette().ink)),
         )
         .padding(10)
         .width(Length::Fill)
@@ -672,8 +675,8 @@ fn item_view<'a, M: 'a>(item: Item) -> Element<'a, M> {
     let indent = if item.depth > 0 { 24.0 } else { 0.0 };
     row![
         Space::new().width(Length::Fixed(indent)),
-        mono(marker, 13.0, crate::theme::palette().ink_2).width(Length::Fixed(22.0)),
-        rich_para(inline(&item.text), SERIF, 15.0, crate::theme::palette().ink),
+        sans(marker, TYPE_UI, crate::theme::palette().ink_2).width(Length::Fixed(22.0)),
+        rich_para(inline(&item.text), SANS, TYPE_PROSE, crate::theme::palette().ink),
     ]
     .spacing(6)
     .width(Length::Fill)
@@ -685,7 +688,7 @@ fn table_row<'a, M: 'a>(cells: &[String], cols: usize, header: bool) -> Element<
     let row_cells = (0..cols)
         .map(|k| -> Element<'a, M> {
             let cell = cells.get(k).map_or("", String::as_str);
-            let content = if header { rich_para(inline(cell), MONO, 12.0, crate::theme::palette().ink) } else { rich_para(inline(cell), SERIF, 14.0, crate::theme::palette().ink) };
+            let content = if header { rich_para(inline(cell), SANS_SEMIBOLD, TYPE_META, crate::theme::palette().ink) } else { rich_para(inline(cell), SANS, TYPE_UI, crate::theme::palette().ink) };
             container(content)
                 .padding([5, 8])
                 .width(Length::FillPortion(1))
@@ -702,13 +705,13 @@ fn table_row<'a, M: 'a>(cells: &[String], cols: usize, header: bool) -> Element<
 /// A run of inline spans as one wrapping rich text.
 fn rich_para<'a, M: 'a>(parts: Vec<Inline>, base: Font, size: f32, color: Color) -> Element<'a, M> {
     let spans: Vec<text::Span<'a>> = parts.into_iter().map(|part| part_span(part, base)).collect();
-    rich_text(spans).font(base).size(size).color(color).width(Length::Fill).into()
+    rich_text(spans).font(base).size(size).line_height(READING).color(color).width(Length::Fill).into()
 }
 
 fn part_span<'a>(part: Inline, base: Font) -> text::Span<'a> {
     match part {
         Inline::Text(s) => span(s),
-        Inline::Bold(s) => span(s).font(Font { weight: iced::font::Weight::Bold, ..base }),
+        Inline::Bold(s) => span(s).font(Font { weight: iced::font::Weight::Semibold, ..base }),
         Inline::Italic(s) => span(s).font(Font { style: iced::font::Style::Italic, ..base }),
         Inline::Code(s) => span(s).font(MONO).background(crate::theme::palette().rule_faint),
         Inline::Link(label) => span(label).color(crate::theme::palette().signal).underline(true),
@@ -733,8 +736,8 @@ struct BtnSize {
     padding: [f32; 2],
 }
 
-const BTN: BtnSize = BtnSize { icon: 14.0, text: 11.5, padding: [7.0, 12.0] };
-const BTN_SM: BtnSize = BtnSize { icon: 12.0, text: 10.0, padding: [4.0, 8.0] };
+const BTN: BtnSize = BtnSize { icon: 14.0, text: TYPE_UI, padding: [7.0, 12.0] };
+const BTN_SM: BtnSize = BtnSize { icon: 12.0, text: TYPE_META, padding: [4.0, 8.0] };
 
 /// Lays cards out in rows of three equal columns; a short last row keeps the same column widths.
 const CARD_GRID_COLS: usize = 3;
@@ -791,7 +794,7 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
 /// A transcript disclosure: a marker and a mono label in a tone, that opens and shuts its body.
 pub fn disclosure<'a, M: Clone + 'a>(label: String, tone: Color, opened: bool, msg: M) -> Element<'a, M> {
     let marker = if opened { "▾" } else { "▸" };
-    button(row![mono(marker, 11.0, crate::theme::palette().ink_3), mono(label, 12.0, tone)].spacing(6))
+    button(row![sans(marker, TYPE_BADGE, crate::theme::palette().ink_3), sans(label, TYPE_META, tone)].spacing(6))
         .padding(0)
         .style(|_: &Theme, _: button::Status| button::Style { background: None, text_color: crate::theme::palette().ink, border: Border::default(), ..Default::default() })
         .on_press(msg)
@@ -801,7 +804,7 @@ pub fn disclosure<'a, M: Clone + 'a>(label: String, tone: Color, opened: bool, m
 /// A tool call's name as a chip: bordered, mono, opening its input.
 pub fn chip<'a, M: Clone + 'a>(label: String, opened: bool, msg: M) -> Element<'a, M> {
     let marker = if opened { "▾" } else { "▸" };
-    button(row![mono(marker, 10.0, crate::theme::palette().ink_3), mono(label, 11.0, crate::theme::palette().ink_2)].spacing(6))
+    button(row![sans(marker, TYPE_BADGE, crate::theme::palette().ink_3), sans(label, TYPE_BADGE, crate::theme::palette().ink_2)].spacing(6))
         .padding([2, 8])
         .style(|_: &Theme, _: button::Status| button::Style {
             background: Some(crate::theme::palette().hover.into()),
@@ -826,14 +829,14 @@ pub fn ellipsize(s: &str, max_chars: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// A sidebar section heading: mono Medium 11 px, upper case, ink-3 (the web's `.nav-section`).
+/// A sidebar section heading: Inter 600 at the badge size, in ink-3 (the web's `.nav-section`).
 pub fn section<'a>(content: &str) -> text::Text<'a> {
-    text(content.to_uppercase()).font(MONO_MEDIUM).size(11.0).color(INK_3)
+    text(content.to_string()).font(SANS_SEMIBOLD).size(TYPE_BADGE).color(INK_3)
 }
 
-/// A sidebar count: a ruled box with mono Medium 11 px in ink-2 (the web's `.nav a .count`).
+/// A sidebar count: a ruled box with Inter 600 at the badge size in ink-2 (the web's `.nav a .count`).
 pub fn count<'a, M: 'a>(n: u32) -> Element<'a, M> {
-    container(text(n.to_string()).font(MONO_MEDIUM).size(11.0).color(INK_2))
+    container(text(n.to_string()).font(SANS_SEMIBOLD).size(TYPE_BADGE).color(INK_2))
         .padding([1, 6])
         .style(|_: &Theme| container::Style {
             border: Border { color: RULE, width: 1.0, radius: 0.0.into() },

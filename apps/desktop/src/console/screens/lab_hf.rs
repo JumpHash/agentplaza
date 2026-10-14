@@ -18,7 +18,7 @@ use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::Ctx;
-use crate::theme::{MONO};
+use crate::theme::{MONO, SANS};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const LIBRARIES: [&str; 5] = ["any", "onnx", "safetensors", "transformers", "gguf"];
@@ -507,7 +507,7 @@ fn token_block<'a>(state: &'a State) -> Element<'a, Msg> {
             lab_common::number(s.hf_max_gb, 0),
             s.free_bytes.map_or("unknown".to_string(), lab_common::size),
         ))
-        .font(MONO)
+        .font(SANS)
         .size(12.0)
         .color(crate::theme::palette().ink_2)
         .into(),
@@ -637,7 +637,7 @@ fn drawer<'a>(state: &'a State, d: &'a HfDetail) -> Element<'a, Msg> {
         body.push(
             column![
                 text("Gated: this model needs its terms accepted on its Hub page. Accept them there yourself; this console never accepts terms for you.")
-                    .font(MONO)
+                    .font(SANS)
                     .size(12.0)
                     .color(crate::theme::palette().crit),
                 ui::link("Open its page on huggingface.co", Msg::OpenUrl(d.url.clone()), false),
@@ -727,7 +727,7 @@ fn imports_block<'a>(state: &'a State) -> Element<'a, Msg> {
             state_cell.push(ui::faint(reason.clone()).into());
         }
         if let Some(error) = &r.error {
-            state_cell.push(text(error.clone()).font(MONO).size(12.0).color(crate::theme::palette().crit).into());
+            state_cell.push(text(error.clone()).font(SANS).size(12.0).color(crate::theme::palette().crit).into());
         }
         lines = lines.push(
             row![
@@ -768,7 +768,7 @@ fn pair<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
 }
 
 fn value<'a>(s: &str) -> Element<'a, Msg> {
-    text(s.to_string()).font(MONO).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
+    text(s.to_string()).font(SANS).size(12.0).color(crate::theme::palette().ink_2).width(Length::Fill).into()
 }
 
 fn bar<'a>(ratio: f64) -> Element<'a, Msg> {
@@ -794,13 +794,13 @@ fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> 
 }
 
 fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_uppercase()).font(MONO).size(11.0).color(crate::theme::palette().ink_3).into()
+    text(label.to_string()).font(SANS).size(11.0).color(crate::theme::palette().ink_3).into()
 }
 
 /// A panel section: a ruled box with its title in caps and its body.
 fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
     container(column![
-        text(title.to_uppercase()).font(MONO).size(11.5).color(crate::theme::palette().ink),
+        text(title.to_string()).font(SANS).size(11.5).color(crate::theme::palette().ink),
         container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style { background: Some(crate::theme::palette().rule.into()), ..Default::default() }),
         body,
     ]

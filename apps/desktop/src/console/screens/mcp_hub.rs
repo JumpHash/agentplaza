@@ -941,7 +941,7 @@ fn snippet<'a>(title: &str, text: &str, note: &str) -> Element<'a, Msg> {
     ];
     column![
         row(head).spacing(10).align_y(Alignment::Center),
-        ui::mono(text.to_string(), 11.0, crate::theme::palette().ink_2),
+        ui::sans(text.to_string(), 11.0, crate::theme::palette().ink_2),
         ui::faint(note.to_string()),
     ]
     .spacing(6)

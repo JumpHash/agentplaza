@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use super::Id;
 use crate::console::{client, ui, Ctx};
-use crate::theme::{MONO};
+use crate::theme::{SANS};
 
 /// The thread's scrollable, so a newly opened thread can start at its newest message.
 const THREAD: &str = "conversations-thread";
@@ -399,7 +399,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 
     let search = text_input("Search messages", &state.draft)
         .on_input(Msg::Search)
-        .font(MONO)
+        .font(SANS)
         .size(12.0)
         .padding(8)
         .style(crate::theme::input);
@@ -477,7 +477,7 @@ fn retention_row<'a>(r: &'a Retention) -> Element<'a, Msg> {
 fn retention_field<'a>(value: &'a str, placeholder: &'a str, width: f32, on_input: fn(String) -> Msg) -> Element<'a, Msg> {
     text_input(placeholder, value)
         .on_input(on_input)
-        .font(MONO)
+        .font(SANS)
         .size(12.0)
         .padding(6)
         .width(Length::Fixed(width))
@@ -541,7 +541,7 @@ fn pair_item<'a>(p: &Pair, exchanges: usize, active: bool, agents: &[(u64, Strin
     let names = format!("{} · {}", label(agents, p.a), label(agents, p.b));
     let meta = format!("{} · {} exchanges", ago(p.last.created_at, now_ms()), exchanges);
     let (background, edge) = if active { (crate::theme::palette().paper, crate::theme::palette().signal) } else { (crate::theme::palette().sheet, crate::theme::palette().rule) };
-    button(column![ui::mono(names, 12.0, crate::theme::palette().ink), ui::prose(clip(&p.last.text, 90)), ui::faint(meta)].spacing(4))
+    button(column![ui::sans(names, 12.0, crate::theme::palette().ink), ui::prose(clip(&p.last.text, 90)), ui::faint(meta)].spacing(4))
         .width(Length::Fill)
         .padding(12)
         .on_press(Msg::Select(p.key.clone()))
@@ -575,7 +575,7 @@ fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>) ->
 }
 
 fn message<'a>(m: &Conversation, agents: &[(u64, String)]) -> Element<'a, Msg> {
-    let mut meta = row![name_link(m.from_cid, agents), ui::mono(ago(m.created_at, now_ms()), 11.0, crate::theme::palette().ink_3)]
+    let mut meta = row![name_link(m.from_cid, agents), ui::sans(ago(m.created_at, now_ms()), 11.0, crate::theme::palette().ink_3)]
         .spacing(10)
         .align_y(Alignment::Center);
     if !m.delivered {

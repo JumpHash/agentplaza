@@ -933,7 +933,7 @@ fn finding_row(f: &Finding, jump: bool) -> Element<'static, Msg> {
     let place: Element<'static, Msg> = if jump && f.line > 0 {
         ui::link(&place, Msg::Jump(f.line), true)
     } else {
-        ui::mono(place, 12.0, palette().ink_3).into()
+        ui::sans(place, 12.0, palette().ink_3).into()
     };
     row![
         ui::badge(f.severity.as_str(), severity_tone(f.severity)),
@@ -1071,7 +1071,7 @@ fn version_row<'a>(l: &'a Loaded, v: &'a PromptVersion) -> Element<'a, Msg> {
     if v.rules_version < apz_prompt::RULES_VERSION {
         marks.push("stale");
     }
-    let mut head: Vec<Element<'a, Msg>> = vec![ui::mono(format!("v{n}"), 13.0, palette().ink).into(), ui::badge(&format!("score {}", v.score), score_tone(v.score))];
+    let mut head: Vec<Element<'a, Msg>> = vec![ui::sans(format!("v{n}"), 13.0, palette().ink).into(), ui::badge(&format!("score {}", v.score), score_tone(v.score))];
     for mark in marks {
         head.push(ui::badge(mark, ui::Tone::Signal));
     }
@@ -1113,7 +1113,7 @@ fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
     let stale = if v.stale { " · stale" } else { "" };
     let mut parts: Vec<Element<'_, Msg>> = vec![
         row![
-            ui::mono(format!("v{} · {} findings{stale}", v.version, v.findings.len()), 12.0, palette().ink_3),
+            ui::sans(format!("v{} · {} findings{stale}", v.version, v.findings.len()), 12.0, palette().ink_3),
             ui::btn_sm("Close", None, ui::Kind::Ghost, Some(Msg::CloseView)),
         ]
         .spacing(12)
@@ -1127,7 +1127,7 @@ fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
 
 fn compare(d: &PromptDiff) -> Element<'_, Msg> {
     let side = |v: &PromptVersion| {
-        ui::mono(
+        ui::sans(
             format!("v{} · score {} · {} errors, {} warnings", v.version, v.score, v.errors, v.warnings),
             12.0,
             palette().ink,
@@ -1163,7 +1163,7 @@ fn history_tab(l: &Loaded) -> Element<'_, Msg> {
         .map(|e| {
             let version = e.version.map_or_else(String::new, |v| format!("v{v}"));
             row![
-                ui::mono(e.action.clone(), 12.0, palette().ink),
+                ui::sans(e.action.clone(), 12.0, palette().ink),
                 ui::faint(version),
                 ui::faint(e.actor.clone()),
                 ui::faint(mcp_hub::ago(now, e.at_ms)),

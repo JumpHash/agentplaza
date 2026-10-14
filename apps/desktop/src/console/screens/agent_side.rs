@@ -567,7 +567,7 @@ fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         "role" => "from role",
         _ => "default",
     };
-    let current = row![ui::mono(side.model.clone(), 12.0, crate::theme::palette().ink), ui::faint(source)].spacing(8);
+    let current = row![ui::sans(side.model.clone(), 12.0, crate::theme::palette().ink), ui::faint(source)].spacing(8);
     let choose = picker::view(&side.picker, &side.choices, side.choice.as_str(), Some(side.effort.as_str()), SideMsg::Picker);
     ui::card("Model", column![current, ui::label("Change model"), choose].spacing(8).into())
 }
@@ -663,7 +663,7 @@ fn permission_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             .into_iter()
             .map(|(mode, label, hint)| {
                 let active = side.permission.as_deref() == Some(mode);
-                let body = column![ui::mono(label.to_uppercase(), 12.0, crate::theme::palette().ink), ui::faint(hint)].spacing(2).width(Length::Fill);
+                let body = column![ui::sans(label.to_string(), 12.0, crate::theme::palette().ink), ui::faint(hint)].spacing(2).width(Length::Fill);
                 button(body)
                     .padding([8, 10])
                     .width(Length::Fill)
@@ -780,7 +780,7 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
     if l.state == "running" {
         meta = meta.push(ui::btn("Stop", None, ui::Kind::Danger, Some(SideMsg::StopLoop(l.id.clone()))));
     }
-    let mut items: Vec<Element<'a, SideMsg>> = vec![ui::mono(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(), meta.into()];
+    let mut items: Vec<Element<'a, SideMsg>> = vec![ui::sans(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(), meta.into()];
     if let Some(summary) = &l.last_summary {
         items.push(ui::faint(clip(summary, 120)).into());
     }
@@ -823,7 +823,7 @@ fn reader_view<'a>(doc: &'a Note, notes: &'a [Note]) -> Element<'a, SideMsg> {
     }
     let mut items: Vec<Element<'a, SideMsg>> = vec![
         row![ui::badge(&doc.kind, tone), ui::faint(tags)].spacing(8).align_y(Alignment::Center).into(),
-        ui::mono(doc.title.clone(), 18.0, crate::theme::palette().ink).into(),
+        ui::sans(doc.title.clone(), 18.0, crate::theme::palette().ink).into(),
         ui::faint(stamp.join(" · ")).into(),
         ui::markdown(&doc.body),
     ];

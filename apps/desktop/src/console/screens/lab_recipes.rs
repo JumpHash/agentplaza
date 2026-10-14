@@ -349,7 +349,7 @@ fn schema_block<'a>(schema: &Value) -> Vec<Element<'a, Msg>> {
 
 /// A schema line: its label in the small caps, its value in mono under it.
 fn section<'a>(label: &str, value: String) -> Element<'a, Msg> {
-    column![ui::label(label), ui::mono(value, 11.5, crate::theme::palette().ink_2)].spacing(4).into()
+    column![ui::label(label), ui::sans(value, 11.5, crate::theme::palette().ink_2)].spacing(4).into()
 }
 
 /// `text` cut to `max` characters, with an ellipsis when it had to be cut.

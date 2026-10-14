@@ -22,7 +22,7 @@ use crate::console::chart;
 use crate::console::client::{self, Client};
 use crate::console::lab_api::{self, Device, DeviceMachine, JobSummary, ModelView};
 use crate::console::{ui, Ctx};
-use crate::theme::{self, MONO};
+use crate::theme::{self, SANS};
 
 /// A section tab. A detail screen sits under its list's tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,9 +94,9 @@ const MACHINES_PER_ROW: usize = 3;
 const BAR_AREA: f32 = 120.0;
 /// How long the GPU-hours figure and bars take to settle after a load.
 const ANIM: Duration = Duration::from_millis(600);
-const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::MONO };
-const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SERIF };
-const MONO_SEMIBOLD: Font = ui::MONO_SEMIBOLD;
+const VALUE: Font = Font { weight: font::Weight::Bold, ..theme::SANS };
+const ITALIC: Font = Font { style: font::Style::Italic, ..theme::SANS };
+const SANS_SEMIBOLD: Font = ui::SANS_SEMIBOLD;
 
 /// The last seven days, from the fetch: the day labels (`MM-DD`), each day's training GPU-hours and
 /// the number of jobs created in the window.
@@ -268,7 +268,7 @@ fn lab_tabs<'a, M: Clone + 'a>(current: Section, on_go: impl Fn(Section) -> M + 
         // underline is drawn that wide, not to Fill, which would share the strip out across the width.
         let width = name.chars().count() as f32 * TAB_ADVANCE * TAB_SIZE;
         let body = column![
-            container(text(name.to_uppercase()).font(MONO_SEMIBOLD).size(TAB_SIZE)).padding(Padding { top: 10.0, right: 0.0, bottom: 8.0, left: 0.0 }),
+            container(text(name.to_string()).font(SANS_SEMIBOLD).size(TAB_SIZE)).padding(Padding { top: 10.0, right: 0.0, bottom: 8.0, left: 0.0 }),
             container(Space::new().width(Length::Fixed(width)).height(2.0)).style(move |_: &Theme| container::Style {
                 background: Some(bar.into()),
                 ..Default::default()
@@ -301,9 +301,9 @@ fn lab_tabs<'a, M: Clone + 'a>(current: Section, on_go: impl Fn(Section) -> M + 
 /// face for ids, the body's serif for words.
 fn link<'a>(label: &str, msg: Msg, mono: bool) -> Element<'a, Msg> {
     let body = if mono {
-        text(label.to_string()).font(MONO).size(12.0)
+        text(label.to_string()).font(SANS).size(12.0)
     } else {
-        text(label.to_string()).font(theme::SERIF).size(14.0)
+        text(label.to_string()).font(theme::SANS).size(14.0)
     };
     button(body)
         .padding(0.0)
@@ -322,7 +322,7 @@ fn link<'a>(label: &str, msg: Msg, mono: bool) -> Element<'a, Msg> {
 /// A ruled card as the web's `.lab-card`: a head (the title on the left, tags and a muted meta on the
 /// right) over a rule, then the body padded 16.
 fn lab_card<'a>(title: &str, tags: Vec<Element<'a, Msg>>, meta: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    let mut line = row![text(title.to_string()).font(MONO_SEMIBOLD).size(12.0).color(crate::theme::palette().ink), Space::new().width(Length::Fill)]
+    let mut line = row![text(title.to_string()).font(SANS_SEMIBOLD).size(12.0).color(crate::theme::palette().ink), Space::new().width(Length::Fill)]
         .spacing(10)
         .align_y(Alignment::Center);
     for tag in tags {
@@ -380,7 +380,7 @@ fn machine_card(m: &DeviceMachine) -> Element<'_, Msg> {
     let dim = !m.online;
     let busy = m.devices.iter().filter(|dv| is_busy(dv)).count();
     let title_line = row![
-        text(m.id.clone()).font(MONO_SEMIBOLD).size(12.0).color(ink(dim)),
+        text(m.id.clone()).font(ui::MONO_SEMIBOLD).size(12.0).color(ink(dim)),
         Space::new().width(Length::Fill),
         ui::badge(if m.online { "online" } else { "offline" }, if m.online { ui::Tone::Ok } else { ui::Tone::Muted }),
         ui::badge(if m.trainer_ok { "trainer up" } else { "trainer down" }, if m.trainer_ok { ui::Tone::Info } else { ui::Tone::Warn }),
@@ -415,17 +415,17 @@ fn device_row(dv: &Device, dim: bool) -> Element<'_, Msg> {
         None => ui::faint(if dv.busy { "busy" } else { "idle" }).size(12.0).into(),
     };
     let name = row![
-        text(dv.name.clone()).font(MONO_SEMIBOLD).size(13.0).color(ink(dim)),
+        text(dv.name.clone()).font(SANS_SEMIBOLD).size(13.0).color(ink(dim)),
         ui::faint(dv.vendor.clone()).size(12.0),
         ui::badge(&dv.backend, ui::Tone::Info),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let util = row![util_bar(pct), text(lab_common::percent(pct / 100.0)).font(MONO).size(12.0).color(ink(dim))]
+    let util = row![util_bar(pct), text(lab_common::percent(pct / 100.0)).font(SANS).size(12.0).color(ink(dim))]
         .spacing(10)
         .align_y(Alignment::Center)
         .width(Length::Fill);
-    column![name, text(memory).font(MONO).size(12.0).color(ink_2(dim)), util, run].spacing(6).width(Length::Fill).into()
+    column![name, text(memory).font(SANS).size(12.0).color(ink_2(dim)), util, run].spacing(6).width(Length::Fill).into()
 }
 
 /// The text colour of a line: ink, or ink-3 for a dim (offline) one.
@@ -574,9 +574,9 @@ fn day_bars<'a>(labels: &[String], values: &[f64]) -> Element<'a, Msg> {
                 .style(|_: &Theme| container::Style { background: Some(crate::theme::palette().signal.into()), ..Default::default() });
             let area = column![Space::new().height(Length::Fixed(BAR_AREA - px)), bar].width(Length::Fill).height(Length::Fixed(BAR_AREA));
             column![
-                text(lab_common::number(v, 2)).font(MONO).size(11.0).color(crate::theme::palette().ink_2),
+                text(lab_common::number(v, 2)).font(SANS).size(11.0).color(crate::theme::palette().ink_2),
                 area,
-                text(label.clone()).font(MONO).size(10.5).color(crate::theme::palette().ink_3),
+                text(label.clone()).font(SANS).size(10.5).color(crate::theme::palette().ink_3),
             ]
             .spacing(6)
             .width(Length::Fill)
@@ -605,7 +605,7 @@ fn table<'a>(cols: &[Col], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg>
     let heads: Vec<Element<'a, Msg>> = cols
         .iter()
         .map(|c| {
-            let label = text(c.head.to_uppercase()).font(MONO).size(10.5).color(crate::theme::palette().ink_3);
+            let label = text(c.head.to_string()).font(SANS).size(10.5).color(crate::theme::palette().ink_3);
             aligned(label.into(), c)
         })
         .collect();
@@ -628,7 +628,7 @@ fn aligned<'a>(content: Element<'a, Msg>, c: &Col) -> Element<'a, Msg> {
 
 /// A table cell in ink: mono for ids and recipes, the body's serif for the rest (as the web's `td`).
 fn cell<'a>(value: &str, mono: bool) -> Element<'a, Msg> {
-    let face = if mono { MONO } else { theme::SERIF };
+    let face = if mono { SANS } else { theme::SANS };
     text(value.to_string()).font(face).size(13.0).color(crate::theme::palette().ink).into()
 }
 

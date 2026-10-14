@@ -11,7 +11,7 @@ use iced::{alignment, event, mouse, Alignment, Border, Color, Element, Length, P
 use super::events;
 use super::screens::{Id, NAV};
 use super::{toast, ui, Ctx};
-use crate::theme::MONO;
+use crate::theme::SANS;
 
 /// The open sidebar's default width (the web's `DEFAULT_WIDTH`) and its limits.
 const DEFAULT_WIDTH: f32 = 248.0;
@@ -521,7 +521,7 @@ fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> El
             .into(),
         ),
     };
-    let panel = container(column![ui::mono(title, 14.0, crate::theme::palette().ink), ui::mono(body, 12.0, crate::theme::palette().ink_2), action].spacing(14))
+    let panel = container(column![ui::sans(title, 14.0, crate::theme::palette().ink), ui::sans(body, 12.0, crate::theme::palette().ink_2), action].spacing(14))
         .padding(18)
         .width(Length::Fixed(440.0))
         .style(|_: &Theme| container::Style {
@@ -595,7 +595,7 @@ fn resize_handle<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Ele
 fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
     let mark = ui::hive(26.0);
     let head: Element<'a, M> = if open {
-        row![mark, ui::mono("AgentPlaza", 14.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center).into()
+        row![mark, ui::sans("AgentPlaza", 14.0, crate::theme::palette().ink)].spacing(10).align_y(Alignment::Center).into()
     } else {
         mark
     };
@@ -619,7 +619,7 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
             Space::new().width(Length::Fixed(7.0)),
             ui::icon(icon_name, 16.0, glyph),
             Space::new().width(Length::Fixed(10.0)),
-            text(label.to_string()).font(MONO).size(13.0),
+            text(label.to_string()).font(SANS).size(13.0),
             Space::new().width(Length::Fill),
         ]
         .align_y(Alignment::Center)
@@ -658,7 +658,7 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
     } else {
         tooltip(
             line,
-            container(ui::mono(label.to_string(), 11.0, crate::theme::palette().ink)).padding([4, 8]).style(|_: &Theme| container::Style {
+            container(ui::sans(label.to_string(), 11.0, crate::theme::palette().ink)).padding([4, 8]).style(|_: &Theme| container::Style {
                 background: Some(crate::theme::palette().sheet.into()),
                 border: Border { color: crate::theme::palette().ink, width: 1.0, radius: 0.0.into() },
                 ..Default::default()
@@ -709,7 +709,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
         indicator(state.hub_ok, "HUB"),
         indicator(state.node_ok, "NODE"),
         indicator(state.live, live_word(state.live)),
-        row![hollow_mark(crate::theme::palette().ink_2), ui::mono(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, crate::theme::palette().ink_2)]
+        row![hollow_mark(crate::theme::palette().ink_2), ui::sans(format!("{} WORKING · {} IDLE", state.working, state.idle), 11.5, crate::theme::palette().ink_2)]
             .spacing(7)
             .align_y(Alignment::Center),
     ]
@@ -720,13 +720,13 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     let (theme_label, theme_icon) = if crate::theme::is_light() { ("Dark theme", "moon") } else { ("Light theme", "sun") };
     right = right.push(ui::btn(theme_label, Some(theme_icon), ui::Kind::Ghost, Some(wrap(Msg::ToggleTheme))));
     if state.paused {
-        right = right.push(row![ui::mono("◆", 11.0, crate::theme::palette().crit), ui::mono("HELD", 11.5, crate::theme::palette().crit)].spacing(5).align_y(Alignment::Center));
-        right = right.push(top_btn("RESUME", "play", crate::theme::palette().signal, wrap(Msg::Resume)));
+        right = right.push(row![ui::sans("◆", 11.0, crate::theme::palette().crit), ui::sans("HELD", 11.5, crate::theme::palette().crit)].spacing(5).align_y(Alignment::Center));
+        right = right.push(top_btn("Resume", "play", crate::theme::palette().signal, wrap(Msg::Resume)));
     } else {
-        right = right.push(top_btn("STOP ALL", "stop", crate::theme::palette().crit, wrap(Msg::StopAll)));
+        right = right.push(top_btn("Stop all", "stop", crate::theme::palette().crit, wrap(Msg::StopAll)));
     }
     container(
-        row![toggle, ui::mono(title.to_uppercase(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), right]
+        row![toggle, ui::sans(title.to_string(), 13.0, crate::theme::palette().ink), Space::new().width(Length::Fill), right]
             .spacing(16)
             .align_y(Alignment::Center),
     )
@@ -743,7 +743,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
 fn gpu_banner<'a, M: 'a>(adapter: &'a str) -> Element<'a, M> {
     container(
         column![
-            ui::mono("Software rendering: no GPU is available to the app, so the 3D floor is slow.", 12.5, crate::theme::palette().crit),
+            ui::sans("Software rendering: no GPU is available to the app, so the 3D floor is slow.", 12.5, crate::theme::palette().crit),
             ui::faint(format!("Adapter: {adapter}. A driver update that has not been loaded yet (reboot) is the usual cause.")),
         ]
         .spacing(4),
@@ -771,7 +771,7 @@ fn hollow_mark<'a, M: 'a>(tone: Color) -> Element<'a, M> {
 /// A header button at the web's `.btn` size: 36 px high, 14 px sides, 11.5 px mono, white on `fill` with an
 /// ink border. `ui::btn` is 29 px high, so the top bar draws its own.
 fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M) -> Element<'a, M> {
-    let inner = row![ui::icon(icon_name, 14.0, Color::WHITE), ui::mono(label.to_uppercase(), 11.5, Color::WHITE)]
+    let inner = row![ui::icon(icon_name, 14.0, Color::WHITE), text(label.to_string()).font(ui::SANS_MEDIUM).size(crate::theme::TYPE_UI).color(Color::WHITE)]
         .spacing(7)
         .align_y(Alignment::Center);
     button(inner)
@@ -799,7 +799,7 @@ fn indicator<'a, M: 'a>(up: bool, label: &'static str) -> Element<'a, M> {
             background: Some(tone.into()),
             ..Default::default()
         }),
-        ui::mono(label, 11.5, crate::theme::palette().ink_2),
+        ui::sans(label, 11.5, crate::theme::palette().ink_2),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -836,8 +836,8 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
     container(
         row![
             hollow_mark(crate::theme::palette().crit),
-            ui::mono(text, 12.5, crate::theme::palette().crit).width(Length::Fill),
-            top_btn("RESUME", "play", crate::theme::palette().signal, wrap(Msg::Resume)),
+            ui::sans(text, 12.5, crate::theme::palette().crit).width(Length::Fill),
+            top_btn("Resume", "play", crate::theme::palette().signal, wrap(Msg::Resume)),
         ]
         .spacing(10)
         .align_y(Alignment::Center),

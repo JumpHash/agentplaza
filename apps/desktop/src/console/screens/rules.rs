@@ -15,13 +15,13 @@ use super::tools::encode;
 use super::Id;
 use crate::console::ui::{self, Kind, Tone, INK, INK_2, INK_3, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::console::{client, events, Ctx};
-use crate::theme::{MONO, SERIF};
+use crate::theme::{SANS};
 
 /// The tier of the constitution: switching one of its laws off needs its id typed in.
 const CONSTITUTION: &str = "constitution";
 
-const SEMIBOLD_SERIF: Font = Font { weight: font::Weight::Semibold, ..SERIF };
-const BOLD_MONO: Font = Font { weight: font::Weight::Bold, ..MONO };
+const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
+const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..SANS };
 
 const DAY_MS: i64 = 86_400_000;
 const INFRACTION_FETCH: usize = 200;
@@ -1021,7 +1021,7 @@ fn link_style(_: &Theme, _: button::Status) -> button::Style {
 
 /// A mono text link to an agent or a law's source toggle.
 fn link<'a>(label: &str, msg: Msg) -> Element<'a, Msg> {
-    button(ui::mono(label.to_string(), 12.0, INK))
+    button(ui::sans(label.to_string(), 12.0, INK))
         .padding([0, 0])
         .style(link_style)
         .on_press(msg)
@@ -1031,7 +1031,7 @@ fn link<'a>(label: &str, msg: Msg) -> Element<'a, Msg> {
 /// A segmented control's segment (the web's `.rules-chip`): ink-filled when active.
 fn seg<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
     let (color, bg) = if active { (crate::theme::palette().paper, INK) } else { (INK_2, SHEET) };
-    button(text(label.to_string()).font(SERIF).size(13.0).color(color))
+    button(text(label.to_string()).font(SANS).size(13.0).color(color))
         .padding([7, 14])
         .style(move |_: &Theme, _| button::Style { background: Some(bg.into()), text_color: color, ..Default::default() })
         .on_press(msg)
@@ -1042,7 +1042,7 @@ fn seg<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
 fn tab<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
     let color = if active { INK } else { INK_3 };
     let underline = if active { SIGNAL } else { Color::TRANSPARENT };
-    let face = button(text(label.to_uppercase()).font(BOLD_MONO).size(12.0).color(color))
+    let face = button(text(label.to_string()).font(SANS_BOLD).size(12.0).color(color))
         .padding([8, 12])
         .style(move |_: &Theme, _| button::Style { text_color: color, ..Default::default() })
         .on_press(msg);
@@ -1057,8 +1057,8 @@ fn tab<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
 
 fn stat_cell<'a>(label: &'static str, value: String) -> Element<'a, Msg> {
     container(column![
-        text(label.to_uppercase()).font(SERIF).size(12.0).color(INK_3),
-        text(value).font(SEMIBOLD_SERIF).size(26.0).color(INK),
+        text(label.to_string()).font(SANS).size(12.0).color(INK_3),
+        text(value).font(SANS_SEMIBOLD).size(26.0).color(INK),
     ]
     .spacing(4))
     .padding(Padding { top: 14.0, right: 18.0, bottom: 14.0, left: 18.0 })
@@ -1168,14 +1168,14 @@ fn statutes<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
 
 fn group_head<'a>(label: &'static str, desc: &'static str, n: usize) -> Element<'a, Msg> {
     let head = row![
-        text(label.to_uppercase()).font(BOLD_MONO).size(20.0).color(INK),
-        text(n.to_string()).font(MONO).size(12.0).color(INK_3),
+        text(label.to_string()).font(SANS_BOLD).size(20.0).color(INK),
+        text(n.to_string()).font(SANS).size(12.0).color(INK_3),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
     let mut col = column![head].spacing(6);
     if !desc.is_empty() {
-        col = col.push(text(desc).font(SERIF).size(14.0).color(INK_2));
+        col = col.push(text(desc).font(SANS).size(14.0).color(INK_2));
     }
     col.push(Space::new().height(8.0))
         .push(container(Space::new().height(1.0)).width(Length::Fill).style(|_: &Theme| container::Style {
@@ -1187,14 +1187,14 @@ fn group_head<'a>(label: &'static str, desc: &'static str, n: usize) -> Element<
 
 fn labelled<'a>(name: &str, value: &str) -> Element<'a, Msg> {
     row![
-        text(format!("{name}: ")).font(SEMIBOLD_SERIF).size(15.0).color(INK),
-        text(value.to_string()).font(SERIF).size(15.0).color(INK_2).width(Length::Fill),
+        text(format!("{name}: ")).font(SANS_SEMIBOLD).size(15.0).color(INK),
+        text(value.to_string()).font(SANS).size(15.0).color(INK_2).width(Length::Fill),
     ]
     .into()
 }
 
 fn op_tag<'a>(op: &str) -> Element<'a, Msg> {
-    container(ui::mono(op.to_string(), 11.5, INK_2))
+    container(ui::sans(op.to_string(), 11.5, INK_2))
         .padding([2, 6])
         .style(boxed)
         .into()
@@ -1202,13 +1202,13 @@ fn op_tag<'a>(op: &str) -> Element<'a, Msg> {
 
 fn applies<'a>(l: &Law) -> Element<'a, Msg> {
     let scope = format!("{} → {}", or(&l.principal, "any principal"), or(&l.resource, "any resource"));
-    let mut col: Vec<Element<'a, Msg>> = vec![ui::mono(scope, 12.0, INK).into()];
+    let mut col: Vec<Element<'a, Msg>> = vec![ui::sans(scope, 12.0, INK).into()];
     if !l.ops.is_empty() {
         let tags: Vec<Element<'a, Msg>> = l.ops.iter().map(|o| op_tag(o)).collect();
         col.push(row(tags).spacing(6).into());
     }
     row![
-        text("APPLIES TO").font(SERIF).size(12.0).color(INK_3).width(Length::Fixed(96.0)),
+        text("Applies to").font(SANS).size(12.0).color(INK_3).width(Length::Fixed(96.0)),
         column(col).spacing(6).width(Length::Fill),
     ]
     .spacing(12)
@@ -1246,7 +1246,7 @@ fn source_block<'a>(l: &Law, open: bool) -> Element<'a, Msg> {
         toggle,
         ui::faint(format!("File: {}", or(&l.file, "—"))),
         conds,
-        container(ui::mono(or(&l.source, "—"), 12.0, INK)).padding(10).width(Length::Fill).style(sheet_box),
+        container(ui::sans(or(&l.source, "—"), 12.0, INK)).padding(10).width(Length::Fill).style(sheet_box),
     ]
     .spacing(10)
     .into()
@@ -1268,7 +1268,7 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     }
     let head = row![
         column![
-            text(l.title.clone()).font(SEMIBOLD_SERIF).size(18.0).color(INK),
+            text(l.title.clone()).font(SANS_SEMIBOLD).size(18.0).color(INK),
             ui::mono(l.id.clone(), 12.0, INK_3),
         ]
         .spacing(4)
@@ -1380,7 +1380,7 @@ fn rule_row<'a>(state: &'a State, r: &'a Rule, now: i64) -> Element<'a, Msg> {
     let declares = if declared.is_empty() { "No laws declared".to_string() } else { format!("Declares {}", declared.join(", ")) };
     let state_tag = if r.enabled { ui::badge("Enabled", Tone::Ok) } else { ui::badge("Disabled", Tone::Muted) };
     let body = column![
-        row![text(r.title.clone()).font(SEMIBOLD_SERIF).size(16.0).color(INK), state_tag].spacing(12).align_y(Alignment::Center),
+        row![text(r.title.clone()).font(SANS_SEMIBOLD).size(16.0).color(INK), state_tag].spacing(12).align_y(Alignment::Center),
         row![
             ui::mono(r.id.clone(), 12.0, INK_3),
             ui::faint(declares),
@@ -1423,7 +1423,7 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
         ui::label("Source (JHRL)"),
         text_editor(&state.source)
             .placeholder("law \"R-100\" \"Title\" { ... }")
-            .font(MONO)
+            .font(SANS)
             .size(13.0)
             .height(Length::Fixed(240.0))
             .on_action(Msg::Source),
@@ -1432,9 +1432,9 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     let reference = container(
         column![
             ui::label("JHRL reference"),
-            ui::mono(JHRL_SHAPE, 12.0, INK_2),
+            ui::sans(JHRL_SHAPE, 12.0, INK_2),
             ui::label("Example"),
-            ui::mono(JHRL_EXAMPLE, 12.0, INK_2),
+            ui::sans(JHRL_EXAMPLE, 12.0, INK_2),
         ]
         .spacing(8),
     )
@@ -1460,7 +1460,7 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     }
 
     let mut items: Vec<Element<'a, Msg>> = vec![
-        text(heading).font(SEMIBOLD_SERIF).size(15.0).color(INK).into(),
+        text(heading).font(SANS_SEMIBOLD).size(15.0).color(INK).into(),
         title.into(),
         source.into(),
         reference.into(),
@@ -1502,7 +1502,7 @@ fn check_result<'a>(c: &Checked, now: i64) -> Element<'a, Msg> {
 fn refusal_row<'a>(w: &Refusal, now: i64) -> Element<'a, Msg> {
     let who = if w.role.is_empty() { format!("Agent {}", w.cid) } else { format!("Agent {} as {}", w.cid, w.role) };
     column![
-        ui::mono(who, 12.0, INK_2),
+        ui::sans(who, 12.0, INK_2),
         ui::faint(format!("{} · {} · {}", or(&w.tool, "a tool"), ago(w.at_ms, now), w.laws.join(", "))),
     ]
     .spacing(2)
@@ -1533,7 +1533,7 @@ fn law_row<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
     let selected = state.selected_law.as_deref() == Some(l.id.as_str());
     let head = button(
         column![
-            text(l.title.clone()).font(SEMIBOLD_SERIF).size(15.0).color(INK),
+            text(l.title.clone()).font(SANS_SEMIBOLD).size(15.0).color(INK),
             row![
                 ui::mono(l.id.clone(), 12.0, INK_3),
                 ui::faint(format!("Refused {} {}", l.refusals, times(l.refusals))),
@@ -1576,7 +1576,7 @@ fn violation_row<'a>(v: &Violation, now: i64) -> Element<'a, Msg> {
     }
     meta.push(ui::faint(ago(v.at_ms, now)).into());
     column![
-        button(text(agent).font(SERIF).size(14.0).color(INK))
+        button(text(agent).font(SANS).size(14.0).color(INK))
             .padding([0, 0])
             .style(link_style)
             .on_press(Msg::Go(Id::Agent(v.cid))),
@@ -1610,7 +1610,7 @@ fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
         }
     };
     container(column![
-        text("Latest infractions").font(BOLD_MONO).size(16.0).color(INK),
+        text("Latest infractions").font(SANS_BOLD).size(16.0).color(INK),
         Space::new().height(12.0),
         body,
     ])
@@ -1628,16 +1628,16 @@ fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
         meta.push(ui::mono(i.tool.clone(), 12.0, INK_3).into());
     }
     if !i.detail.is_empty() {
-        meta.push(text(i.detail.clone()).font(SERIF).size(12.0).color(INK_3).into());
+        meta.push(text(i.detail.clone()).font(SANS).size(12.0).color(INK_3).into());
     }
-    meta.push(text(ago(i.at_ms, now)).font(SERIF).size(12.0).color(INK_3).into());
+    meta.push(text(ago(i.at_ms, now)).font(SANS).size(12.0).color(INK_3).into());
     let line = row![
-        button(text(agent).font(SERIF).size(14.0).color(INK))
+        button(text(agent).font(SANS).size(14.0).color(INK))
             .padding(0.0)
             .style(link_style)
             .on_press(Msg::Go(Id::Agent(i.cid))),
-        text("violated").font(SERIF).size(14.0).color(INK_2),
-        text(law).font(SERIF).size(14.0).color(INK),
+        text("violated").font(SANS).size(14.0).color(INK_2),
+        text(law).font(SANS).size(14.0).color(INK),
     ]
     .spacing(6)
     .align_y(Alignment::Center);

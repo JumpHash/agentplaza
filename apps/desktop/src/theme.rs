@@ -1,10 +1,11 @@
 //! The register's visual language: the night-navy "Plaza" palette, the same
-//! tokens as the web console (`apps/web/src/styles/tokens.css`), a mono/serif pairing, ruled sheets and
+//! tokens as the web console (`apps/web/src/styles/tokens.css`), an Inter/Martian Mono pairing, ruled sheets and
 //! stamps — as far as iced's widgets carry it (no rotation, no dot leaders:
 //! the rules and the space between them stand in).
 
 use iced::widget::{button, container, rule, text_input};
-use iced::{Background, Border, Color, Font, Shadow, Theme, Vector, theme::Palette as IcedPalette};
+use iced::widget::text::LineHeight;
+use iced::{Background, Border, Color, Font, Shadow, Theme, Vector, font, theme::Palette as IcedPalette};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The page behind everything: the console's night navy.
@@ -46,13 +47,42 @@ pub const HOVER: Color = Color::from_rgb8(0x18, 0x20, 0x36);
 /// the bounded region reads as bounded without becoming a filled block.
 pub const SUBSTRATE: Color = Color::from_rgb8(0x0e, 0x13, 0x21);
 
-/// The monospace voice: ids, states, counts, serial. Martian Mono, embedded by
-/// the console (`console::run`).
+/// The interface and reading voice: Inter, embedded by the console (`console::run`) and the
+/// app's default font, so a text with no font of its own is Inter. Its weights are the TTFs
+/// the console embeds (Regular, Medium, SemiBold, Bold, Italic); they share the "Inter" family.
+pub const SANS: Font = Font::with_name("Inter");
+/// Inter at 500: controls and buttons.
+pub const SANS_MEDIUM: Font = Font { weight: font::Weight::Medium, ..SANS };
+/// Inter at 600: titles, selected tabs, badges and the labels that were uppercase mono.
+pub const SANS_SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..SANS };
+/// Inter at 700: figures and the empty-state titles.
+pub const SANS_BOLD: Font = Font { weight: font::Weight::Bold, ..SANS };
+/// Inter in italic: the error line and the notes.
+pub const SANS_ITALIC: Font = Font { style: font::Style::Italic, ..SANS };
+
+/// The code voice: code, diffs, terminals, raw tool output, and the ids, hashes and paths where
+/// alignment matters. Martian Mono, embedded by the console (`console::run`). Nothing else.
 pub const MONO: Font = Font::with_name("Martian Mono");
 
-/// The serif voice: prose and the sheet's lede. Source Serif 4, embedded by the
-/// console (`console::run`).
-pub const SERIF: Font = Font::with_name("Source Serif 4");
+/// The type roles (`docs/design/workspace.md`, section 1), in iced points (the web's CSS px).
+/// Page title: 20, line 1.3, 600.
+pub const TYPE_PAGE: f32 = 20.0;
+/// Section title (a card's head): 16, line 1.4, 600.
+pub const TYPE_SECTION: f32 = 16.0;
+/// Item title: 14, line 1.4, 600.
+pub const TYPE_ITEM: f32 = 14.0;
+/// Reading prose (transcripts, board posts, conversations): 15, line 1.6, 400.
+pub const TYPE_PROSE: f32 = 15.0;
+/// Interface text and controls: 13, line 1.4, 500 (600 when selected).
+pub const TYPE_UI: f32 = 13.0;
+/// Metadata, timestamps, helper text: 12, line 1.4, 400, secondary colour.
+pub const TYPE_META: f32 = 12.0;
+/// Badges and counts: 11, line 1.3, 600.
+pub const TYPE_BADGE: f32 = 11.0;
+/// Code: 13, line 1.5, Martian Mono.
+pub const TYPE_CODE: f32 = 13.0;
+/// The reading line height: 1.6 times the size.
+pub const READING: LineHeight = LineHeight::Relative(1.6);
 
 /// How a stamp reads: what colour it is pressed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
