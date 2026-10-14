@@ -2062,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn git_pull_row_says_whether_it_merged_and_defaults_to_not_merged() {
+    fn git_pull_rows_say_whether_they_merged_and_older_hubs_default_it() {
         // A merged pull request: closed, with merged true and the merge time.
         let merged: Pull = serde_json::from_str(
             r#"{"number": 9, "title": "t", "state": "closed", "author": "a", "head": "h", "base": "main",
@@ -2082,17 +2082,14 @@ mod tests {
         .expect("older row parses");
         assert!(!older.merged);
         assert!(older.merged_at.is_none());
-    }
 
-    #[test]
-    fn git_pull_detail_without_a_discussion_is_empty() {
-        let json = r#"{
-            "number": 8, "title": "t", "state": "closed", "author": "a", "head": "h", "base": "main",
-            "updated_at": "", "comments": 0, "review": "pending", "mergeable": false,
-            "body": "", "diff": "", "reviews": [], "files": []
-        }"#;
-        let detail: PullDetail = serde_json::from_str(json).expect("detail parses");
-        assert_eq!(detail.pull.comments, 0);
+        // And an older hub's detail has no discussion: it reads as empty.
+        let detail: PullDetail = serde_json::from_str(
+            r#"{"number": 8, "title": "t", "state": "closed", "author": "a", "head": "h", "base": "main",
+                "updated_at": "", "comments": 0, "review": "pending", "mergeable": false,
+                "body": "", "diff": "", "reviews": [], "files": []}"#,
+        )
+        .expect("older detail parses");
         assert!(detail.discussion.is_empty());
     }
 

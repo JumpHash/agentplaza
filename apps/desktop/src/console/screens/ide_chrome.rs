@@ -558,13 +558,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_fresh_layout_opens_both_panels_at_their_defaults() {
-        let layout = Layout::fresh();
-        assert_eq!((layout.left, layout.right), (264.0, 400.0));
-        assert!(layout.is_open(Edge::Left) && layout.is_open(Edge::Right));
-    }
-
-    #[test]
     fn a_panel_width_is_clamped_to_its_range() {
         let mut layout = Layout::fresh();
         layout.set_width(Edge::Left, 10.0);
@@ -586,6 +579,8 @@ mod tests {
     #[test]
     fn a_panel_folds_and_unfolds_on_its_own() {
         let mut layout = Layout::fresh();
+        assert_eq!((layout.left, layout.right), (264.0, 400.0), "the defaults");
+        assert!(layout.is_open(Edge::Left) && layout.is_open(Edge::Right));
         layout.toggle(Edge::Left);
         assert!(!layout.is_open(Edge::Left));
         assert!(

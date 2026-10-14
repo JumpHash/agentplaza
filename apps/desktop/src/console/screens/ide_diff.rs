@@ -296,15 +296,6 @@ index 1111111..2222222 100644
     }
 
     #[test]
-    fn signs_and_counts_follow_the_line_kinds() {
-        let file = one_file();
-        assert_eq!(counts(&file), (1, 1));
-        assert_eq!(sign(LineKind::Add), "+");
-        assert_eq!(sign(LineKind::Remove), "-");
-        assert_eq!(sign(LineKind::Context), " ");
-    }
-
-    #[test]
     fn a_binary_file_is_a_note_not_a_list_of_lines() {
         let file = FileChange {
             path: "logo.png".into(),
@@ -335,7 +326,12 @@ index 1111111..2222222 100644
     }
 
     #[test]
-    fn statuses_have_their_letters_and_the_summary_counts_the_set() {
+    fn signs_counts_statuses_and_the_summary_follow_the_lines_and_files() {
+        let file = one_file();
+        assert_eq!(counts(&file), (1, 1));
+        assert_eq!(sign(LineKind::Add), "+");
+        assert_eq!(sign(LineKind::Remove), "-");
+        assert_eq!(sign(LineKind::Context), " ");
         assert_eq!(status_letter(Status::Added), "A");
         assert_eq!(status_letter(Status::Renamed), "R");
         let set = parse_unified(DIFF).expect("parses");

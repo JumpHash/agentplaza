@@ -1126,13 +1126,11 @@ mod tests {
             100
         );
         assert!(with_retention(json!([]), 100, 0).is_err());
-    }
 
-    #[test]
-    fn conversations_retention_reads_back_as_text() {
-        let settings = json!({"retention": {"conversations_max": 1000, "conversations_days": 0}});
+        // And the saved values read back as text, or nothing when the settings have none.
+        let read = json!({"retention": {"conversations_max": 1000, "conversations_days": 0}});
         assert_eq!(
-            retention_fields(&settings),
+            retention_fields(&read),
             Some(("1000".to_string(), "0".to_string()))
         );
         assert_eq!(retention_fields(&json!({})), None);

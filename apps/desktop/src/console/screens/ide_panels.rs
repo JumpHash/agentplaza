@@ -1127,6 +1127,12 @@ mod tests {
 
     #[test]
     fn a_stop_asked_once_and_ended_by_the_hub_reads_as_stopped() {
+        // Only a running run can be stopped: no run yet, or one still starting, has no id to stop.
+        assert!(!Run::default().stop_requested());
+        let mut starting = Run::default();
+        starting.start("x");
+        assert!(!starting.stop_requested(), "no run id yet to stop");
+
         let mut run = running();
         assert!(run.stop_requested());
         assert!(!run.stop_requested(), "a second stop is not sent");
@@ -1153,15 +1159,6 @@ mod tests {
             Step::Again,
             "the run is still polled"
         );
-    }
-
-    #[test]
-    fn only_a_running_run_can_be_stopped() {
-        let mut idle = Run::default();
-        assert!(!idle.stop_requested());
-        let mut starting = Run::default();
-        starting.start("x");
-        assert!(!starting.stop_requested(), "no run id yet to stop");
     }
 
     #[test]

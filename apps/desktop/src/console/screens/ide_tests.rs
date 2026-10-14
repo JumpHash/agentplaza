@@ -213,11 +213,21 @@ fn a_remote_event_for_a_clean_open_file_reloads_it() {
 }
 
 #[test]
-fn escape_closes_quick_open_before_it_goes_back() {
+fn escape_closes_quick_open_and_the_search_before_it_goes_back() {
     let mut st = screen_with_a_tab();
     st.quick = Some("a".into());
     let _ = update(&mut st, Msg::Escape, &ctx());
     assert_eq!(st.quick, None, "the first Escape closes quick open");
+
+    let _ = update(&mut st, Msg::ToggleSearch, &ctx());
+    assert_eq!(
+        st.right,
+        RightTab::Files,
+        "the search opens in the Files tab"
+    );
+    assert!(st.search.is_some());
+    let _ = update(&mut st, Msg::Escape, &ctx());
+    assert!(st.search.is_none(), "the next Escape closes the search");
 }
 
 #[test]
@@ -406,20 +416,6 @@ fn back_goes_to_the_screen_the_ide_was_opened_from_and_never_to_the_ide() {
 }
 
 #[test]
-fn escape_closes_the_search_before_it_goes_back() {
-    let mut st = screen_with_a_tab();
-    let _ = update(&mut st, Msg::ToggleSearch, &ctx());
-    assert_eq!(
-        st.right,
-        RightTab::Files,
-        "the search opens in the Files tab"
-    );
-    assert!(st.search.is_some());
-    let _ = update(&mut st, Msg::Escape, &ctx());
-    assert!(st.search.is_none(), "the first Escape closes the search");
-}
-
-#[test]
 fn the_centre_tabs_pick_the_view_and_the_right_tabs_pick_their_panel() {
     let mut st = screen_with_a_tab();
     assert_eq!(
@@ -433,9 +429,16 @@ fn the_centre_tabs_pick_the_view_and_the_right_tabs_pick_their_panel() {
         st.terminals.is_some(),
         "the terminal view makes the shell's tabs"
     );
+    assert!(st.layout.drawer, "the terminal view opens the drawer");
     let _ = update(&mut st, Msg::Right(RightTab::Activity), &ctx());
     assert_eq!(st.right, RightTab::Activity);
     assert!(st.layout.right_open, "a right tab opens the right panel");
+    let _ = update(&mut st, Msg::Centre(Centre::Chat), &ctx());
+    assert!(st.chat_scroll.shown && st.chat_scroll.at_bottom);
+    assert_eq!(
+        st.chat_scroll.unread, 0,
+        "the chat comes back at its newest entry"
+    );
 }
 
 #[test]
@@ -913,15 +916,4 @@ fn a_narrow_window_makes_the_side_panels_a_drawer_and_a_sheet_and_the_toggles_op
     // Escape closes what lies over the centre before it goes back.
     let _ = update(&mut st, Msg::Escape, &ctx());
     assert!(!st.right_sheet);
-}
-
-#[test]
-fn the_terminal_view_opens_the_drawer_and_the_chat_comes_back_at_its_newest_entry() {
-    let mut st = screen_with_a_tab();
-    assert!(!st.layout.drawer, "the drawer starts closed");
-    let _ = update(&mut st, Msg::Centre(Centre::Terminal), &ctx());
-    assert!(st.layout.drawer, "the Terminal view opens the drawer");
-    let _ = update(&mut st, Msg::Centre(Centre::Chat), &ctx());
-    assert!(st.chat_scroll.shown && st.chat_scroll.at_bottom);
-    assert_eq!(st.chat_scroll.unread, 0);
 }

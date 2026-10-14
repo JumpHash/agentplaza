@@ -563,15 +563,12 @@ mod tests {
     }
 
     #[test]
-    fn a_vote_row_parses_its_seat_and_agent() {
+    fn hub_vote_and_motion_rows_parse_their_seat_agent_and_quorum_rule() {
         let vote: Vote = serde_json::from_value(json!({ "seat": "architect", "agent_cid": 42, "vote": "yes", "reason": "sound", "at": 1 })).unwrap();
-        assert_eq!(vote.seat, "architect");
-        assert_eq!(vote.agent_cid, 42);
-        assert_eq!(vote.vote, "yes");
-    }
-
-    #[test]
-    fn a_motion_parses_its_quorum_rule() {
+        assert_eq!(
+            (vote.seat.as_str(), vote.agent_cid, vote.vote.as_str()),
+            ("architect", 42, "yes")
+        );
         let motion: Motion = serde_json::from_value(json!({
             "id": "m1",
             "state": "open",

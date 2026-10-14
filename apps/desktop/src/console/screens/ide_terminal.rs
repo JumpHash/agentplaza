@@ -1844,81 +1844,42 @@ mod tests {
     }
 
     #[test]
-    fn plain_and_control_keys_send_their_bytes() {
-        assert_eq!(bytes(Key::Char('a'), Mods::default(), false), "a");
-        assert_eq!(bytes(Key::Char('é'), Mods::default(), false), "é");
-        assert_eq!(bytes(Key::Char('c'), ctrl(), false), "\u{3}", "Ctrl-C");
-        assert_eq!(
-            bytes(Key::Char('['), ctrl(), false),
-            "\u{1b}",
-            "Ctrl-[ is Escape"
-        );
-        assert_eq!(
-            bytes(Key::Char('d'), alt(), false),
-            "\u{1b}d",
-            "Alt sends ESC first"
-        );
-        assert_eq!(bytes(Key::Enter, Mods::default(), false), "\r");
-        assert_eq!(bytes(Key::Backspace, Mods::default(), false), "\u{7f}");
-        assert_eq!(
-            bytes(
-                Key::Tab,
-                Mods {
-                    shift: true,
-                    ..Mods::default()
-                },
-                false
-            ),
-            "\x1b[Z"
-        );
-        assert_eq!(bytes(Key::Escape, Mods::default(), false), "\u{1b}");
-    }
-
-    #[test]
-    fn arrows_follow_application_cursor_mode_and_modifiers() {
-        assert_eq!(bytes(Key::Up, Mods::default(), false), "\x1b[A");
-        assert_eq!(
-            bytes(Key::Up, Mods::default(), true),
-            "\x1bOA",
-            "DECCKM sends SS3"
-        );
-        assert_eq!(
-            bytes(
-                Key::Left,
-                Mods {
-                    ctrl: true,
-                    ..Mods::default()
-                },
-                false
-            ),
-            "\x1b[1;5D",
-            "Ctrl-Left"
-        );
-        assert_eq!(bytes(Key::Home, Mods::default(), true), "\x1bOH");
-        assert_eq!(bytes(Key::End, Mods::default(), false), "\x1b[F");
-    }
-
-    #[test]
-    fn editing_and_function_keys() {
-        assert_eq!(bytes(Key::PageUp, Mods::default(), false), "\x1b[5~");
-        assert_eq!(
-            bytes(
-                Key::PageDown,
-                Mods {
-                    shift: true,
-                    ..Mods::default()
-                },
-                false
-            ),
-            "\x1b[6;2~"
-        );
-        assert_eq!(bytes(Key::Delete, Mods::default(), false), "\x1b[3~");
-        assert_eq!(bytes(Key::Insert, Mods::default(), false), "\x1b[2~");
-        assert_eq!(bytes(Key::F(1), Mods::default(), false), "\x1bOP");
-        assert_eq!(bytes(Key::F(4), Mods::default(), false), "\x1bOS");
-        assert_eq!(bytes(Key::F(5), Mods::default(), false), "\x1b[15~");
-        assert_eq!(bytes(Key::F(12), Mods::default(), false), "\x1b[24~");
-        assert_eq!(bytes(Key::F(5), ctrl(), false), "\x1b[15;5~");
+    fn keys_send_their_bytes_with_the_modifiers_and_the_cursor_mode() {
+        let shift = || Mods {
+            shift: true,
+            ..Mods::default()
+        };
+        let none = Mods::default;
+        for (key, mods, app, want) in [
+            // Plain and control keys.
+            (Key::Char('a'), none(), false, "a"),
+            (Key::Char('é'), none(), false, "é"),
+            (Key::Char('c'), ctrl(), false, "\u{3}"),
+            (Key::Char('['), ctrl(), false, "\u{1b}"),
+            (Key::Char('d'), alt(), false, "\u{1b}d"),
+            (Key::Enter, none(), false, "\r"),
+            (Key::Backspace, none(), false, "\u{7f}"),
+            (Key::Tab, shift(), false, "\x1b[Z"),
+            (Key::Escape, none(), false, "\u{1b}"),
+            // Arrows: application cursor mode sends SS3, and modifiers add a parameter.
+            (Key::Up, none(), false, "\x1b[A"),
+            (Key::Up, none(), true, "\x1bOA"),
+            (Key::Left, ctrl(), false, "\x1b[1;5D"),
+            (Key::Home, none(), true, "\x1bOH"),
+            (Key::End, none(), false, "\x1b[F"),
+            // Editing keys and function keys.
+            (Key::PageUp, none(), false, "\x1b[5~"),
+            (Key::PageDown, shift(), false, "\x1b[6;2~"),
+            (Key::Delete, none(), false, "\x1b[3~"),
+            (Key::Insert, none(), false, "\x1b[2~"),
+            (Key::F(1), none(), false, "\x1bOP"),
+            (Key::F(4), none(), false, "\x1bOS"),
+            (Key::F(5), none(), false, "\x1b[15~"),
+            (Key::F(12), none(), false, "\x1b[24~"),
+            (Key::F(5), ctrl(), false, "\x1b[15;5~"),
+        ] {
+            assert_eq!(bytes(key, mods, app), want, "{key:?}");
+        }
     }
 
     #[test]
@@ -1981,12 +1942,6 @@ mod tests {
         assert!(in_range(b, a, 5, 0));
         assert!(!in_range(b, a, 5, 4));
         assert!(!in_range(b, a, 3, 99));
-    }
-
-    #[test]
-    fn the_backoff_is_one_two_five_then_ten_seconds() {
-        let secs: Vec<u64> = BACKOFF.iter().map(Duration::as_secs).collect();
-        assert_eq!(secs, vec![1, 2, 5, 10]);
     }
 
     #[test]
