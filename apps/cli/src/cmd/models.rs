@@ -116,16 +116,16 @@ pub enum Cmd {
         /// The model, e.g. anthropic/claude-x.
         model: String,
     },
-    /// The model price sources.
+    /// The model prices, or the price sources refreshed.
     Prices {
         #[command(subcommand)]
-        action: PricesCmd,
+        action: Option<PricesCmd>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum PricesCmd {
-    /// Fetches the price sources again now.
+    /// Fetches the price sources again now, then prints what each one returned.
     Refresh,
 }
 
@@ -448,9 +448,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&v, print_price);
             Ok(())
         }
-        Cmd::Prices { action: PricesCmd::Refresh } => {
+        Cmd::Prices { action: Some(PricesCmd::Refresh) } => {
             let v = ctx.client.call("POST", "/v1/prices/refresh", None)?;
-            ctx.out(&v, |_| println!("refreshed the price sources; list them with `agentplaza usage prices`"));
+            ctx.out(&v, print_refresh);
+            Ok(())
+        }
+        Cmd::Prices { action: None } => {
+            let v = ctx.client.get("/v1/prices")?;
+            ctx.out(&v, print_prices);
             Ok(())
         }
         Cmd::Decisions { action: DecisionsCmd::Current { provider, model } } => match (provider, model) {
@@ -706,23 +711,57 @@ fn price_path(model: &str) -> String {
     format!("/v1/prices/{}", ctx::seg(model))
 }
 
+/// A rate, or a dash when the source does not give one.
+fn rate(price: &Value, key: &str) -> String {
+    match ctx::text(price, key) {
+        text if text.is_empty() => "—".to_string(),
+        text => text,
+    }
+}
+
 /// One model's price, as `usage prices` shows it: a rate the source does not give reads as a dash.
 fn print_price(v: &Value) {
     let price = v.get("price").unwrap_or(&Value::Null);
-    let rate = |key: &str| match ctx::text(price, key) {
-        text if text.is_empty() => "—".to_string(),
-        text => text,
-    };
     ctx::fields(&[
         ("model", ctx::text(v, "model")),
-        ("input", rate("input")),
-        ("output", rate("output")),
-        ("cache read", rate("cache_read")),
-        ("cache write", rate("cache_write")),
+        ("input", rate(price, "input")),
+        ("output", rate(price, "output")),
+        ("cache read", rate(price, "cache_read")),
+        ("cache write", rate(price, "cache_write")),
         ("source", ctx::s(price, "source").to_string()),
     ]);
     println!();
     println!("USD per million tokens");
+}
+
+/// One row per price source a refresh fetched: its name, how many models it gave, whether it worked, and why not.
+fn source_rows(v: &Value) -> Vec<Vec<String>> {
+    items(v.get("sources").unwrap_or(&Value::Null))
+        .map(|s| vec![ctx::s(s, "name").to_string(), ctx::text(s, "models"), ctx::text(s, "ok"), rate(s, "error")])
+        .collect()
+}
+
+/// One row per price: the model, its input and output rates, and the source they came from.
+fn price_rows(v: &Value) -> Vec<Vec<String>> {
+    items(v.get("models").unwrap_or(&Value::Null))
+        .map(|m| {
+            let price = m.get("price").unwrap_or(&Value::Null);
+            vec![ctx::text(m, "model"), rate(price, "input"), rate(price, "output"), ctx::s(price, "source").to_string()]
+        })
+        .collect()
+}
+
+/// What a refresh fetched: when, and each source's outcome.
+fn print_refresh(v: &Value) {
+    println!("refreshed the price sources, fetched {}", ctx::when(v.get("fetched_at_ms").unwrap_or(&Value::Null)));
+    println!();
+    ctx::table(&["source", "models", "ok", "error"], &source_rows(v));
+}
+
+/// Every price the plaza knows, as `usage prices` lists them.
+fn print_prices(v: &Value) {
+    println!("USD per million tokens");
+    ctx::table(&["model", "input", "output", "source"], &price_rows(v));
 }
 
 /// The decision model, as the decisions screen names it.
@@ -857,9 +896,47 @@ mod tests {
     }
 
     #[test]
-    fn price_takes_a_model_and_prices_takes_refresh() {
+    fn price_takes_a_model_and_prices_takes_refresh_or_nothing() {
         assert!(matches!(Probe::try_parse_from(["models", "price", "anthropic/claude-x"]).map(|p| p.cmd), Ok(Cmd::Price { model }) if model == "anthropic/claude-x"));
-        assert!(matches!(Probe::try_parse_from(["models", "prices", "refresh"]).map(|p| p.cmd), Ok(Cmd::Prices { action: PricesCmd::Refresh })));
-        assert!(Probe::try_parse_from(["models", "prices"]).is_err(), "prices needs its action");
+        assert!(matches!(Probe::try_parse_from(["models", "prices", "refresh"]).map(|p| p.cmd), Ok(Cmd::Prices { action: Some(PricesCmd::Refresh) })));
+        assert!(matches!(Probe::try_parse_from(["models", "prices"]).map(|p| p.cmd), Ok(Cmd::Prices { action: None })));
+    }
+
+    #[test]
+    fn a_refresh_lists_each_source_with_its_models_and_error() {
+        let v = json!({
+            "fetched_at_ms": 1,
+            "sources": [
+                { "name": "openrouter", "url": "u", "models": 3, "ok": true, "error": null },
+                { "name": "litellm", "url": "u", "models": 0, "ok": false, "error": "timeout" }
+            ],
+            "models": [{ "model": "x", "price": { "input": 1.0 } }]
+        });
+        assert_eq!(
+            source_rows(&v),
+            vec![
+                vec!["openrouter".to_string(), "3".into(), "true".into(), "—".into()],
+                vec!["litellm".to_string(), "0".into(), "false".into(), "timeout".into()],
+            ]
+        );
+    }
+
+    #[test]
+    fn the_prices_list_shows_model_rates_and_source_and_dashes_a_missing_rate() {
+        let v = json!({
+            "fetched_at_ms": 1,
+            "sources": [],
+            "models": [
+                { "model": "anthropic/claude-x", "price": { "input": 15.0, "output": 75.0, "cache_read": 1.5, "source": "openrouter" } },
+                { "model": "mystery", "price": { "input": 1.0, "source": "litellm" } }
+            ]
+        });
+        assert_eq!(
+            price_rows(&v),
+            vec![
+                vec!["anthropic/claude-x".to_string(), "15.0".into(), "75.0".into(), "openrouter".into()],
+                vec!["mystery".to_string(), "1.0".into(), "—".into(), "litellm".into()],
+            ]
+        );
     }
 }

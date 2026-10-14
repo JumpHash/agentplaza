@@ -695,6 +695,8 @@ fn source_line(f: &ConnField) -> String {
     match f.source.as_deref() {
         Some("vault") => "Set in the vault".to_string(),
         Some("env") => format!("Read from ${}", f.env),
+        Some("sealed") => "Vault sealed".to_string(),
+        Some("out_of_scope") => "Not available on this node".to_string(),
         _ => format!("Not set — or set ${} in apid's keys file", f.env),
     }
 }
@@ -1416,4 +1418,27 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     };
     // The page scrolls as the web does: a tall list is not squeezed into the window.
     ui::scroll(ui::sheet(ui::view_head("Tools", vec![]), body)).height(Length::Fill).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field(source: Option<&str>) -> ConnField {
+        ConnField { env: "EXAMPLE_KEY".into(), source: source.map(String::from), ..Default::default() }
+    }
+
+    #[test]
+    fn a_sealed_vault_and_an_out_of_scope_connector_say_so() {
+        assert_eq!(source_line(&field(Some("sealed"))), "Vault sealed");
+        assert_eq!(source_line(&field(Some("out_of_scope"))), "Not available on this node");
+    }
+
+    #[test]
+    fn the_other_sources_keep_their_lines() {
+        assert_eq!(source_line(&field(Some("vault"))), "Set in the vault");
+        assert_eq!(source_line(&field(Some("env"))), "Read from $EXAMPLE_KEY");
+        assert_eq!(source_line(&field(Some("missing"))), "Not set — or set $EXAMPLE_KEY in apid's keys file");
+        assert_eq!(source_line(&field(None)), "Not set — or set $EXAMPLE_KEY in apid's keys file");
+    }
 }

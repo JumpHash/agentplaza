@@ -430,6 +430,8 @@ pub struct State {
     providers: Vec<Provider>,
     /// Providers whose models the hub could not list, with why.
     listing_errors: Vec<ListingError>,
+    /// Why `/v1/models` itself could not be read; the providers still show without it.
+    listing_unavailable: Option<String>,
     expanded: BTreeSet<String>,
     listed: BTreeMap<String, Vec<ListedModel>>,
     dialog: Dialog,
@@ -536,10 +538,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.tab = tab;
             load(state, ctx)
         }
-        Msg::Loaded(Ok((kinds, providers, listing_errors))) => {
+        Msg::Loaded(Ok((kinds, providers, listing))) => {
             state.kinds = kinds;
             state.providers = providers;
-            state.listing_errors = listing_errors;
+            let (errors, unavailable) = match listing {
+                Ok(errors) => (errors, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            state.listing_errors = errors;
+            state.listing_unavailable = unavailable;
             state.error = None;
             Task::none()
         }
@@ -1092,8 +1099,9 @@ fn tabs_strip<'a>(state: &'a State) -> Element<'a, Msg> {
     column(vec![strip.into(), ui::hairline()]).into()
 }
 
-/// What the providers tab loads: the provider kinds, the providers, and the providers whose models could not be listed.
-type ProvidersLoad = (Vec<ProviderKind>, Vec<Provider>, Vec<ListingError>);
+/// What the providers tab loads: the provider kinds, the providers, and the listing (the providers whose models
+/// could not be listed, or why the listing itself could not be read). Only the first two failing fails the load.
+type ProvidersLoad = (Vec<ProviderKind>, Vec<Provider>, Result<Vec<ListingError>, String>);
 
 fn providers_task(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
@@ -1101,8 +1109,8 @@ fn providers_task(ctx: &Ctx) -> Task<Msg> {
         move || -> Result<ProvidersLoad, String> {
             let kinds = c.get::<Vec<ProviderKind>>("/v1/provider-kinds")?;
             let providers = c.get::<Vec<Provider>>("/v1/providers")?;
-            let listing = c.get::<ModelsView>("/v1/models")?;
-            Ok((kinds, providers, listing.errors))
+            let listing = c.get::<ModelsView>("/v1/models").map(|view| view.errors);
+            Ok((kinds, providers, listing))
         },
         Msg::Loaded,
     )
@@ -1137,6 +1145,11 @@ fn custom_body(id: &str, kind: &str, base_url: &str, env: &str) -> Value {
 /// A provider whose models could not be listed, as the warning line names it.
 fn listing_warning(e: &ListingError) -> String {
     format!("{}: {}", e.provider, e.error)
+}
+
+/// The one warning line for a `/v1/models` read that failed.
+fn listing_unavailable_line(error: &str) -> String {
+    format!("Model listing unavailable: {error}")
 }
 
 fn policy_task(ctx: &Ctx) -> Task<Msg> {
@@ -1323,6 +1336,9 @@ fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![row(vec![spacer(), ui::btn("Add provider", None, Kind::Primary, Some(Msg::OpenCatalogue))]).into()];
     for e in &state.listing_errors {
         parts.push(text(listing_warning(e)).font(theme::SERIF).size(13.0).color(Tone::Warn.color()).into());
+    }
+    if let Some(error) = &state.listing_unavailable {
+        parts.push(text(listing_unavailable_line(error)).font(theme::SERIF).size(13.0).color(Tone::Warn.color()).into());
     }
     if let Some(d) = dialog_view(state) {
         parts.push(d);
@@ -1984,5 +2000,10 @@ mod tests {
     fn a_listing_error_reads_as_the_provider_and_its_error() {
         let e = ListingError { provider: "ollama".into(), error: "connection refused".into() };
         assert_eq!(listing_warning(&e), "ollama: connection refused");
+    }
+
+    #[test]
+    fn a_failed_model_listing_reads_as_one_warning_line() {
+        assert_eq!(listing_unavailable_line("HTTP 503"), "Model listing unavailable: HTTP 503");
     }
 }
