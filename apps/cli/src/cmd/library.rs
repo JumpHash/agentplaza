@@ -8,6 +8,11 @@ use serde_json::{json, Value};
 
 use crate::ctx::{self, confirm, Ctx};
 
+/// The buckets the library filters by (the Library screen's groups).
+const BUCKETS: [&str; 5] = ["video", "image", "audio", "documents", "other"];
+/// The columns of `library list`.
+const COLUMNS: [&str; 8] = ["id", "kind", "name", "title", "size", "author", "task", "audience"];
+
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// List the files: deliverables and shared files.
@@ -15,6 +20,12 @@ pub enum Cmd {
         /// Only `deliverable` or `shared`.
         #[arg(long)]
         kind: Option<String>,
+        /// Only files whose title or name holds this text (case-insensitive).
+        #[arg(long)]
+        search: Option<String>,
+        /// Only one type: video, image, audio, documents or other.
+        #[arg(long = "type", value_parser = clap::builder::PossibleValuesParser::new(BUCKETS))]
+        file_type: Option<String>,
     },
     /// Show one file's details.
     Show {
@@ -41,7 +52,7 @@ pub enum Cmd {
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
-        Cmd::List { kind } => list(ctx, kind),
+        Cmd::List { kind, search, file_type } => list(ctx, kind, search, file_type),
         Cmd::Show { id } => show(ctx, &id),
         Cmd::Download { id, to } => download(ctx, &id, to),
         Cmd::Delete { id, yes } => delete(ctx, &id, yes),
@@ -52,19 +63,59 @@ fn array(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
-fn list(ctx: &Ctx, kind: Option<String>) -> Result<(), String> {
+/// The bucket a file's content type falls in: the groups the web's library filters by.
+fn bucket_of(content_type: &str) -> &'static str {
+    let t = content_type.to_lowercase();
+    if t.starts_with("video/") {
+        "video"
+    } else if t.starts_with("image/") {
+        "image"
+    } else if t.starts_with("audio/") {
+        "audio"
+    } else if t == "application/pdf"
+        || t.starts_with("text/")
+        || t.contains("json")
+        || t.contains("xml")
+        || t.contains("word")
+        || t.contains("officedocument")
+        || t.contains("opendocument")
+        || t.contains("rtf")
+    {
+        "documents"
+    } else {
+        "other"
+    }
+}
+
+/// Whether a file's title or name holds `search` (case-insensitive); a blank search holds all.
+fn matches_search(file: &Value, search: &str) -> bool {
+    let needle = search.trim().to_lowercase();
+    needle.is_empty()
+        || ctx::s(file, "title").to_lowercase().contains(&needle)
+        || ctx::s(file, "name").to_lowercase().contains(&needle)
+}
+
+/// Whether a file is in the bucket asked for (no bucket asked for holds all).
+fn matches_bucket(file: &Value, bucket: Option<&str>) -> bool {
+    bucket.is_none_or(|b| bucket_of(ctx::s(file, "content_type")) == b)
+}
+
+fn list(ctx: &Ctx, kind: Option<String>, search: Option<String>, file_type: Option<String>) -> Result<(), String> {
     let path = match kind.as_deref() {
         None => "/v1/files".to_string(),
         Some(k @ ("deliverable" | "shared")) => format!("/v1/files?kind={k}"),
         Some(_) => return Err("--kind is deliverable or shared".into()),
     };
     let value = ctx.client.get(&path)?;
-    ctx.out(&value, |v| {
-        let rows: Vec<Vec<String>> = array(v)
-            .iter()
-            .map(|f| ["id", "kind", "name", "size", "author", "audience"].iter().map(|k| ctx::text(f, k)).collect())
-            .collect();
-        ctx::table(&["id", "kind", "name", "size", "author", "audience"], &rows);
+    let search = search.unwrap_or_default();
+    let files: Vec<Value> = array(&value)
+        .iter()
+        .filter(|f| matches_search(f, &search) && matches_bucket(f, file_type.as_deref()))
+        .cloned()
+        .collect();
+    ctx.out(&json!(files), |_| {
+        let rows: Vec<Vec<String>> = files.iter().map(|f| COLUMNS.iter().map(|k| ctx::text(f, k)).collect()).collect();
+        ctx::table(&COLUMNS, &rows);
     });
     Ok(())
 }
@@ -134,4 +185,42 @@ fn delete(ctx: &Ctx, id: &str, yes: bool) -> Result<(), String> {
     let value = ctx.client.delete(&format!("/v1/files/{}", ctx::seg(id)))?;
     ctx.out(&value, |_| println!("deleted file {id}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_fall_into_the_web_buckets() {
+        assert_eq!(bucket_of("video/mp4"), "video");
+        assert_eq!(bucket_of("IMAGE/PNG"), "image");
+        assert_eq!(bucket_of("audio/mpeg"), "audio");
+        assert_eq!(bucket_of("application/pdf"), "documents");
+        assert_eq!(bucket_of("text/markdown"), "documents");
+        assert_eq!(bucket_of("application/json"), "documents");
+        assert_eq!(bucket_of("application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "documents");
+        assert_eq!(bucket_of("application/vnd.oasis.opendocument.text"), "documents");
+        assert_eq!(bucket_of("application/zip"), "other");
+        assert_eq!(bucket_of(""), "other");
+    }
+
+    #[test]
+    fn search_matches_title_or_name_without_case() {
+        let file = json!({ "name": "Report.PDF", "title": "Q3 results", "content_type": "application/pdf" });
+        assert!(matches_search(&file, "q3"));
+        assert!(matches_search(&file, "  report "));
+        assert!(matches_search(&file, ""));
+        assert!(!matches_search(&file, "budget"));
+        let untitled = json!({ "name": "notes.txt", "title": null });
+        assert!(matches_search(&untitled, "NOTES"));
+    }
+
+    #[test]
+    fn type_filter_holds_only_its_bucket() {
+        let image = json!({ "content_type": "image/png" });
+        assert!(matches_bucket(&image, None));
+        assert!(matches_bucket(&image, Some("image")));
+        assert!(!matches_bucket(&image, Some("documents")));
+    }
 }

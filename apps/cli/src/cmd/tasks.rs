@@ -87,8 +87,33 @@ fn lane_of(state: &str) -> &'static str {
 }
 
 /// The first line of a goal, the task's title.
-fn title_of(goal: &str) -> &str {
+pub(super) fn title_of(goal: &str) -> &str {
     goal.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled task")
+}
+
+/// One task's timeline: the work_start entries that name the task (in their `origin`, or at the
+/// top level, as the web and the desktop read them), and the timeline steps of those works.
+/// Entries of the agent's other work are left out.
+fn timeline_of(task_id: &str, entries: &[Value]) -> Vec<Value> {
+    let names_task = |e: &Value| {
+        let data = e.get("data");
+        let origin_task = data.and_then(|d| d.get("origin")).and_then(|o| o.get("task")).and_then(Value::as_str);
+        let top_task = data.and_then(|d| d.get("task")).and_then(Value::as_str);
+        origin_task == Some(task_id) || top_task == Some(task_id)
+    };
+    let works: Vec<u64> = entries
+        .iter()
+        .filter(|e| ctx::s(e, "kind") == "work_start" && names_task(e))
+        .filter_map(|e| e.get("work").and_then(Value::as_u64))
+        .collect();
+    entries
+        .iter()
+        .filter(|e| {
+            e.get("work").and_then(Value::as_u64).is_some_and(|w| works.contains(&w))
+                && TIMELINE_KINDS.iter().any(|k| *k == ctx::s(e, "kind"))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The `POST /v1/tasks` body with only the fields the user gave. An omitted budget
@@ -108,22 +133,6 @@ fn create_body(goal: String, acceptance: Option<String>, role: Option<String>, b
         body["assignee"] = json!(cid);
     }
     body
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn create_omits_the_budget_when_none_is_given() {
-        let bare = create_body("t".into(), None, None, None, None);
-        assert!(bare.get("budget").is_none(), "no budget field: {bare}");
-        assert_eq!(bare["goal"], "t");
-        let budgeted = create_body("t".into(), None, None, Some(500), Some(7));
-        assert_eq!(budgeted["budget"], 500);
-        assert_eq!(budgeted["assignee"], 7);
-        assert!(budgeted.get("acceptance").is_none());
-    }
 }
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
@@ -182,12 +191,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .get("agent_cid")
                 .and_then(Value::as_i64)
                 .ok_or("this task has no agent yet, so it has no timeline")?;
-            let entries = ctx.client.get(&format!("/v1/agents/{cid}/transcript?after=0&limit=1000"))?;
-            let kept: Vec<Value> = array(&entries)
-                .iter()
-                .filter(|e| TIMELINE_KINDS.iter().any(|k| *k == ctx::s(e, "kind")))
-                .cloned()
-                .collect();
+            // The newest 1000 entries (the hub's `last`), not the oldest.
+            let entries = ctx.client.get(&format!("/v1/agents/{cid}/transcript?last=1000"))?;
+            let kept = timeline_of(&id, array(&entries));
             ctx.out(&json!(kept), |_| {
                 for e in &kept {
                     let data: String = e.get("data").map(|d| d.to_string()).unwrap_or_default().chars().take(120).collect();
@@ -225,5 +231,39 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&t, |_| println!("withdrew task {id}"));
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_omits_the_budget_when_none_is_given() {
+        let bare = create_body("t".into(), None, None, None, None);
+        assert!(bare.get("budget").is_none(), "no budget field: {bare}");
+        assert_eq!(bare["goal"], "t");
+        let budgeted = create_body("t".into(), None, None, Some(500), Some(7));
+        assert_eq!(budgeted["budget"], 500);
+        assert_eq!(budgeted["assignee"], 7);
+        assert!(budgeted.get("acceptance").is_none());
+    }
+
+    #[test]
+    fn a_timeline_keeps_only_its_tasks_work() {
+        let entries = json!([
+            { "seq": 1, "work": 1, "kind": "work_start", "data": { "origin": { "task": "t1" } } },
+            { "seq": 2, "work": 1, "kind": "tool_request", "data": {} },
+            { "seq": 3, "work": 2, "kind": "work_start", "data": { "origin": { "task": "t2" } } },
+            { "seq": 4, "work": 2, "kind": "tool_request", "data": {} },
+            { "seq": 5, "work": 3, "kind": "work_start", "data": { "kind": "chat" } },
+            { "seq": 6, "work": 3, "kind": "work_end", "data": {} },
+            { "seq": 7, "work": 1, "kind": "work_end", "data": { "status": "done" } },
+            { "seq": 8, "work": 4, "kind": "work_start", "data": { "task": "t1" } },
+            { "seq": 9, "work": 4, "kind": "message", "data": {} }
+        ]);
+        let kept: Vec<u64> = timeline_of("t1", array(&entries)).iter().map(|e| e["seq"].as_u64().unwrap_or(0)).collect();
+        assert_eq!(kept, vec![1, 2, 7, 8]);
+        assert!(timeline_of("t9", array(&entries)).is_empty());
     }
 }

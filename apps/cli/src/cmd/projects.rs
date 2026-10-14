@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 
 use crate::ctx::{self, Ctx};
 
+use super::tasks::title_of;
+
 /// The stages a project goes through, in order (the pipeline on the Projects screen).
 const STAGES: [&str; 8] = [
     "brief",
@@ -57,6 +59,18 @@ fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).map(array).unwrap_or_default()
 }
 
+/// The project's tasks in its order. The project lists them by id only, so each is joined with
+/// the task list (its state and goal); an id the list does not show stays a bare id.
+fn task_rows(project_tasks: &[Value], all_tasks: &[Value]) -> Vec<Value> {
+    project_tasks
+        .iter()
+        .map(|t| {
+            let id = t.as_str().unwrap_or_default();
+            all_tasks.iter().find(|task| ctx::s(task, "id") == id).cloned().unwrap_or_else(|| json!({ "id": id }))
+        })
+        .collect()
+}
+
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List => {
@@ -80,6 +94,13 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Show { id } => {
             let p = ctx.client.get(&format!("/v1/projects/{}", ctx::seg(&id)))?;
+            // The JSON is the hub's project as it is; the task list is read only for the table view.
+            let tasks = if ctx.json {
+                Vec::new()
+            } else {
+                let all = ctx.client.get("/v1/tasks")?;
+                task_rows(array_at(&p, "tasks"), array_at(&all, "tasks"))
+            };
             ctx.out(&p, |p| {
                 ctx::fields(&[
                     ("id", ctx::text(p, "id")),
@@ -91,9 +112,18 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("revision", ctx::text(p, "revision")),
                 ]);
                 println!("\n{}", ctx::s(p, "goal"));
+                println!("\nTasks ({})", array_at(p, "tasks").len());
+                for t in &tasks {
+                    let goal = ctx::s(t, "goal");
+                    let title = if goal.is_empty() { "(not in the task list)" } else { title_of(goal) };
+                    println!("  {}  {}  {}", ctx::s(t, "id"), ctx::s(t, "state"), title);
+                }
                 println!("\nDocuments ({})", array_at(p, "docs").len());
                 for d in array_at(p, "docs") {
-                    println!("  {}  {}: {}", ctx::s(d, "kind"), ctx::s(d, "title"), ctx::s(d, "summary"));
+                    // The file's id is what `library download` takes; a document without a file has none.
+                    let file = ctx::text(d, "file");
+                    let file = if file.is_empty() { "-".to_string() } else { file };
+                    println!("  {}  {}  file {}: {}", ctx::s(d, "kind"), ctx::s(d, "title"), file, ctx::s(d, "summary"));
                 }
                 println!("\nCritiques ({})", array_at(p, "critiques").len());
                 for c in array_at(p, "critiques") {
@@ -128,5 +158,25 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&p, |_| println!("sent project {id} back to {stage}"));
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_projects_tasks_keep_its_order_and_take_their_state_from_the_list() {
+        let project_tasks = vec![json!("t2"), json!("t9"), json!("t1")];
+        let all = vec![
+            json!({ "id": "t1", "state": "done", "goal": "Write the plan\n\nDetails" }),
+            json!({ "id": "t2", "state": "open", "goal": "Draw it" }),
+        ];
+        let rows = task_rows(&project_tasks, &all);
+        let ids: Vec<&str> = rows.iter().map(|t| ctx::s(t, "id")).collect();
+        assert_eq!(ids, vec!["t2", "t9", "t1"]);
+        assert_eq!(ctx::s(&rows[0], "state"), "open");
+        assert_eq!(ctx::s(&rows[1], "state"), "", "an unknown task stays a bare id");
+        assert_eq!(title_of(ctx::s(&rows[2], "goal")), "Write the plan");
     }
 }
