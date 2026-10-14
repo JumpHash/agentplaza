@@ -13,6 +13,7 @@ import { agents, overview, startShared } from './store';
 import { button, dot, modal } from './ui/components';
 import { h, icon, replace } from './ui/dom';
 import { SCREENS, type Cleanup } from './views';
+import { runFirstStart } from './ui/onboarding';
 import { signInScreen } from './views/sign-in';
 
 const navLinks = new Map<string, HTMLElement>();
@@ -108,6 +109,8 @@ function main(): void {
     content.replaceChildren(root);
     cleanup = screen.mount(root, route.params);
   });
+  // The wizard and the tour: once, on the first start.
+  runFirstStart();
 }
 
 // Off loopback the hub wants the owner's sign-in first; the auth check decides the first screen.

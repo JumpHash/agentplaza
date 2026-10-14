@@ -88,6 +88,8 @@ pub struct State {
     pointer_x: f32,
     /// The pointer is over the handle (its signal line shows, as it does while dragging).
     handle_hot: bool,
+    /// The entry the tour is describing: drawn marked, as on the web.
+    pub highlight: Option<Id>,
 }
 
 impl Default for State {
@@ -116,6 +118,7 @@ impl Default for State {
             drag: None,
             pointer_x: 0.0,
             handle_hot: false,
+            highlight: None,
         }
     }
 }
@@ -381,6 +384,9 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
 pub static SCREEN_SCROLL: std::sync::LazyLock<iced::widget::Id> =
     std::sync::LazyLock::new(iced::widget::Id::unique);
 
+/// The id of the sidebar's list of entries: the tour scrolls it to the entry it describes.
+pub static SIDEBAR_SCROLL: std::sync::LazyLock<iced::widget::Id> = std::sync::LazyLock::new(iced::widget::Id::unique);
+
 /// Screens whose view scrolls its own page (a `scrollable` inside `ui::sheet`), or that handle their own
 /// pointer input (Floor's canvas). The shell wraps every other screen; add a screen here once its view scrolls itself.
 fn manages_scroll(id: &super::screens::Id) -> bool {
@@ -500,7 +506,7 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     }
     // The scrollbar's rail (6 px) sits in its own gutter, clear of the rows' count badges.
     let list = container(list).padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 0.0 });
-    let mut col = column![brand(open), ui::scroll(list).height(Length::Fill)].height(Length::Fill);
+    let mut col = column![brand(open), ui::scroll(list).id(SIDEBAR_SCROLL.clone()).height(Length::Fill)].height(Length::Fill);
     if open {
         col = col.push(footer(state, wrap));
     }
@@ -550,11 +556,14 @@ fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
 
 fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name: &str, open: bool, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let active = *id == state.current;
-    let glyph = if active { crate::theme::palette().signal } else { crate::theme::palette().ink_3 };
+    // The entry the tour is describing is marked as its screen is, on the web too.
+    let marked = state.highlight.as_ref() == Some(id);
+    let lit = active || marked;
+    let glyph = if lit { crate::theme::palette().signal } else { crate::theme::palette().ink_3 };
     // The web's `.nav a`: a 3 px signal bar inside the row on the active screen; the row takes the
     // active tint (`--hover`) or the hover tint (`--rule-faint`); labels are ink when hot or active.
     let bar = container(Space::new().width(Length::Fixed(3.0)).height(Length::Fill)).height(Length::Fill).style(move |_: &Theme| {
-        container::Style { background: if active { Some(crate::theme::palette().signal.into()) } else { None }, ..Default::default() }
+        container::Style { background: if lit { Some(crate::theme::palette().signal.into()) } else { None }, ..Default::default() }
     });
     let content: Element<'a, M> = if open {
         let mut r = row![
@@ -585,7 +594,7 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
         .padding(0)
         .style(move |_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let (background, text_color) = if active {
+            let (background, text_color) = if lit {
                 (Some(crate::theme::palette().hover.into()), crate::theme::palette().ink)
             } else if hovered {
                 (Some(crate::theme::palette().rule_faint.into()), crate::theme::palette().ink)

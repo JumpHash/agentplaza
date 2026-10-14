@@ -4,9 +4,11 @@
 
 import '../styles/setup.css';
 import { api, ApiError, vaultApi, type VaultStatus } from '../api';
+import { COPY } from '../onboarding/flow';
 import { href } from '../router';
 import { badge, button, card, type Tone } from '../ui/components';
 import { h } from '../ui/dom';
+import { offerTour, openWizard, startTour } from '../ui/onboarding';
 import type { Cleanup } from './index';
 
 type Status = 'checking' | 'ok' | 'warning' | 'failed' | 'desktop';
@@ -172,6 +174,15 @@ export function mount(root: HTMLElement): Cleanup {
       h('p.setup-intro', null, 'What the plaza needs before agents can run. The checks ask this hub. Rows marked Desktop are checked by the AgentPlaza app on this machine.'),
       h('div.setup-bar', null, summary, button('Run checks again', () => void run())),
       card('Checks', list, { flush: true }),
+      card(
+        null,
+        h(
+          'div.onboard-actions',
+          null,
+          button(COPY.replay.setup, () => openWizard(offerTour), { kind: 'primary' }),
+          button(COPY.replay.tour, () => startTour()),
+        ),
+      ),
     ),
   );
   void run();

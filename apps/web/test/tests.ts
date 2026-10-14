@@ -1,5 +1,6 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href } from '../src/router';
+import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
 import { ago, clip, compact } from '../src/ui/components';
 import { floorName, familyLabel, roleFamily } from '../src/roles';
 import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
@@ -340,6 +341,28 @@ sectionEnd('web tests: ok');
 }
 sectionEnd('hub mcp tests: ok');
 
+
+// The first-run wizard and the tour: steps, copy filling, flags that survive a refused store.
+eq(moveStep(0, -1, 4), 0, 'wizard: Back stops at the first step');
+eq(moveStep(3, 1, 4), 3, 'wizard: Next stops at the last step');
+eq(moveStep(1, 1, 8), 2, 'tour: Next moves one step');
+eq(WIZARD_STEPS.length <= 5, true, 'wizard: at most five steps');
+eq(WIZARD_STEPS[2]?.id, 'deps', 'wizard: the dependencies step is third, after the hub');
+eq(TOUR_STEPS.length >= 6 && TOUR_STEPS.length <= 8, true, 'tour: six to eight steps');
+eq(fill('{n} of {m} providers have a key', { n: 1, m: 3 }), '1 of 3 providers have a key', 'copy: placeholders fill');
+eq(fill('{n} of {m}', { n: 2 }), '2 of {m}', 'copy: a missing value stays visible');
+eq(keysSet([{ credential: 'missing' }, { credential: 'secret' }, { credential: 'env' }]), { n: 2, m: 3 }, 'keys: a missing credential does not count');
+const memory = new Map<string, string>();
+const fakeStore = { getItem: (k: string) => memory.get(k) ?? null, setItem: (k: string, v: string) => void memory.set(k, v) };
+eq(readFlag(fakeStore, 'setup'), false, 'flags: unset at first');
+writeFlag(fakeStore, 'setup');
+eq(readFlag(fakeStore, 'setup'), true, 'flags: set after a write');
+eq(readFlag(fakeStore, 'tour'), false, 'flags: each flag on its own key');
+const refusing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+eq(readFlag(refusing, 'setup'), false, 'flags: a refused read is not set');
+writeFlag(refusing, 'setup'); // must not throw
+eq(readFlag(null, 'tour'), false, 'flags: no store at all is not set');
+sectionEnd('onboarding tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

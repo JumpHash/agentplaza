@@ -32,6 +32,7 @@ pub mod mcp_wizard;
 pub mod vault;
 pub mod machines;
 pub mod nodes;
+pub mod setup;
 pub mod agent;
 pub mod sanctions;
 pub mod lab;
@@ -75,6 +76,7 @@ pub enum Id {
     Vault,
     Machines,
     Nodes,
+    Setup,
     /// One agent's page.
     Agent(u64),
     /// The Lab: its overview (the section strip's first tab).
@@ -116,6 +118,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Vault, "Vault", "Setup", "key"),
     (Id::Machines, "Machines", "Setup", "machine"),
     (Id::Nodes, "Nodes", "Setup", "link"),
+    (Id::Setup, "Setup", "Setup", "settings"),
 ];
 
 #[derive(Debug, Default)]
@@ -143,6 +146,7 @@ pub struct Screens {
     pub vault: vault::State,
     pub machines: machines::State,
     pub nodes: nodes::State,
+    pub setup: setup::State,
     pub agent: agent::State,
     pub lab: lab::State,
     pub lab_jobs: lab_jobs::State,
@@ -179,6 +183,7 @@ pub enum Msg {
     Vault(vault::Msg),
     Machines(machines::Msg),
     Nodes(nodes::Msg),
+    Setup(setup::Msg),
     Agent(agent::Msg),
     Lab(lab::Msg),
     LabJobs(lab_jobs::Msg),
@@ -216,6 +221,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Vault(m) => vault::go(m),
         Msg::Machines(m) => machines::go(m),
         Msg::Nodes(m) => nodes::go(m),
+        Msg::Setup(m) => setup::go(m),
         Msg::Agent(m) => agent::go(m),
         Msg::Lab(m) => lab::go(m),
         Msg::LabJobs(m) => lab_jobs::go(m),
@@ -269,6 +275,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Vault => vault::load(&mut screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::load(&mut screens.machines, ctx).map(Msg::Machines),
         Id::Nodes => nodes::load(&mut screens.nodes, ctx).map(Msg::Nodes),
+        Id::Setup => setup::load(&mut screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::load(&mut screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::load(&mut screens.lab_jobs, ctx).map(Msg::LabJobs),
@@ -306,6 +313,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Vault(m) => vault::update(&mut screens.vault, m, ctx).map(Msg::Vault),
         Msg::Machines(m) => machines::update(&mut screens.machines, m, ctx).map(Msg::Machines),
         Msg::Nodes(m) => nodes::update(&mut screens.nodes, m, ctx).map(Msg::Nodes),
+        Msg::Setup(m) => setup::update(&mut screens.setup, m, ctx).map(Msg::Setup),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
         Msg::Lab(m) => lab::update(&mut screens.lab, m, ctx).map(Msg::Lab),
         Msg::LabJobs(m) => lab_jobs::update(&mut screens.lab_jobs, m, ctx).map(Msg::LabJobs),
@@ -370,6 +378,7 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::Vault => vault::view(&screens.vault, ctx).map(Msg::Vault),
         Id::Machines => machines::view(&screens.machines, ctx).map(Msg::Machines),
         Id::Nodes => nodes::view(&screens.nodes, ctx).map(Msg::Nodes),
+        Id::Setup => setup::view(&screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::view(&screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::view(&screens.lab_jobs, ctx).map(Msg::LabJobs),

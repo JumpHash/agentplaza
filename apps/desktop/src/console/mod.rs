@@ -18,6 +18,7 @@ pub mod events;
 pub mod hubs;
 pub mod icons;
 pub mod lab_api;
+pub mod onboard;
 pub mod picker;
 pub(crate) mod render_card;
 pub mod screens;
@@ -43,6 +44,7 @@ pub struct Console {
     pub screens: screens::Screens,
     /// `APZ_PICK=<machine id>` (a capture hook): the machine the Machines screen picks once after its first load.
     pick: Option<String>,
+    pub onboard: onboard::State,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,8 @@ pub enum Msg {
     Boot(boot::Msg),
     Shell(shell::Msg),
     Screen(screens::Msg),
+    /// The first-run wizard and the tour.
+    Onboard(onboard::Msg),
     /// The poll timer: the shown screen reloads.
     Tick,
     /// `APZ_SNAPSHOT`: time to capture the window's own frame, and the frame.
@@ -66,7 +70,7 @@ fn boot() -> (Console, Task<Msg>) {
         chart::set_snapshot_hover(point);
     }
     let pick = std::env::var("APZ_PICK").ok().filter(|id| !id.trim().is_empty());
-    let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default(), pick };
+    let mut console = Console { ctx: None, boot, shell: shell::State::default(), screens: screens::Screens::default(), pick, onboard: onboard::State::default() };
     // For development and captures: `APZ_CONNECT=<hub url>` (and `APZ_TOKEN`) skips the chooser,
     // `APZ_SCREEN=<screen label>` opens that screen.
     let info = Task::batch([
@@ -132,9 +136,31 @@ fn boot() -> (Console, Task<Msg>) {
         console.shell.current = screens::Id::LabJobs;
         screens::lab_jobs::capture_cards(&mut console.screens.lab_jobs);
     }
+    let first = onboard::first_start(&mut console.onboard, &ctx).map(Msg::Onboard);
+    // `APZ_ONBOARD=tour|checks|deps|off`: the tour, the wizard's last step, its dependencies step, or
+    // neither, for captures.
+    let mut capture = Task::none();
+    match std::env::var("APZ_ONBOARD").as_deref() {
+        Ok("tour") => {
+            console.onboard.wizard = None;
+            onboard::start_tour(&mut console.onboard);
+            console.shell.highlight = onboard::highlighted(&console.onboard);
+        }
+        Ok("off") => console.onboard.wizard = None,
+        Ok("checks") | Ok("deps") => {
+            let step = std::env::var("APZ_ONBOARD").unwrap_or_default();
+            console.onboard.wizard = Some(onboard::step_index(&step));
+            capture = onboard::local_task().map(|checks| Msg::Onboard(onboard::Msg::Local(checks)));
+        }
+        _ => {}
+    }
+    let reveal = onboard::reveal::<Msg>(&console.onboard, true);
     let tasks = Task::batch([
         screens::open(&mut console.screens, console.shell.current.clone(), &ctx).map(Msg::Screen),
         shell::load(&ctx).map(Msg::Shell),
+        first,
+        capture,
+        reveal,
         info,
     ]);
     console.ctx = Some(ctx);
@@ -150,6 +176,7 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
                 let ctx = Ctx { client };
                 tasks.push(screens::open(&mut console.screens, console.shell.current.clone(), &ctx).map(Msg::Screen));
                 tasks.push(shell::load(&ctx).map(Msg::Shell));
+                tasks.push(onboard::first_start(&mut console.onboard, &ctx).map(Msg::Onboard));
                 console.ctx = Some(ctx);
             }
             Task::batch(tasks)
@@ -162,6 +189,35 @@ fn update(console: &mut Console, msg: Msg) -> Task<Msg> {
                 tasks.push(screens::open(&mut console.screens, id, &ctx).map(Msg::Screen));
             }
             Task::batch(tasks)
+        }
+        Msg::Onboard(msg) => {
+            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            let (task, effect) = onboard::update(&mut console.onboard, msg);
+            console.shell.highlight = onboard::highlighted(&console.onboard);
+            let mut tasks = vec![task.map(Msg::Onboard), onboard::reveal::<Msg>(&console.onboard, console.shell.mode == shell::Mode::Open)];
+            match effect {
+                onboard::Effect::None => {}
+                onboard::Effect::Navigate(id) => {
+                    console.shell.current = id.clone();
+                    tasks.push(screens::open(&mut console.screens, id, &ctx).map(Msg::Screen));
+                }
+                // "Change hub": the chooser again; the wizard waits and resumes once connected.
+                onboard::Effect::Chooser => {
+                    console.ctx = None;
+                    console.boot = boot::init().0;
+                }
+            }
+            Task::batch(tasks)
+        }
+        // The Setup screen replays the wizard or the tour (the console owns both).
+        Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Wizard)) => {
+            let Some(ctx) = console.ctx.clone() else { return Task::none() };
+            onboard::start_wizard(&mut console.onboard, &ctx).map(Msg::Onboard)
+        }
+        Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Tour)) => {
+            onboard::start_tour(&mut console.onboard);
+            console.shell.highlight = onboard::highlighted(&console.onboard);
+            onboard::reveal::<Msg>(&console.onboard, console.shell.mode == shell::Mode::Open)
         }
         Msg::Screen(msg) => {
             let Some(ctx) = console.ctx.clone() else { return Task::none() };
@@ -223,11 +279,23 @@ fn pick_after_layout(id: String) -> Task<Msg> {
 fn view(console: &Console) -> Element<'_, Msg> {
     match &console.ctx {
         None => boot::view(&console.boot).map(Msg::Boot),
-        Some(ctx) => shell::view(
-            &console.shell,
-            screens::view(&console.screens, &console.shell.current, ctx).map(Msg::Screen),
-            Msg::Shell,
-        ),
+        Some(ctx) => {
+            // The wizard takes the window; the tour and its offer lay over the shell.
+            if console.onboard.wizard.is_some() {
+                return onboard::wizard_view(&console.onboard, ctx.client.base()).map(Msg::Onboard);
+            }
+            let base = shell::view(
+                &console.shell,
+                screens::view(&console.screens, &console.shell.current, ctx).map(Msg::Screen),
+                Msg::Shell,
+            );
+            let open = console.shell.mode == shell::Mode::Open;
+            let width = if open { console.shell.width } else { 60.0 };
+            match onboard::overlay(&console.onboard, width, open) {
+                Some(layer) => iced::widget::stack([base, layer.map(Msg::Onboard)]).into(),
+                None => base,
+            }
+        }
     }
 }
 

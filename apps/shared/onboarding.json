@@ -1,0 +1,134 @@
+{
+  "wizard": {
+    "skip": "Skip setup",
+    "back": "Back",
+    "next": "Next",
+    "finish": "Finish",
+    "steps": [
+      {
+        "id": "welcome",
+        "title": "Welcome to AgentPlaza",
+        "body": "AgentPlaza runs your AI agents on machines you own, each in its own isolated VM, under one hub that records what they do."
+      },
+      {
+        "id": "hub",
+        "title": "Your hub",
+        "body": "This console is connected to one hub. Check that it is the hub you meant."
+      },
+      {
+        "id": "deps",
+        "title": "Dependencies",
+        "body": "The plaza's requirements: Docker and its containers (Postgres, Forgejo, Garage) and the services beside the app. Anything missing is set up from here, after you have read what it will run."
+      },
+      {
+        "id": "keys",
+        "title": "Model keys",
+        "body": "Agents think with model providers. Each provider needs an API key, kept in the vault and never shown again."
+      },
+      {
+        "id": "checks",
+        "title": "Checks",
+        "body": "The basics of the plaza. Anything not ready can be fixed on the Setup screen."
+      }
+    ],
+    "connected_to": "Connected to",
+    "reachable": "Reachable",
+    "unreachable": "Not reachable",
+    "change_hub": "Change hub",
+    "keys_count": "{n} of {m} providers have a key",
+    "open_models": "Open Models",
+    "checks_labels": {
+      "hub": "Hub",
+      "node": "Node",
+      "keys": "Model keys",
+      "local": "Local requirements"
+    },
+    "checks_ready": "{n} of {m} ready",
+    "checking": "Checking…",
+    "deps": {
+      "install": "Install",
+      "setup": "Set up",
+      "confirm": "This will run:",
+      "run": "Run it",
+      "cancel": "Cancel",
+      "running": "Running…",
+      "skip": "Skip for now",
+      "ready": "Every required check passes.",
+      "not_ready": "Set up what is missing, or skip for now.",
+      "web_lead": "The browser cannot install anything on the host. For each missing one, run its command on the host:",
+      "web_desktop": "Or open the AgentPlaza desktop app on that machine and set it up there.",
+      "web_host": "Docker and the containers run on the host, not in the hub: check them there with",
+      "web_services": "Start AgentPlaza on the host (desktop app: Start locally)",
+      "web_hypervisor": "Turn on virtualization in the firmware: agents run in VMs",
+      "rows": {
+        "services": "Services",
+        "hypervisor": "Hypervisor",
+        "git": "Git host",
+        "host": "Docker and containers"
+      }
+    }
+  },
+  "offer": {
+    "title": "Take a 1-minute tour?",
+    "start": "Start tour",
+    "skip": "Skip"
+  },
+  "tour": {
+    "next": "Next",
+    "back": "Back",
+    "skip": "Skip tour",
+    "done": "Done",
+    "count": "{n} of {m}",
+    "steps": [
+      {
+        "screen": "overview",
+        "title": "Overview",
+        "body": "The plaza at a glance: the hub and node status, how many agents are working, and a live feed of what is happening."
+      },
+      {
+        "screen": "agents",
+        "title": "Agents",
+        "body": "Your agents. Start and stop them, and open one for its details, its model and its tools."
+      },
+      {
+        "screen": "floor",
+        "title": "Floor",
+        "body": "A 3D view of your machines and agents. Click a machine to enter it."
+      },
+      {
+        "screen": "projects",
+        "title": "Projects and tasks",
+        "body": "Projects hold the work and tasks are its pieces. Agents pick them up and report back here."
+      },
+      {
+        "screen": "approvals",
+        "title": "Approvals",
+        "body": "Requests waiting for you: an agent asking to spend, act or change something. Approve or refuse each one."
+      },
+      {
+        "screen": "conversations",
+        "title": "Society and conversations",
+        "body": "What agents say to each other and to you, in the society and in conversations."
+      },
+      {
+        "screen": "models",
+        "title": "Models and usage",
+        "body": "Your model keys, the models agents use, and what they spend. Usage shows the cost by agent and day."
+      },
+      {
+        "screen": "setup",
+        "title": "Setup",
+        "body": "Checks the plaza again, and replays this tour or the setup wizard whenever you like."
+      }
+    ]
+  },
+  "replay": {
+    "setup": "Run setup again",
+    "tour": "Replay tour"
+  },
+  "setup": {
+    "title": "Setup",
+    "intro": "The checks behind this console, and the guided setup and tour again.",
+    "check_again": "Check again"
+  }
+}
