@@ -315,6 +315,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-desktop"
+version = "0.1.0"
+dependencies = [
+ "apz-station",
+ "image",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "apz-engine"
 version = "0.1.0"
 dependencies = [
@@ -464,6 +474,14 @@ dependencies = [
  "serde",
  "serde_json",
  "zip",
+]
+
+[[package]]
+name = "apz-station"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

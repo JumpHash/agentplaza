@@ -1,0 +1,13 @@
+[package]
+name = "apz-desktop"
+description = "AgentPlaza desktop control interface: the trait the workstation's platform backends implement, frame helpers, key-combo parsing and a fake desktop for tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-station = { path = "../apz-station" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde.workspace = true
+thiserror.workspace = true
