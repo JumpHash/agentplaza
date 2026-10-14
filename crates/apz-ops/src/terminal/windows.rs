@@ -41,7 +41,7 @@ use windows_sys::Win32::System::Pipes::{
     CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
+    CREATE_SUSPENDED, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 use super::table::{
@@ -441,6 +441,13 @@ fn spawn(env: &Env, dir: &Path, cols: u16, rows: u16) -> Result<Term, OpError> {
     // SAFETY: an all-zero STARTUPINFOEXW is a valid value of that struct. Its attribute list is set below.
     let mut startup: STARTUPINFOEXW = unsafe { mem::zeroed() };
     startup.lpAttributeList = attributes.as_mut_ptr();
+    // Without STARTF_USESTDHANDLES a console child takes this process's standard handles, even with inheritance
+    // off: under a service or a test runner those are pipes, so the shell writes its prompt there, reads end of
+    // file and exits 0, and the console sees nothing. Invalid handles make it fall back to its console, the ConPTY.
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+    startup.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+    startup.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
     let environment = environment_block(env, &[("TERM", "xterm-256color")])
         .map_err(|err| OpError::invalid(format!("the environment is not usable: {err}")))?;
     let job =

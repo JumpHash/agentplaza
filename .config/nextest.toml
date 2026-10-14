@@ -9,3 +9,9 @@ fail-fast = false
 slow-timeout = { period = "30s", terminate-after = 4 }
 fail-fast = false
 failure-output = "immediate-final"
+
+# The Linux arm64 tests run under qemu-user on an x86_64 runner (.github/ci/Dockerfile), 15 to 50 times slower than
+# native: a test there is killed after 10 minutes rather than 2, so the long layout and world tests can finish.
+[[profile.ci.overrides]]
+platform = "aarch64-unknown-linux-gnu"
+slow-timeout = { period = "60s", terminate-after = 10 }
