@@ -237,3 +237,48 @@ impl Stage {
         .to_string()
     }
 }
+
+/// One node of `scene_json`: three's Object3D fields the old `__apzScene` was read by (type, name, visibility, transform,
+/// shadow flags, render order, the userData flags), and its children.
+fn node_json(o: &crate::scene::Obj) -> Value {
+    use crate::scene::Kind;
+    let (head, children) = {
+        let n = o.get();
+        let (ty, extra) = match &n.kind {
+            Kind::Group => ("Group", json!({})),
+            Kind::Mesh { geo, .. } => ("Mesh", json!({ "vertices": geo.positions.len() })),
+            Kind::Instanced { geo, count, .. } => ("Mesh", json!({ "vertices": geo.positions.len(), "isInstancedMesh": true, "count": count })),
+            Kind::Points { positions, .. } => ("Points", json!({ "vertices": positions.len() })),
+            Kind::PointLight { .. } => ("PointLight", json!({})),
+        };
+        let mut head = json!({
+            "type": ty,
+            "name": n.name,
+            "visible": n.visible,
+            "position": [n.position.x, n.position.y, n.position.z],
+            "rotation": [n.rotation.x, n.rotation.y, n.rotation.z],
+            "scale": [n.scale.x, n.scale.y, n.scale.z],
+            "castShadow": n.cast_shadow,
+            "receiveShadow": n.receive_shadow,
+            "renderOrder": n.render_order,
+            "userData": { "dynamic": n.dynamic, "rest": n.rest, "walk": n.walk, "outline": !n.no_outline },
+        });
+        if let (Some(h), Some(e)) = (head.as_object_mut(), extra.as_object()) {
+            h.extend(e.clone());
+        }
+        (head, n.children.clone())
+    };
+    let mut head = head;
+    head["children"] = Value::Array(children.iter().map(node_json).collect());
+    head
+}
+
+impl Stage {
+    /// The shown view's scene graph as JSON (`__apzScene`, three's Scene object in the retired build): `{ type: "Scene",
+    /// children }`, each node with three's Object3D fields.
+    pub fn scene_json(&mut self) -> String {
+        let root = self.active().root.clone();
+        let children: Vec<Value> = root.get().children.clone().iter().map(node_json).collect();
+        json!({ "type": "Scene", "name": "", "children": children }).to_string()
+    }
+}

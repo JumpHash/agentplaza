@@ -165,6 +165,8 @@ pub(crate) fn pale_stage(floor: &mut Floor, bg: Color) {
     world.shadow_extent = 5.0;
     world.shadow_near = 0.5;
     world.shadow_far = 500.0;
+    // The robot and room labs rendered with three's default shadow map: redrawn every frame.
+    world.shadow_every = 1;
 }
 
 /// The labs' ground: a `ShadowMaterial` at 0.2 on `geo` (laid flat at the origin), so only the robots' and the rooms'

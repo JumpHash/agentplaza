@@ -51,6 +51,8 @@ export interface WebEngine {
   view_name(): string;
   /** The shown view's camera, JSON: { view, eye, target, fov, roomsTop }. */
   camera_json(): string;
+  /** The shown view's scene graph, JSON (`__apzScene`). */
+  scene_json(): string;
   /** The grounding audit of the board, JSON: { items, findings: [{ item, kind, amount, at, against }] } or null. */
   ground_audit(): string;
   /** The floor's robots, JSON (see the engine's debug hooks). */
@@ -540,6 +542,79 @@ const BOARD_KEYS: [string, string][] = [
 ];
 
 /** A PerfSnapshot of a running engine (the three.js build's window.__apzPerf shape), plus the engine's own counts. */
+/** A node of `window.__apzScene`: three's Object3D fields the retired build's scene was read by, and its walk. */
+export interface SceneNode {
+  type: string;
+  name: string;
+  visible: boolean;
+  position: { x: number; y: number; z: number; toArray(): number[] };
+  rotation: { x: number; y: number; z: number; toArray(): number[] };
+  scale: { x: number; y: number; z: number; toArray(): number[] };
+  castShadow: boolean;
+  receiveShadow: boolean;
+  renderOrder: number;
+  userData: Record<string, unknown>;
+  children: SceneNode[];
+  parent: SceneNode | null;
+  traverse(fn: (o: SceneNode) => void): void;
+  getObjectByName(name: string): SceneNode | undefined;
+}
+
+function sceneNode(json: Record<string, unknown>, parent: SceneNode | null): SceneNode {
+  const vec = (v: unknown): SceneNode['position'] => {
+    const [x = 0, y = 0, z = 0] = (v as number[] | undefined) ?? [];
+    return { x, y, z, toArray: () => [x, y, z] };
+  };
+  const node = {
+    visible: true,
+    castShadow: false,
+    receiveShadow: false,
+    renderOrder: 0,
+    ...json,
+    userData: (json.userData as Record<string, unknown> | undefined) ?? {},
+    position: vec(json.position),
+    rotation: vec(json.rotation),
+    scale: vec(json.scale),
+    parent,
+    children: [] as SceneNode[],
+    traverse(fn: (o: SceneNode) => void): void {
+      fn(node);
+      for (const c of node.children) c.traverse(fn);
+    },
+    getObjectByName(name: string): SceneNode | undefined {
+      let hit: SceneNode | undefined;
+      node.traverse((o) => {
+        if (!hit && o.name === name) hit = o;
+      });
+      return hit;
+    },
+  } as unknown as SceneNode;
+  node.children = ((json.children as Record<string, unknown>[] | undefined) ?? []).map((c) => sceneNode(c, node));
+  return node;
+}
+
+/**
+ * `window.__apzScene` as the three.js build had it: a property holding the shown view's scene (an object with `type`,
+ * `children`, `traverse` …, not a function), read from the engine's scene graph each time it is read. Returns the
+ * uninstall.
+ */
+export function installSceneHook(engine: WebEngine): () => void {
+  Object.defineProperty(window, '__apzScene', {
+    configurable: true,
+    enumerable: true, // listed with the other hooks, as the three.js build's assignment was
+    get: () => {
+      try {
+        return sceneNode(JSON.parse(engine.scene_json()) as Record<string, unknown>, null);
+      } catch {
+        return null;
+      }
+    },
+  });
+  return () => {
+    delete (window as unknown as Record<string, unknown>).__apzScene;
+  };
+}
+
 export function perfProbe(engine: WebEngine, view: () => string): () => Record<string, unknown> {
   const round2 = (v: number): number => Math.round(v * 100) / 100;
   let sample = { at: performance.now(), frames: engine.frames_drawn() }; // the last fps sample
@@ -802,7 +877,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     const hooks: Record<string, unknown> = {
       __apzLookAt: (x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void =>
         started.look_at(x, y, z, dist, polar, azimuth),
-      __apzScene: () => ({ frames: started.frames_drawn(), draws: started.draw_calls(), stats: stats() }),
       __apzPerf: perf,
       __apzCamera: () => JSON.parse(started.camera_json()) as Record<string, unknown>,
       __apzPrograms: () => {
@@ -827,8 +901,10 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
       __apzGroundAudit: () => JSON.parse(started.ground_audit()) as Record<string, unknown> | null,
     };
     for (const [name, fn] of Object.entries(hooks)) w[name] = fn;
+    const unscene = installSceneHook(started);
     return () => {
       for (const name of Object.keys(hooks)) delete w[name];
+      unscene();
     };
   };
   let removeDebug: (() => void) | null = null;

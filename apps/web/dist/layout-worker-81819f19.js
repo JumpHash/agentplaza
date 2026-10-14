@@ -1,4 +1,4 @@
-import init, { shared_layout } from './apz_engine_web-56c56d8c.js';
+import init, { shared_layout } from './apz_engine_web-05beab44.js';
 const ready = init();
 onmessage = async (e) => {
   await ready;

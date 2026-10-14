@@ -483,6 +483,11 @@ impl WebEngine {
         self.shared.borrow().engine.busy()
     }
 
+    /// The shown view's scene graph, JSON (`__apzScene`: three's Scene in the retired build, see `apz_engine::debug`).
+    pub fn scene_json(&self) -> String {
+        self.shared.borrow_mut().engine.stage.scene_json()
+    }
+
     /// The shown view's name (`machines` or `floor`), as `__apzPerf` reports it.
     pub fn view_name(&self) -> String {
         self.shared.borrow().engine.stage.view_name()

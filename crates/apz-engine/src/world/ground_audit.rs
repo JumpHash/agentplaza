@@ -86,7 +86,7 @@ impl Aabb {
 struct Record {
     parent: Option<usize>,
     name: String,
-    /// "Group", "Mesh", "InstancedMesh", or the three.js type of the other kinds.
+    /// three's `type`: "Group" or "Mesh" (an InstancedMesh's type is "Mesh" too), or the other kinds' own.
     ty: &'static str,
     world: Mat4,
     rest: bool,
@@ -187,7 +187,7 @@ fn visit(obj: &Obj, parent: Option<usize>, parent_world: Mat4, flat: &mut Flat) 
             rec.solid = is_solid(mat);
         }
         Kind::Instanced { geo, mat, instances, count } => {
-            rec.ty = "InstancedMesh";
+            rec.ty = "Mesh";
             rec.instanced = true;
             rec.geo = Some(geo.clone());
             rec.draws = instances.iter().take(*count).map(|inst| world * inst.matrix).collect();
@@ -431,6 +431,43 @@ fn tris(geo: &Geometry) -> Vec<[usize; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three.js build's grounding audit (ground.ts on the bare boards, `testdata/ground-audit-ts.json`, written by the
+    /// retired build at 338f89c) and this one agree item for item and finding for finding.
+    #[test]
+    fn the_bare_boards_audit_as_the_three_js_build_did() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!("../../testdata/ground-audit-ts.json")).unwrap();
+        for (key, want) in golden.as_object().unwrap() {
+            let (name, params) = key.split_once('|').unwrap();
+            let params: std::collections::BTreeMap<String, f64> = serde_json::from_str(params).unwrap();
+            let model = crate::hardware::model(name).unwrap();
+            let mut p = crate::hardware::Params::default();
+            for (k, v) in &params {
+                p = p.with(k, *v);
+            }
+            let built = crate::hardware::build(model, &p);
+            let (root, board) = (Obj::group(), Obj::group());
+            board.add(&built.root);
+            board.add(&crate::hardware::traces(model));
+            root.add(&board);
+            let got = ground_audit(&[root]);
+            assert_eq!(got.items as u64, want["items"].as_u64().unwrap(), "{key}: items");
+            let mut want: Vec<(String, String, f64, String)> = want["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| (f[0].as_str().unwrap().into(), f[1].as_str().unwrap().into(), f[2].as_f64().unwrap(), f[3].as_str().unwrap().into()))
+                .collect();
+            let mut got: Vec<(String, String, f64, String)> =
+                got.findings.iter().map(|f| (f.item.clone(), f.kind.to_string(), (f.amount * 1000.0).round() / 1000.0, f.against.clone())).collect();
+            want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert_eq!(got.len(), want.len(), "{key}: findings");
+            for (g, w) in got.iter().zip(&want) {
+                assert!(g.0 == w.0 && g.1 == w.1 && g.3 == w.3 && (g.2 - w.2).abs() <= 0.002, "{key}: {g:?} != {w:?}");
+            }
+        }
+    }
     use crate::geometry::box_geo;
     use crate::scene::{Mat, Material, Obj};
 

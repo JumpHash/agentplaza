@@ -1693,8 +1693,11 @@ pub fn traces(model: &Model) -> Obj {
     if pieces.is_empty() {
         return group;
     }
-    let copper = Mat::new(Material { color: named("copper", 0xb87333), ..Material::default() });
-    group.add(&Obj::mesh(&scene::merge(&pieces), &copper));
+    // hardware.ts traceStrips: printed copper, flat on the board: a decal (not a solid, nothing rests on it), uninked.
+    let copper = Mat::new(Material { color: named("copper", 0xb87333), decal: true, ..Material::default() });
+    let mesh = Obj::mesh(&scene::merge(&pieces), &copper);
+    mesh.no_outline();
+    group.add(&mesh);
     group
 }
 

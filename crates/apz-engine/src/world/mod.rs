@@ -433,8 +433,10 @@ impl Floor {
     /// The Machines view's scene: the Floor's sky, stars, ground and outskirts, with no plaza, no
     /// districts and no robots. The fleet's group goes into its root.
     pub fn machines() -> Floor {
-        let floor = Floor::new();
+        let mut floor = Floor::new();
         floor.root.remove(&floor.district_group);
+        // floor.ts's Machines view drew its shadows when they were due (the first frame, a change), never on a cadence.
+        floor.world.shadow_every = 0;
         floor
     }
 

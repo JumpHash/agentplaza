@@ -7,7 +7,7 @@
 // engine reads it: &amd=1&pcb_top=0.3. The model's params are number inputs in the controls.
 // A control change writes the route and restarts the engine with the new options. The readout is the model's
 // validation: its errors in red, or "<model>: no errors", as the running engine reports them.
-// The debug hooks __apzScene and __apzPerf read the engine while it runs (for tests and developers).
+// The debug hooks __apzScene (the scene graph, as three's Scene was) and __apzPerf read the engine while it runs.
 
 import { button, field } from '../ui/components';
 import { h } from '../ui/dom';
@@ -20,6 +20,7 @@ import {
   startHardwareLabEngine,
   type HardwareLabOptions,
   type LabCatalog,
+  installSceneHook,
   type WebEngine,
 } from './engine-mount';
 
@@ -94,23 +95,17 @@ function choices(values: string[]): HTMLOptionElement[] {
   return values.map((v) => h('option', { value: v }, v));
 }
 
-/** The debug hooks for the engine that is running: __apzScene (the frame and draw counts) and __apzPerf (with the backend). */
+/** The debug hooks for the engine that is running: __apzScene (its scene graph) and __apzPerf (the PerfSnapshot). */
 function installHooks(started: WebEngine): () => void {
   const w = window as unknown as Record<string, unknown>;
-  const stats = (): Record<string, unknown> => {
-    try {
-      return JSON.parse(started.draw_stats()) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  };
   const hooks: Record<string, unknown> = {
-    __apzScene: () => ({ frames: started.frames_drawn(), draws: started.draw_calls(), stats: stats() }),
     __apzPerf: perfProbe(started, () => 'hardware-lab'),
   };
   for (const [name, fn] of Object.entries(hooks)) w[name] = fn;
+  const unscene = installSceneHook(started);
   return () => {
     for (const name of Object.keys(hooks)) delete w[name];
+    unscene();
   };
 }
 

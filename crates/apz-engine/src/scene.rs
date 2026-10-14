@@ -796,6 +796,9 @@ pub struct World {
     pub shadow_extent: f32,
     pub shadow_near: f32,
     pub shadow_far: f32,
+    /// How often the shadow map is redrawn while nothing about the casters changes (three's meter: `SHADOW_EVERY`): every
+    /// `n`th frame, or never (0: only when the casters, the statics or the light change, the Machines view's `shadowsDue`).
+    pub shadow_every: u32,
     pub shadow_bias: f32,
     pub shadow_normal_bias: f32,
     /// three's `Fog(color, near, far)`.
@@ -824,6 +827,7 @@ impl Default for World {
             shadow_extent: 40.0,
             shadow_near: 1.0,
             shadow_far: 140.0,
+            shadow_every: 3,
             shadow_bias: -0.0008,
             shadow_normal_bias: 0.03,
             fog_color: Color::hex(0x161236),

@@ -165,6 +165,8 @@ fn night_stage(floor: &mut Floor) {
     world.shadow_extent = 60.0;
     world.shadow_near = 1.0;
     world.shadow_far = 200.0;
+    // hardware-lab.ts drew through the perf meter: the shadow map every third frame.
+    world.shadow_every = 3;
 }
 
 impl Lab {

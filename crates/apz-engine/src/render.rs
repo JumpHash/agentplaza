@@ -934,6 +934,11 @@ pub struct Pipeline {
     /// a view's stale shadows (the board's on the Machines view after Back) nor a map that was never cleared (a scene
     /// that never has casters would read as all in shadow).
     shadow_written: std::sync::atomic::AtomicBool,
+    /// The shadow map's redraw: the frames prepared, the last frame's caster signature (the shadow draws, the statics and
+    /// the light), and whether this frame redraws it (`World::shadow_every`, or a new signature).
+    shadow_frame: u64,
+    shadow_sig: Option<u64>,
+    shadow_due: bool,
     samplers: HashMap<(bool, bool), wgpu::Sampler>,
     linear_clamp: wgpu::Sampler,
     meshes: HashMap<u64, GpuMesh>,
@@ -1212,6 +1217,9 @@ impl Pipeline {
             shadow_globals_group,
             shadow_view,
             shadow_written: std::sync::atomic::AtomicBool::new(true),
+            shadow_frame: 0,
+            shadow_sig: None,
+            shadow_due: true,
             samplers: HashMap::new(),
             linear_clamp,
             meshes: HashMap::new(),
@@ -1964,6 +1972,23 @@ impl Primitive {
         shadow_cmds.clear();
         shadow_cmds.extend(p.static_shadow.iter().cloned());
         shadow_cmds.extend(dyn_shadow);
+        // three's shadow cadence: the map is redrawn every `shadow_every`th frame, or when what casts changes.
+        let sig = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for (id, r) in &shadow_cmds {
+                (id, r.start, r.end).hash(&mut h);
+            }
+            for v in (light_proj * light_view).to_cols_array() {
+                v.to_bits().hash(&mut h);
+            }
+            p.static_src.as_ref().map(|s| Arc::as_ptr(s) as usize).hash(&mut h);
+            h.finish()
+        };
+        p.shadow_frame += 1;
+        let every = u64::from(w.shadow_every);
+        p.shadow_due = p.shadow_sig != Some(sig) || (every > 0 && p.shadow_frame.is_multiple_of(every));
+        p.shadow_sig = Some(sig);
         p.shadow_cmds = shadow_cmds;
         // Overlays: their rectangles in the widget's NDC, their textures uploaded.
         let mut rects: Vec<[f32; 4]> = Vec::with_capacity(f.overlays.len());
@@ -2113,8 +2138,13 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("floor") });
     // No shadow casters (light mode, the Machines view): the pass is skipped, after one that clears what an earlier
     // frame's casters left in the map.
+    // A frame with casters redraws the map when it is due (the cadence, or new casters); one without clears it once.
     let casters = !p.shadow_cmds.is_empty();
-    if casters || p.shadow_written.swap(casters, std::sync::atomic::Ordering::Relaxed) {
+    let redraw = if casters { p.shadow_due } else { p.shadow_written.swap(false, std::sync::atomic::Ordering::Relaxed) };
+    if casters && redraw {
+        p.shadow_written.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if redraw {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("floor shadow"),
                 color_attachments: &[],
