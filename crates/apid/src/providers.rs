@@ -996,6 +996,11 @@ mod tests {
         assert_eq!(want.len(), 16, "the seeded providers: {want:?}");
         assert!(ids.iter().any(|id| id == "openrouter") && ids.iter().any(|id| id == "opencode"));
         assert!(dir.join("providers.json").exists());
+        // A fresh install records every seed as offered, so a deleted preset is never offered back.
+        let mut offered: Vec<String> =
+            serde_json::from_slice(&std::fs::read(dir.join(OFFERED_FILE)).unwrap()).unwrap();
+        offered.sort();
+        assert_eq!(offered, want, "every seed is recorded as offered");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1016,20 +1021,6 @@ mod tests {
 
     fn providers_on_disk(dir: &Path) -> Vec<ProviderConfig> {
         serde_json::from_slice(&std::fs::read(dir.join("providers.json")).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn a_fresh_install_records_every_seed_as_offered() {
-        let dir = scratch("offered-fresh");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
-        drop(store);
-        let mut offered: Vec<String> =
-            serde_json::from_slice(&std::fs::read(dir.join(OFFERED_FILE)).unwrap()).unwrap();
-        offered.sort();
-        let mut want: Vec<String> = SEED_IDS.iter().map(|s| s.to_string()).collect();
-        want.sort();
-        assert_eq!(offered, want);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

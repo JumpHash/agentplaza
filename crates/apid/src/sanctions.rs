@@ -1168,6 +1168,12 @@ mod tests {
                 .is_none(),
             "it ends at its time"
         );
+        // The list shows the same suspension as active until the same moment.
+        let (_, listed) = w.ledger.list(None, None, 100, NOW + 1);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].active);
+        let (_, later) = w.ledger.list(None, None, 100, NOW + 3 * DAY_MS);
+        assert!(!later[0].active, "active flips at until_ms");
     }
 
     #[test]
@@ -1321,17 +1327,6 @@ mod tests {
         assert_eq!(by_law.iter().map(|a| a.cid).collect::<Vec<_>>(), [CID, 8]);
         assert!(w.ledger.list(Some(8), Some("T-001"), 100, NOW).0.is_empty());
         assert_eq!(w.ledger.list(None, None, 1, NOW).0.len(), 1, "the limit");
-    }
-
-    #[test]
-    fn a_suspension_is_active_until_its_time() {
-        let w = world("active", 300);
-        w.apply(&case("T-010", Severity::Low, 3, "bash"));
-        let (_, suspensions) = w.ledger.list(None, None, 100, NOW + 1);
-        assert_eq!(suspensions.len(), 1);
-        assert!(suspensions[0].active);
-        let (_, later) = w.ledger.list(None, None, 100, NOW + 3 * DAY_MS);
-        assert!(!later[0].active, "active flips at until_ms");
     }
 
     #[test]
