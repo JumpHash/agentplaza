@@ -241,6 +241,25 @@ impl Forge {
     }
 }
 
+/// The forge's API: one call as the admin, or as `sudo` a Forgejo user. The git routes and the IDE's repo
+/// workspaces call it through this seam, so a test can answer it with a fake.
+pub trait ForgeApi {
+    /// Whether FORGEJO_URL and FORGEJO_TOKEN are set.
+    fn is_configured(&self) -> bool;
+    /// One call: the status and the body (JSON; a text body comes back as a JSON string; Null when empty).
+    fn call(&self, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<(u16, Value), String>;
+}
+
+impl ForgeApi for Forge {
+    fn is_configured(&self) -> bool {
+        self.configured()
+    }
+
+    fn call(&self, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<(u16, Value), String> {
+        self.api(method, path, body, sudo)
+    }
+}
+
 /// The relay for git's smart-HTTP from an agent's VM: `GET .../info/refs?service=...`,
 /// `POST .../git-upload-pack`, `POST .../git-receive-pack`, forwarded to
 /// `<FORGEJO_URL>/<owner>/<repo>/...` with the agent's basic auth; the reply's status, content
@@ -319,7 +338,7 @@ fn basic(user: &str, token: &str) -> String {
 }
 
 /// Standard base64 with padding (a copy of connectors.rs's, to keep this module self-contained).
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -409,9 +428,9 @@ fn internal(app: &App, req: &Request, p: &Params<'_>, tail: &str) -> Response {
 // merge:    body {style?: "merge"|"squash"|"rebase"}
 // create:   body {name, description}
 /// A failed forge call: the status to answer with and the message.
-struct Failure {
-    status: u16,
-    message: String,
+pub(crate) struct Failure {
+    pub(crate) status: u16,
+    pub(crate) message: String,
 }
 
 impl Failure {
@@ -438,10 +457,15 @@ fn q(req: &Request, key: &str) -> Option<String> {
 
 /// One Forgejo call, as `sudo` when given, else as the admin. Non-2xx answers carry Forgejo's message.
 fn forge(app: &App, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<Value, Failure> {
-    if !app.forge.configured() {
+    forge_on(&app.forge, method, path, body, sudo)
+}
+
+/// `forge` through any `ForgeApi`: the JSON answer, or the status and message of a failure.
+pub(crate) fn forge_on(api: &dyn ForgeApi, method: &str, path: &str, body: Option<&Value>, sudo: Option<&str>) -> Result<Value, Failure> {
+    if !api.is_configured() {
         return Err(Failure::new(503, "the git host is not configured"));
     }
-    let (status, value) = app.forge.api(method, path, body, sudo).map_err(|e| Failure::new(503, &e))?;
+    let (status, value) = api.call(method, path, body, sudo).map_err(|e| Failure::new(503, &e))?;
     if (200..300).contains(&status) {
         return Ok(value);
     }
@@ -477,7 +501,7 @@ fn number_arg(input: &Value) -> Result<u64, Failure> {
 }
 
 /// Percent-encodes for a URL; `/` stays when `slash` is set.
-fn pct(raw: &str, slash: bool) -> String {
+pub(crate) fn pct(raw: &str, slash: bool) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') || (slash && b == b'/') {
@@ -489,7 +513,7 @@ fn pct(raw: &str, slash: bool) -> String {
     out
 }
 
-fn seg(raw: &str) -> String {
+pub(crate) fn seg(raw: &str) -> String {
     pct(raw, false)
 }
 
@@ -521,7 +545,7 @@ fn unescape(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let (mut acc, mut bits) = (0u32, 0u32);
     for c in text.bytes() {
@@ -569,7 +593,7 @@ fn lines(items: Vec<String>, empty: &str) -> String {
     }
 }
 
-fn contents_path(repo: &str, path: &str, reference: Option<&str>) -> String {
+pub(crate) fn contents_path(repo: &str, path: &str, reference: Option<&str>) -> String {
     let mut out = format!("/api/v1/repos/{ORG}/{}/contents", seg(repo));
     let path = path.trim_matches('/');
     if !path.is_empty() {
@@ -748,9 +772,9 @@ fn file(app: &App, sudo: Option<&str>, repo: &str, path: &str, reference: Option
 }
 
 /// A pull request's row with its review state, which costs one Forgejo call for its reviews.
-fn pull_row(app: &App, sudo: Option<&str>, repo: &str, p: &Value) -> Result<Value, Failure> {
+fn pull_row(api: &dyn ForgeApi, sudo: Option<&str>, repo: &str, p: &Value) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/pulls/{}/reviews", seg(repo), num(p, "number"));
-    Ok(pr_row(p, review_state(&forge(app, "GET", &path, None, sudo)?)))
+    Ok(pr_row(p, review_state(&forge_on(api, "GET", &path, None, sudo)?)))
 }
 
 /// The page and page size of a pull request list: the page from 1, the limit from 1 to 50 (default 50).
@@ -763,7 +787,7 @@ fn page_args(page: Option<&str>, limit: Option<&str>) -> (u64, u64) {
 fn pulls(app: &App, sudo: Option<&str>, repo: &str, state: &str, page: u64, limit: u64) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/pulls?state={}&page={page}&limit={limit}", seg(repo), seg(state));
     let raw = forge(app, "GET", &path, None, sudo)?;
-    let rows = arr(&raw).iter().map(|p| pull_row(app, sudo, repo, p)).collect::<Result<Vec<Value>, Failure>>()?;
+    let rows = arr(&raw).iter().map(|p| pull_row(&app.forge, sudo, repo, p)).collect::<Result<Vec<Value>, Failure>>()?;
     Ok(Value::Array(rows))
 }
 
@@ -843,11 +867,12 @@ fn new_pull_input(input: &Value) -> Result<(&str, &str, &str, &str), Failure> {
     Ok((need(input, "title")?, need(input, "head")?, need(input, "base")?, at(input, "body")))
 }
 
-fn open_pr(app: &App, sudo: Option<&str>, repo: &str, head: &str, base: &str, title: &str, body: &str) -> Result<Value, Failure> {
+/// Opens a pull request from `head` into `base` (`main` when empty) and answers its row.
+pub(crate) fn open_pr(api: &dyn ForgeApi, sudo: Option<&str>, repo: &str, head: &str, base: &str, title: &str, body: &str) -> Result<Value, Failure> {
     let base = if base.is_empty() { "main" } else { base };
     let path = format!("/api/v1/repos/{ORG}/{}/pulls", seg(repo));
-    let v = forge(app, "POST", &path, Some(&json!({"head": head, "base": base, "title": title, "body": body})), sudo)?;
-    pull_row(app, sudo, repo, &v)
+    let v = forge_on(api, "POST", &path, Some(&json!({"head": head, "base": base, "title": title, "body": body})), sudo)?;
+    pull_row(api, sudo, repo, &v)
 }
 
 /// The body of a state change: `open` or `closed`.
@@ -863,7 +888,7 @@ fn state_input(input: &Value) -> Result<&'static str, Failure> {
 fn set_state(app: &App, sudo: Option<&str>, repo: &str, n: u64, state: &str) -> Result<Value, Failure> {
     let path = format!("/api/v1/repos/{ORG}/{}/pulls/{n}", seg(repo));
     let v = forge(app, "PATCH", &path, Some(&json!({"state": state})), sudo)?;
-    pull_row(app, sudo, repo, &v)
+    pull_row(&app.forge, sudo, repo, &v)
 }
 
 fn merge_pr(app: &App, sudo: Option<&str>, repo: &str, n: u64, style: &str) -> Result<Value, Failure> {
@@ -932,7 +957,7 @@ fn open_pr_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return Response::error(400, "the body must be JSON: {title, head, base, body?}");
     };
     reply(
-        new_pull_input(&body).and_then(|(title, head, base, text)| open_pr(app, None, p.get("repo"), head, base, title, text)),
+        new_pull_input(&body).and_then(|(title, head, base, text)| open_pr(&app.forge, None, p.get("repo"), head, base, title, text)),
         201,
     )
 }
@@ -1051,7 +1076,7 @@ fn act(app: &App, sudo: Option<&str>, input: &Value) -> Result<String, Failure> 
         "pr" => Ok(pull_text(&pull(app, sudo, need(input, "repo")?, number_arg(input)?)?)),
         "open_pr" => {
             let v = open_pr(
-                app,
+                &app.forge,
                 sudo,
                 need(input, "repo")?,
                 need(input, "head")?,
