@@ -305,6 +305,9 @@ pub struct Material {
     pub side: Side,
     /// Fogged (three's `fog: true`, the default for its built-in materials).
     pub fog: bool,
+    /// A billboard (three's `Sprite`): a quad in its xy plane drawn facing the camera, at its node's position and scale;
+    /// the node's rotation is ignored, so it faces the eye from any orbit.
+    pub billboard: bool,
     pub visible: bool,
     /// The robot colours for vertices in slots 1 to 3 (toon only). None: slots are ignored.
     pub robot: Option<RobotHues>,
@@ -334,6 +337,7 @@ impl Default for Material {
             decal: false,
             side: Side::Front,
             fog: true,
+            billboard: false,
             visible: true,
             robot: None,
         }

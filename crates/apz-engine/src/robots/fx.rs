@@ -1,8 +1,8 @@
 //! Robot effects, as `robots/fx.ts`: small billboards and glow cones from one pool shared by every robot in the
 //! scene (sparks, zzz, dots, hearts, keys, steam, notes, bubbles, confetti, ink, trail, glow). A robot spawns them
-//! under a bone; they move, grow and fade, then go back to the pool. The desktop has no sprite, so each billboard is
-//! a flat quad with a texture drawn in code, turned to the camera's usual view (the floor's isometric angle); notes,
-//! bubbles and confetti wobble, and a confetti flake spins in its own plane (its tumble). A trail is left behind:
+//! under a bone; they move, grow and fade, then go back to the pool. Each billboard is a flat quad with a texture drawn
+//! in code and a billboard material (the shader turns it to the camera from any orbit, as three's Sprite; its node's
+//! rotation, the isometric facing below, is then ignored); notes, bubbles and confetti wobble. A trail is left behind:
 //! its puffs are placed in the robot's parent frame, so they stay where the robot was as it walks (`Fx::spawn` with
 //! the robot's root and a point in that frame). A glow is a cone that hangs from its bone and is not turned. Not
 //! built: a glow's floor spot, since the desktop's Obj has no parent pointer and Fx only sees the head bone, so it
@@ -416,6 +416,8 @@ fn make(kind: usize) -> Puff {
         depth_write: false,
         additive: look.additive,
         side: if look.cone { Side::Double } else { Side::Front },
+        // A quad faces the camera from any orbit (three's Sprite); a glow cone hangs from its bone.
+        billboard: !look.cone,
         ..Material::default()
     });
     let obj = if look.cone {

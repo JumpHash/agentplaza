@@ -130,7 +130,18 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
     let m = model_of(i);
     var o: Varyings;
     o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
-    var r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), world_normal(m, v.normal), v.uv, i);
+    var r: Varyings;
+    if has(i.emissive.a, 16.0) {
+        // A billboard (three's Sprite): the quad on the camera's right and up axes, at the node's position and scale.
+        let c = (m * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
+        let right = vec3<f32>(g.view[0][0], g.view[1][0], g.view[2][0]);
+        let up = vec3<f32>(g.view[0][1], g.view[1][1], g.view[2][1]);
+        let toward = vec3<f32>(g.view[0][2], g.view[1][2], g.view[2][2]);
+        let world = c + right * v.position.x * length(m[0].xyz) + up * v.position.y * length(m[1].xyz);
+        r = finish(o, vec4<f32>(world, 1.0), toward, v.uv, i);
+    } else {
+        r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), world_normal(m, v.normal), v.uv, i);
+    }
     let slot = v.slot & 0xffu;
     r.color = vec4<f32>(r.color.rgb * v.color, r.color.a);
     if has(i.emissive.a, 8.0) {

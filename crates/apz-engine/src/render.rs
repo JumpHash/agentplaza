@@ -1715,6 +1715,10 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
     if m.robot.is_some() {
         flags += 8.0;
     }
+    // 16: a billboard (floor.wgsl vs_mesh lays the quad out on the camera's axes).
+    if m.billboard {
+        flags += 16.0;
+    }
     let emissive = m.emissive.scale(m.emissive_intensity);
     let uv = m.map.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |t| [t.repeat[0], t.repeat[1], t.offset[0], t.offset[1]]);
     let row = |model: Mat4, color: [f32; 3], uv: [f32; 4]| Row {
