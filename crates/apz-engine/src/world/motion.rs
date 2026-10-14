@@ -13,7 +13,7 @@ use super::super::robot::RobotState;
 use super::super::scene::Obj;
 use super::super::textures::Rng;
 use super::board_layout::{board_height_at, path_on_traces, BoardLayout};
-use super::{display_name, Bot, District, Floor, Packet, Phase, Social};
+use super::{display_name, Bot, District, Floor, Packet, Phase, Ride, Social};
 
 const PACKET_MS: f64 = 1500.0;
 const SPEED: f32 = 1.6; // grid units per second; one grid cell is one world unit
@@ -25,6 +25,16 @@ const ROBOT_R: f32 = 0.55; // robot footprint radius for collisions
 const DEG: f32 = std::f32::consts::PI / 180.0;
 const STEER: [f32; 5] = [0.0, 30.0 * DEG, -30.0 * DEG, 60.0 * DEG, -60.0 * DEG]; // headings tried when blocked
 const DUST_N: usize = 90;
+/// What a lift ride sent: the goal (x, z) on the other level and the cids of the robots sent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiftRide {
+    pub goal: (f32, f32),
+    pub robots: Vec<u64>,
+}
+
+/// A lift ride's time limit, and how close a ride's goal must be (stopped) to count as arrived.
+const RIDE_S: f32 = 120.0;
+const RIDE_ARRIVE: f32 = 0.15;
 const WAVE_SECS: f32 = 1.5; // how long a selected robot waves at the camera
 
 thread_local! {
@@ -126,6 +136,59 @@ impl Floor {
         for anim in self.prop_anim.iter_mut() {
             anim(ambient);
         }
+    }
+
+    /// Sends the `n` robots nearest lift `index` (off its plate) on a real trip through it (`__apzLiftRide`): a goal on the
+    /// other level just beyond the lift, walked in place of each robot's work goal until it arrives or 120 s pass. Robots on
+    /// the plate ride down to a goal on the board beyond the lift's front; robots on the board ride up to a goal on the plate
+    /// beyond its edge. The ride goal is the lift's own (its yaw), so the nav world boards the robots.
+    pub fn lift_ride(&mut self, index: usize, n: usize) -> Result<LiftRide, String> {
+        const NO_LIFT: &str = "no nav or no such lift";
+        let nav = self.nav.as_ref().ok_or(NO_LIFT)?;
+        let grid = nav.world.grid();
+        let l = *grid.lifts.get(index).ok_or(NO_LIFT)?;
+        let (ox, oz, yaw) = (l.x, l.z, l.face);
+        // The robots' level decides the way.
+        let on_plate = |b: &&Bot| (f64::from(b.py) - l.high).abs() < 0.05 && !self.rides.contains_key(&b.agent.cid);
+        let from_high = self.bots.iter().filter(|b| on_plate(b)).count() >= n.max(1);
+        let sg = if from_high { 1.0 } else { -1.0 }; // +1: out toward the walkway (the board), -1: back toward the plate
+        let level = if from_high { l.low } else { l.high };
+        let (s, c) = (yaw.sin(), yaw.cos());
+        let mut goal = None;
+        let mut d = 0.3;
+        while d < 3.0 && goal.is_none() {
+            for lat in [0.0, 0.1, -0.1, 0.2, -0.2] {
+                let x = ox + sg * s * d + c * lat;
+                let z = oz + sg * c * d - s * lat;
+                if let Some(cell) = nav.world.debug_cell(x, z) {
+                    let side = if from_high { cell.region == 0 } else { cell.region != 0 };
+                    if cell.walk && side && (cell.y - level).abs() < 0.03 {
+                        goal = Some((x, z));
+                        break;
+                    }
+                }
+            }
+            d += 0.05;
+        }
+        let goal = goal.ok_or_else(|| "no walk cell beyond the lift on the other level".to_string())?;
+        let plate = if from_high { l.high } else { l.low };
+        let mut near: Vec<&Bot> = self
+            .bots
+            .iter()
+            .filter(|b| (f64::from(b.py) - plate).abs() < 0.05 && !self.rides.contains_key(&b.agent.cid))
+            .collect();
+        near.sort_by(|a, b| {
+            let da = (f64::from(a.x) - ox).hypot(f64::from(a.y) - oz);
+            let db = (f64::from(b.x) - ox).hypot(f64::from(b.y) - oz);
+            da.total_cmp(&db)
+        });
+        near.truncate(n);
+        let robots: Vec<u64> = near.iter().map(|b| b.agent.cid).collect();
+        let goal = (goal.0 as f32, goal.1 as f32);
+        for &cid in &robots {
+            self.rides.insert(cid, Ride { goal: [goal.0, goal.1], left: RIDE_S });
+        }
+        Ok(LiftRide { goal, robots })
     }
 
     /// The floor's motion: Active while robots stand on it (they walk and animate their clips) or packets fly;
@@ -430,6 +493,9 @@ impl Floor {
     /// Robots: wander or socialise when idle, head home when working or offline, animate, tint pads.
     fn update_bots(&mut self, dt: f32, now: f64) {
         let t = self.time;
+        // A ride whose robot is gone ends with it.
+        let cids: Vec<u64> = self.bots.iter().map(|b| b.agent.cid).collect();
+        self.rides.retain(|cid, _| cids.contains(cid));
         let colors = self.colors;
         for light in self.lit_by_role.values_mut() {
             light.lit = false;
@@ -515,7 +581,9 @@ impl Floor {
                 gy = s.as_ref().map_or(self.bots[i].ty, |sc| sc.gy);
             }
             if walked {
-                if let Some(g) = self.work.goal_for(&work_bot(&self.bots[i])) {
+                if let Some(r) = self.rides.get(&cid) {
+                    (gx, gy) = (r.goal[0], r.goal[1]);
+                } else if let Some(g) = self.work.goal_for(&work_bot(&self.bots[i])) {
                     (gx, gy) = (g.goal.0, g.goal.1);
                 }
             }
@@ -537,6 +605,15 @@ impl Floor {
             let (dx, dy) = (gx - x0, gy - y0);
             let dist = dx.hypot(dy);
             self.bots[i].moving = pose.map_or(dist > 0.02, |p| p.moving);
+            // A ride ends on arrival (stopped on its goal) or when its time is up.
+            if let Some(r) = self.rides.get_mut(&cid) {
+                r.left -= dt;
+                let b = &self.bots[i];
+                let arrived = !b.moving && (b.x - r.goal[0]).hypot(b.y - r.goal[1]) < RIDE_ARRIVE;
+                if r.left <= 0.0 || arrived {
+                    self.rides.remove(&cid);
+                }
+            }
             // Step toward the next waypoint (the goal itself when the walk is in one room). A blocked
             // step tries nearby headings, else the robot waits this frame.
             let (wx, wy) = self.waypoint(i, (gx, gy));
@@ -851,6 +928,78 @@ mod tests {
             let d = floor.work.debug_of(b.agent.cid as i64);
             assert!(d.pointer("/dec/activity").is_some_and(|a| a.is_string()), "robot {} has no work decision: {d}", b.agent.cid);
         }
+    }
+
+    #[test]
+    fn a_lift_ride_takes_the_robot_to_the_other_level() {
+        let mut floor = board_floor(&["builder", "librarian", "reviewer"], "idle");
+        let list: Vec<AgentInfo> = floor.bots.iter().map(|b| b.agent.clone()).collect();
+        floor.layout_cache = None;
+        floor.sync(&list);
+        let t0 = std::time::Instant::now();
+        while floor.nav.is_none() && t0.elapsed() < std::time::Duration::from_secs(30) {
+            floor.step_rooms(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut now = 10_000.0;
+        let mut frames = |floor: &mut Floor, n: usize| {
+            for _ in 0..n {
+                floor.step(1.0 / 60.0, now, 0.0, 0.0);
+                now += 1000.0 / 60.0;
+            }
+        };
+        frames(&mut floor, 120);
+        let (low, high, lx, lz) = {
+            let grid = floor.nav.as_ref().expect("the board has a nav").world.grid();
+            let l = *grid.lifts.first().expect("the board has a lift");
+            (l.low, l.high, l.x, l.z)
+        };
+        // A robot stands on the plate, at the top of the lift.
+        let cid = floor.bots[0].agent.cid;
+        let nav = floor.nav.as_mut().expect("the board has a nav");
+        let id = nav.robot_of(cid).expect("the robot is in the nav");
+        nav.world.shove(id, lx, lz);
+        frames(&mut floor, 2);
+        let on_plate = floor.bot(cid).expect("the robot").py;
+        assert!((f64::from(on_plate) - high).abs() < 0.05, "the robot stands on the plate at {on_plate}, not {high}");
+
+        let ride = floor.lift_ride(0, 1).expect("the robot on the plate rides");
+        assert_eq!(ride.robots, vec![cid], "the robot nearest the lift is sent");
+        assert!(floor.rides.contains_key(&cid));
+        let mut ended = false;
+        for _ in 0..(120 * 60) {
+            frames(&mut floor, 1);
+            if !floor.rides.contains_key(&cid) {
+                ended = true;
+                break;
+            }
+        }
+        assert!(ended, "the ride ends within 120 s");
+        let end = floor.bot(cid).expect("the robot").py;
+        assert!((f64::from(end) - low).abs() < 0.05, "the robot ends on the other level at {end}, not {low}");
+        // The work's goal takes over again once the ride ends.
+        assert!(floor.work.debug_of(cid as i64).is_object());
+    }
+
+    #[test]
+    fn the_nav_overlay_is_built_and_follows_the_walk_when_asked() {
+        crate::set_env_overrides(std::collections::BTreeMap::from([("APZ_NAV_OVERLAY".to_string(), "1".to_string())]));
+        let mut floor = board_floor(&["builder", "librarian", "reviewer"], "idle");
+        let list: Vec<AgentInfo> = floor.bots.iter().map(|b| b.agent.clone()).collect();
+        floor.layout_cache = None;
+        floor.sync(&list);
+        let t0 = std::time::Instant::now();
+        while floor.nav.is_none() && t0.elapsed() < std::time::Duration::from_secs(30) {
+            floor.step_rooms(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        crate::set_env_overrides(std::collections::BTreeMap::new());
+        for k in 0..300 {
+            floor.step(1.0 / 60.0, f64::from(k) * 1000.0 / 60.0 + 10_000.0, 0.0, 0.0);
+        }
+        let nav = floor.nav.as_ref().expect("the board has a nav");
+        let overlay = nav.overlay.as_ref().expect("APZ_NAV_OVERLAY=1 builds the overlay with the nav");
+        assert!(overlay.cells > 0, "the overlay draws the walkable cells");
     }
 
     #[test]

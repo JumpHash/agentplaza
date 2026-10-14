@@ -52,6 +52,8 @@ interface WebEngine {
   nav_audit(): string;
   /** The board's lifts, JSON. */
   lifts(): string;
+  /** A scripted lift ride (`__apzLiftRide`): the n robots nearest lift i sent through it, JSON. */
+  lift_ride(index: number, n: number): string;
   /** Moves an agent's robot on the board; false without a robot for it. */
   shove(cid: number, x: number, z: number): boolean;
   look_at(x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void;
@@ -96,7 +98,7 @@ export interface HardwareLabOptions {
 
 interface EngineGlue {
   default: () => Promise<unknown>;
-  start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
+  start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2'; nav?: boolean }) => Promise<WebEngine>;
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_room_lab: (canvas: HTMLCanvasElement, opts: RoomLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_hardware_lab: (canvas: HTMLCanvasElement, opts: HardwareLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
@@ -123,6 +125,9 @@ async function loadGlue(): Promise<EngineGlue> {
 
 /** The backend the page asks for: webgl2 with ?gl=1, else auto. */
 const backendOf = (): 'auto' | 'webgl2' => (new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto');
+
+/** The navigation overlay the page asks for: on with ?nav=1. */
+const navOf = (): boolean => new URLSearchParams(location.search).get('nav') === '1';
 
 /**
  * The page's layout worker: the same glue in a module worker, computing the shared board layouts (apz-board's layout of a
@@ -227,7 +232,7 @@ function pumpLayouts(engine: WebEngine): () => void {
 
 /** Loads the glue and starts an engine on the canvas: the Floor's mount and the Machines rows share it. Throws without a glue. */
 export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
-  const engine = await (await loadGlue()).start(canvas, { backend: backendOf() });
+  const engine = await (await loadGlue()).start(canvas, { backend: backendOf(), nav: navOf() });
   const stop = pumpLayouts(engine);
   const destroy = engine.destroy.bind(engine);
   engine.destroy = () => {
@@ -580,14 +585,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   // backed by the engine. The camera is WebEngine.look_at (no hook names it yet).
   const installDebugHooks = (started: WebEngine): (() => void) => {
     const w = window as unknown as Record<string, unknown>;
-    const logged = new Set<string>();
-    const stub = (hook: string) => (): null => {
-      if (!logged.has(hook)) {
-        logged.add(hook);
-        console.log(`${hook}: not in the engine yet`);
-      }
-      return null;
-    };
     const stats = (): Record<string, unknown> => {
       try {
         return JSON.parse(started.draw_stats()) as Record<string, unknown>;
@@ -623,8 +620,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
       __apzNavCell: (x: number, z: number) => JSON.parse(started.nav_cell(x, z)) as Record<string, unknown> | null,
       __apzNavAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
       __apzLifts: () => JSON.parse(started.lifts()) as unknown[],
-      // A scripted lift ride (the retired three.js Floor's test hook): the engine has no counterpart, so this stays a stub.
-      __apzLiftRide: stub('__apzLiftRide'),
+      __apzLiftRide: (index: number, n: number) => JSON.parse(started.lift_ride(index, n)) as Record<string, unknown>,
       __apzShove: (cid: number, x: number, z: number) => started.shove(cid, x, z),
       __apzGroundAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
     };

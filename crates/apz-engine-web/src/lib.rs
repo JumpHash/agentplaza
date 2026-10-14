@@ -135,10 +135,18 @@ pub fn shared_layout(key_json: &str) -> String {
     answer.to_string()
 }
 
-/// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2' }`; a missing backend is 'auto'.
+/// The option that shows the navigation overlay (`APZ_NAV_OVERLAY`), read when the board's nav is built.
+const NAV_OPTIONS: [(&str, &str); 1] = [("nav", "APZ_NAV_OVERLAY")];
+
+/// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2', nav?: boolean }`; a missing backend is 'auto'.
+/// The labs call this too: their own overrides stay set, since `nav` is only set when the options name it.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
     install_panic_hook();
+    let nav = lab_env(&opts, &NAV_OPTIONS);
+    if !nav.is_empty() {
+        apz_engine::set_env_overrides(nav);
+    }
     let mode = mode_of(&opts)?;
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("there is no window"))?;
     let document = window.document().ok_or_else(|| JsValue::from_str("the window has no document"))?;
@@ -480,6 +488,12 @@ impl WebEngine {
     /// The board's lifts, JSON (`__apzLifts`). Takes the lift controllers mutably to read their state.
     pub fn lifts(&self) -> String {
         self.shared.borrow_mut().engine.stage.lifts_json()
+    }
+
+    /// Sends the `n` robots nearest lift `index` on a real trip through it (`__apzLiftRide`): JSON `{ok, goal, robots}`
+    /// or `{ok: false, reason}` (see `apz_engine::debug`).
+    pub fn lift_ride(&self, index: i32, n: i32) -> String {
+        self.shared.borrow_mut().engine.stage.lift_ride_json(i64::from(index), i64::from(n))
     }
 
     /// Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.

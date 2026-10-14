@@ -111,7 +111,7 @@ impl Parts {
 }
 
 /// The transform of a member from a to b: its axis is y, centred on the midpoint.
-fn along(a: Vec3, b: Vec3) -> Mat4 {
+pub(super) fn along(a: Vec3, b: Vec3) -> Mat4 {
     let dir = (b - a).normalize();
     Mat4::from_rotation_translation(Quat::from_rotation_arc(Vec3::Y, dir), (a + b) * 0.5)
 }

@@ -112,6 +112,20 @@ impl Stage {
         Value::Array(lifts).to_string()
     }
 
+    /// Sends the `n` robots nearest lift `index` on a trip through it (`__apzLiftRide`), as JSON: `{ok, goal: {x, z},
+    /// robots}` (the cids sent), or `{ok: false, reason}`.
+    pub fn lift_ride_json(&mut self, index: i64, n: i64) -> String {
+        let n = usize::try_from(n.max(0)).unwrap_or(0);
+        let outcome = match usize::try_from(index) {
+            Ok(i) => self.floor.lift_ride(i, n),
+            Err(_) => Err("no nav or no such lift".to_string()),
+        };
+        match outcome {
+            Ok(ride) => json!({ "ok": true, "goal": { "x": ride.goal.0, "z": ride.goal.1 }, "robots": ride.robots }).to_string(),
+            Err(reason) => json!({ "ok": false, "reason": reason }).to_string(),
+        }
+    }
+
     /// Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.
     pub fn shove(&mut self, cid: u64, x: f64, z: f64) -> bool {
         let Some(nav) = self.floor.nav.as_mut() else { return false };
@@ -133,5 +147,6 @@ mod tests {
         assert_eq!(stage.nav_audit_json(), "null");
         assert_eq!(stage.lifts_json(), "[]");
         assert!(!stage.shove(1, 0.0, 0.0));
+        assert_eq!(stage.lift_ride_json(0, 1), r#"{"ok":false,"reason":"no nav or no such lift"}"#);
     }
 }

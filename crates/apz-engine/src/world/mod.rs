@@ -11,6 +11,7 @@ pub mod layout;
 pub mod lift_mesh;
 pub mod motion;
 pub mod nav;
+pub mod nav_overlay;
 pub mod spots;
 pub mod walkway_mesh;
 pub mod view;
@@ -155,6 +156,14 @@ pub struct Board {
     pub sig: String,
 }
 
+/// A robot's scripted lift ride (`__apzLiftRide`): the goal it walks in place of its work goal, and the seconds left before
+/// the ride ends whether or not it arrived.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ride {
+    pub goal: [f32; 2],
+    pub left: f32,
+}
+
 /// A message flying between two robots.
 pub struct Packet {
     pub from: u64,
@@ -260,6 +269,8 @@ pub struct Floor {
     pub nav: Option<nav::BoardNav>,
     /// The robots' work (robot-work.ts): what each robot does on the board, and where it walks for it.
     pub work: work::RobotWork,
+    /// The scripted lift rides by agent cid: a ride's goal replaces the robot's work goal until it ends.
+    pub rides: HashMap<u64, Ride>,
     /// The last room built: its turn, spots and items, for the work's stations (step_rooms hands them on).
     last_room: Option<(f32, Vec<crate::rooms::generate::LayoutSpot>, Vec<crate::rooms::generate::LayoutItem>)>,
     statics: Arc<Vec<Draw>>,
@@ -316,6 +327,7 @@ impl Floor {
             layout_cache: None,
             nav: None,
             work: work::RobotWork::new(),
+            rides: HashMap::new(),
             last_room: None,
             deep_dynamic: Vec::new(),
         };

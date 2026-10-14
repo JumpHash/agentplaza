@@ -13,6 +13,7 @@ use apz_board::nav::{NavGoal, NavPose, NavRobotSpec};
 use apz_board::navgrid::PortalKind;
 
 use super::lift_mesh::{LiftMesh, LiftSpec};
+use super::nav_overlay::NavOverlay;
 use super::walkway_mesh::{build_gangway, build_ramp, ramp_between, GangwaySpec};
 use super::Colors;
 use crate::robot::BodyMode;
@@ -31,6 +32,8 @@ pub struct BoardNav {
     /// The walkways' group (lifts, ramps, gangways), under the board's group.
     pub root: Obj,
     lifts: Vec<(usize, LiftMesh)>,
+    /// The debug overlay (`APZ_NAV_OVERLAY=1`): the cells, portals and robots' paths and rings, under `root`.
+    pub overlay: Option<NavOverlay>,
     /// Robot id by agent cid, and the goal last sent.
     ids: HashMap<u64, u32>,
     goals: HashMap<u32, [f64; 2]>,
@@ -73,7 +76,11 @@ impl BoardNav {
             let top = layout.slots.get(plate.id).map_or(plate.y, |s| s.top) as f32;
             root.add(&build_gangway(&spec, top, pcb, colors, &|_, _| pcb));
         }
-        BoardNav { scene, world, root, lifts, ids: HashMap::new(), goals: HashMap::new(), next_id: 0 }
+        let overlay = (crate::env_var("APZ_NAV_OVERLAY").as_deref() == Some("1")).then(|| NavOverlay::new(grid));
+        if let Some(o) = &overlay {
+            root.add(&o.root);
+        }
+        BoardNav { scene, world, root, lifts, overlay, ids: HashMap::new(), goals: HashMap::new(), next_id: 0 }
     }
 
     /// Keeps the world's robots to `bots` (cid, x, z): a new cid starts where its bot stands, a gone one is removed.
@@ -111,6 +118,9 @@ impl BoardNav {
     /// goal, so the floor's next goal is sent again; their cids are returned (the work picks another spot for them).
     pub fn step(&mut self, dt: f32) -> Vec<u64> {
         self.world.step(f64::from(dt));
+        if let Some(o) = self.overlay.as_mut() {
+            o.update(&self.world);
+        }
         let mut gave_up = Vec::new();
         for e in self.world.take_events() {
             let (NavEvent::Unreachable(id) | NavEvent::Respawn(id)) = e;
