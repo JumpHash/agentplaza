@@ -61,7 +61,7 @@ fpm -s dir -t deb \
     --config-files /etc/default/agentplaza-node \
     --deb-recommends docker.io \
     --license Apache-2.0 \
-    --url https://github.com/JumpHash/agentplaza-mvp \
+    --url https://github.com/JumpHash/agentplaza \
     --maintainer "JUMPHASH <hello@jumphash.com>" \
     --description "AgentPlaza for Raspberry Pi 4/5 (64-bit)" \
     --vendor JUMPHASH \

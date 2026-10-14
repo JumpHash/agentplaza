@@ -91,7 +91,7 @@ FPM_COMMON=(
   --name agentplaza
   --version "$VERSION"
   --license Apache-2.0
-  --url https://github.com/JumpHash/agentplaza-mvp
+  --url https://github.com/JumpHash/agentplaza
   --maintainer "JUMPHASH <hello@jumphash.com>"
   --description "$DESC"
   --vendor JUMPHASH

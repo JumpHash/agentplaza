@@ -8,7 +8,7 @@ holds the plaza, nodes and workstations do the work, and one button, STOP ALL, h
 
 <p align="center">
   <a href="https://agentplaza.io">Website</a> &middot;
-  <a href="https://github.com/JumpHash/agentplaza-mvp/releases/latest">Releases</a> &middot;
+  <a href="https://github.com/JumpHash/agentplaza/releases/latest">Releases</a> &middot;
   <a href="https://agentplaza.io/guide/">Docs (the guide)</a> &middot;
   <a href="#install">Install</a> &middot;
   <a href="#build-from-source">Build</a> &middot;
@@ -127,7 +127,7 @@ The full walkthrough, with the troubleshooting questions, is in the [guide](http
 You need git and a recent stable Rust toolchain (the workspace uses edition 2024).
 
 ```sh
-git clone https://github.com/JumpHash/agentplaza-mvp agentplaza
+git clone https://github.com/JumpHash/agentplaza agentplaza
 cd agentplaza
 
 # The hub, the node daemon, the node link and the command line (target/release)
