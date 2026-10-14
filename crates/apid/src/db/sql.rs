@@ -20,6 +20,11 @@ pub const INFRACTION_APPEND: &str = include_str!("../../sql/queries/infraction_a
 pub const INFRACTION_PAGE_BY_CID: &str = include_str!("../../sql/queries/infraction_page_by_cid.sql");
 pub const INFRACTION_PAGE: &str = include_str!("../../sql/queries/infraction_page.sql");
 
+// The IDE audit (`ide_audit`, migration 0008; ide.rs owner actions).
+pub const IDE_AUDIT_APPEND: &str = include_str!("../../sql/queries/ide_audit_append.sql");
+pub const IDE_AUDIT_PAGE: &str = include_str!("../../sql/queries/ide_audit_page.sql");
+pub const IDE_AUDIT_PAGE_BY_WORKSPACE: &str = include_str!("../../sql/queries/ide_audit_page_by_workspace.sql");
+
 // The migration runner's bookkeeping (`schema_migrations`, the advisory lock).
 pub const MIGRATION_TABLE_ENSURE: &str = include_str!("../../sql/queries/migration_table_ensure.sql");
 pub const MIGRATION_APPLIED: &str = include_str!("../../sql/queries/migration_applied.sql");

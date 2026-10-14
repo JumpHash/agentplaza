@@ -5,7 +5,8 @@
 //! through `tell` (`fleet::gateway`) and answers with the tool's JSON. The harness checks the real
 //! filesystem again. The owner is the principal, so a write needs no approval. The harness takes a
 //! checkpoint before each write; this module logs each owner action (a write, a restore, a run and its
-//! stop) to the append-only audit log `<state-dir>/ide-audit.jsonl` and publishes an `ide` bus event.
+//! stop) to the append-only audit (the `ide_audit` table in Postgres; `<state-dir>/ide-audit.jsonl` with no
+//! database, see `db`) and publishes an `ide` bus event.
 //! Owner actions do not pass the laws classifier.
 //!
 //! Routes (owner-only: the hub's gate in `hub_auth` covers every `/v1` path):
@@ -28,10 +29,6 @@
 //! A tell that fails maps to: 404 unknown agent, 409 no session, 504 no answer in time, 403 a tool the
 //! agent's role does not grant, 400 a refusal (`ok: false`) with the agent's text, and 502 anything else.
 
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
-
 use apz_http::{Request, Response, Router};
 use apz_ide::diff::parse_unified;
 use apz_ide::path::{PathError, check_dir, check_read, check_write};
@@ -39,6 +36,7 @@ use apz_ide::workspace::WorkspaceId;
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, Status};
+use crate::db::Db;
 use crate::plaza::percent_decode;
 use crate::state::App;
 
@@ -48,65 +46,21 @@ pub const TELL_TIMEOUT_MS: u64 = 5_000;
 const MAX_CHUNKS: usize = 1_024;
 const DEFAULT_AUDIT_LIMIT: usize = 100;
 const MAX_AUDIT_LIMIT: usize = 1_000;
-/// The audit log's file in the state directory.
-pub const AUDIT_FILE: &str = "ide-audit.jsonl";
 
 type Reply = Result<Value, Response>;
 
-/// The owner's actions, one JSON object per line. Rows are only ever appended, never rewritten. The
-/// file is private (0600), like the vault's audit log.
-pub struct Audit {
-    path: PathBuf,
-    lock: Mutex<()>,
-}
-
-impl Audit {
-    pub fn open(path: PathBuf) -> Self {
-        Self { path, lock: Mutex::new(()) }
-    }
-
-    /// Appends one row. The error says why it could not be written.
-    pub fn append(&self, row: &Value) -> Result<(), String> {
-        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut line = serde_json::to_string(row).map_err(|err| err.to_string())?;
-        line.push('\n');
-        let mut file = apz_os::private::append(&self.path).map_err(|err| err.to_string())?;
-        file.write_all(line.as_bytes()).map_err(|err| err.to_string())?;
-        file.sync_data().map_err(|err| err.to_string())
-    }
-
-    /// The newest rows first, of one workspace when `workspace` is given. A line that is not a JSON
-    /// object is skipped.
-    pub fn recent(&self, workspace: Option<&str>, limit: usize) -> Result<Vec<Value>, String> {
-        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(err.to_string()),
-        };
-        let mut rows: Vec<Value> = text
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|row| row.is_object())
-            .filter(|row| workspace.is_none_or(|ws| row["workspace"] == ws))
-            .collect();
-        rows.reverse();
-        rows.truncate(limit);
-        Ok(rows)
-    }
-}
-
-/// What the routes need from the world: the agents' tool calls, the audit log and the bus. The live hub
-/// implements it with the fleet and the app; the tests with a fake.
+/// What the routes need from the world: the agents' tool calls, the database (the audit lives there) and the
+/// bus. The live hub implements it with the fleet and the app; the tests with a fake.
 pub trait Host {
     /// One tool call on agent `cid`: the gateway's status and body (vsockd's `/tell` answer).
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String>;
-    fn audit(&self) -> &Audit;
+    /// The database: the IDE audit is its `ide_audit` table, or the state directory's file without one.
+    fn db(&self) -> &Db;
     /// Publishes one `ide` bus event.
     fn publish(&self, data: &Value);
 }
 
-/// The live hub: tells go through the fleet, and the audit and the bus are the app's.
+/// The live hub: tells go through the fleet, and the database and the bus are the app's.
 struct Live<'a>(&'a App);
 
 impl Host for Live<'_> {
@@ -115,8 +69,8 @@ impl Host for Live<'_> {
         crate::fleet::gateway(self.0, cid, "POST", &format!("/v1/agents/{cid}/tell"), Some(&body))
     }
 
-    fn audit(&self) -> &Audit {
-        &self.0.ide
+    fn db(&self) -> &Db {
+        &self.0.db
     }
 
     fn publish(&self, data: &Value) {
@@ -203,7 +157,7 @@ fn event(workspace: &str, path: Option<&str>, kind: &str) -> Value {
 /// Writes the audit row, then publishes the event. A row that cannot be written is a 500: the action
 /// has happened, so the owner must hear that its record is missing.
 fn record(host: &dyn Host, row: Value, data: Value) -> Result<(), Response> {
-    host.audit().append(&row).map_err(|err| {
+    host.db().append_ide_audit(&row).map_err(|err| {
         Response::error(500, &format!("the action happened but the audit log could not be written: {err}"))
     })?;
     host.publish(&data);
@@ -460,8 +414,8 @@ pub fn audit_rows(host: &dyn Host, workspace: Option<&str>, limit: Option<&str>)
         },
     };
     let rows = host
-        .audit()
-        .recent(workspace, limit)
+        .db()
+        .ide_audit(workspace, limit as i64)
         .map_err(|err| Response::error(500, &format!("the audit log cannot be read: {err}")))?;
     Ok(Value::Array(rows))
 }
@@ -550,7 +504,9 @@ mod tests {
         answer: Answerer,
         log: RefCell<Vec<(String, Value)>>,
         events: RefCell<Vec<Value>>,
-        audit: Audit,
+        /// No database: the audit is the state directory's file (`dir`).
+        db: Db,
+        dir: std::path::PathBuf,
     }
 
     impl Fake {
@@ -562,7 +518,8 @@ mod tests {
                 answer: Box::new(answer),
                 log: RefCell::default(),
                 events: RefCell::default(),
-                audit: Audit::open(dir.join(AUDIT_FILE)),
+                db: Db::files_only(&dir),
+                dir,
             }
         }
 
@@ -582,8 +539,8 @@ mod tests {
             (self.answer)(name, args)
         }
 
-        fn audit(&self) -> &Audit {
-            &self.audit
+        fn db(&self) -> &Db {
+            &self.db
         }
 
         fn publish(&self, data: &Value) {
@@ -729,7 +686,7 @@ mod tests {
         let body = body_of(response);
         assert_eq!(body["error"], json!("conflict"));
         assert_eq!(body["current_hash"], json!("abc123"));
-        assert!(fake.audit.recent(None, 10).unwrap().is_empty());
+        assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
         assert!(fake.events.borrow().is_empty());
     }
 
@@ -749,7 +706,7 @@ mod tests {
         let done = write_file(&fake, 12, &body).unwrap();
         assert_eq!(done["hash"], json!("new"));
 
-        let rows = fake.audit.recent(Some("agent:12"), 10).unwrap();
+        let rows = fake.db.ide_audit(Some("agent:12"), 10).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["kind"], json!("write"));
         assert_eq!(rows[0]["actor"], json!("owner"));
@@ -761,8 +718,8 @@ mod tests {
         assert_eq!(fake.events.borrow()[0], json!({ "workspace": "agent:12", "path": "docs/a.txt", "kind": "write" }));
 
         // The row is on disk: a fresh handle on the same file reads it back.
-        let reopened = Audit::open(fake.audit.path.clone());
-        assert_eq!(reopened.recent(None, 10).unwrap().len(), 1);
+        let reopened = Db::files_only(&fake.dir);
+        assert_eq!(reopened.ide_audit(None, 10).unwrap().len(), 1);
     }
 
     #[test]
@@ -827,7 +784,7 @@ index 0000000..3333333
         let fake = Fake::new("restore", |_, _| ok(json!({ "restored": 3, "checkpoint": 9 })));
         let done = restore(&fake, 12, 3).unwrap();
         assert_eq!(done["checkpoint"], json!(9));
-        let rows = fake.audit.recent(Some("agent:12"), 10).unwrap();
+        let rows = fake.db.ide_audit(Some("agent:12"), 10).unwrap();
         assert_eq!(rows[0]["kind"], json!("restore"));
         assert_eq!(rows[0]["restored"], json!(3));
         assert_eq!(fake.events.borrow()[0]["kind"], json!("restore"));
@@ -861,7 +818,7 @@ index 0000000..3333333
         assert_eq!(status_of(run_start(&fake, 12, &json!({ "command": "ls", "timeout_s": "soon" }))), 400);
         assert_eq!(status_of(run_start(&fake, 12, &json!({}))), 400);
         assert_eq!(fake.calls(), 0);
-        assert!(fake.audit.recent(None, 10).unwrap().is_empty());
+        assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -903,9 +860,9 @@ index 0000000..3333333
     #[test]
     fn the_audit_log_filters_and_checks_its_limit() {
         let fake = Fake::new("auditq", |_, _| ok(json!({ "run": "run-1" })));
-        fake.audit.append(&json!({ "workspace": "agent:12", "kind": "write", "n": 1 })).unwrap();
-        fake.audit.append(&json!({ "workspace": "agent:40", "kind": "write", "n": 2 })).unwrap();
-        fake.audit.append(&json!({ "workspace": "agent:12", "kind": "restore", "n": 3 })).unwrap();
+        fake.db.append_ide_audit(&json!({ "at_ms": 1, "workspace": "agent:12", "kind": "write", "n": 1 })).unwrap();
+        fake.db.append_ide_audit(&json!({ "at_ms": 2, "workspace": "agent:40", "kind": "write", "n": 2 })).unwrap();
+        fake.db.append_ide_audit(&json!({ "at_ms": 3, "workspace": "agent:12", "kind": "restore", "n": 3 })).unwrap();
 
         let mine = audit_rows(&fake, Some("agent:12"), None).unwrap();
         assert_eq!(mine.as_array().unwrap().len(), 2);

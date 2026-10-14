@@ -16,6 +16,8 @@
 //!   transcript(cid bigint, seq bigint, work bigint, kind text, at_ms bigint, data jsonb,
 //!              primary key (cid, seq))
 //!   infraction(id bigserial, cid bigint, law text, at_ms bigint, tool text, detail text)
+//!   ide_audit(seq bigserial, at_ms bigint, workspace text, kind text, data jsonb)
+//!              (append-only: the owner's IDE actions, migration 0008)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -155,7 +157,8 @@ pub struct Db {
     held: Mutex<BTreeSet<String>>,
     append_logged: Mutex<Option<Instant>>,
     infraction_logged: Mutex<Option<Instant>>,
-    /// The file fallback for transcripts and infractions (see `attach_files`).
+    ide_audit_logged: Mutex<Option<Instant>>,
+    /// The file fallback for transcripts, infractions and the IDE audit (see `attach_files`).
     files: std::sync::OnceLock<files::Files>,
 }
 
@@ -168,6 +171,7 @@ impl Db {
             held: Mutex::new(BTreeSet::new()),
             append_logged: Mutex::new(None),
             infraction_logged: Mutex::new(None),
+            ide_audit_logged: Mutex::new(None),
             files: std::sync::OnceLock::new(),
         }
     }
@@ -220,8 +224,9 @@ impl Db {
         self.client.is_some()
     }
 
-    /// Makes `state_dir` the home of the file fallback: with no Postgres this run, transcripts and
-    /// infractions are written to `transcripts/` and `infractions.jsonl` there (see `db::files`).
+    /// Makes `state_dir` the home of the file fallback: with no Postgres this run, transcripts,
+    /// infractions and the IDE audit are written to `transcripts/`, `infractions.jsonl` and
+    /// `ide-audit.jsonl` there (see `db::files`).
     pub fn attach_files(&self, state_dir: &std::path::Path) {
         let _ = self.files.set(files::Files::open(state_dir));
     }
@@ -244,7 +249,7 @@ impl Db {
         }
     }
 
-    /// A database with no Postgres whose transcripts and infractions live under `state_dir`.
+    /// A database with no Postgres whose transcripts, infractions and IDE audit live under `state_dir`.
     #[cfg(test)]
     pub fn files_only(state_dir: &std::path::Path) -> Db {
         let db = Db::with(String::new(), None);
@@ -476,18 +481,99 @@ impl Db {
     }
 }
 
+/// The IDE audit: one owner action on an agent workspace (`ide.rs` builds the row). The row is the table's
+/// data and its `at_ms`, `workspace` and `kind` are its columns. Unlike the infractions, a failed append is
+/// an error: the owner's action has happened, so the route answers with it (see `append_ide_audit`).
+impl Db {
+    /// Appends one owner action to the IDE audit (table `ide_audit`, or the file fallback). A failed
+    /// append is returned to the caller and logged at most once a minute.
+    pub fn append_ide_audit(&self, row: &Value) -> Result<(), String> {
+        let written = self.write_ide_audit(row);
+        if let Err(e) = &written {
+            let mut logged = self.ide_audit_logged.lock().unwrap_or_else(PoisonError::into_inner);
+            if due(*logged) {
+                *logged = Some(Instant::now());
+                eprintln!("db: ide audit append failed: {e} (answered to the owner; logged once a minute)");
+            }
+        }
+        written
+    }
+
+    fn write_ide_audit(&self, row: &Value) -> Result<(), String> {
+        let at_ms = row["at_ms"].as_u64().ok_or("the audit row has no at_ms")? as i64;
+        let workspace = row["workspace"].as_str().ok_or("the audit row has no workspace")?;
+        let kind = row["kind"].as_str().ok_or("the audit row has no kind")?;
+        if let Some(files) = self.file_store() {
+            return files.append_ide_audit(row);
+        }
+        if !self.enabled() {
+            return Err("no database and no state directory for the IDE audit".to_string());
+        }
+        self.run(|c| c.execute(sql::IDE_AUDIT_APPEND, &[&at_ms, &workspace, &kind, row])).map(|_| ())
+    }
+
+    /// IDE audit rows, newest first (by `at_ms`, then the later row first), of one workspace when
+    /// `workspace` is given. A failed read is an error.
+    pub fn ide_audit(&self, workspace: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
+        if let Some(files) = self.file_store() {
+            return files.ide_audit(workspace, limit);
+        }
+        if !self.enabled() {
+            return Err("no database and no state directory for the IDE audit".to_string());
+        }
+        let rows = match workspace {
+            Some(workspace) => self.run(|c| c.query(sql::IDE_AUDIT_PAGE_BY_WORKSPACE, &[&workspace, &limit])),
+            None => self.run(|c| c.query(sql::IDE_AUDIT_PAGE, &[&limit])),
+        };
+        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect()).inspect_err(|e| {
+            eprintln!("db: ide audit read failed: {e}");
+        })
+    }
+}
+
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {
     wire_violations(app);
     if app.db.enabled() {
         restore_components(app);
+        import_ide_audit(app);
     } else {
-        eprintln!("db: no APZ_DATABASE_URL; components stay in their files; transcripts and infractions go to files under the state dir");
+        eprintln!("db: no APZ_DATABASE_URL; components stay in their files; transcripts, infractions and the IDE audit go to files under the state dir");
         app.db.attach_files(&app.config.state_dir);
         crate::sanctions::migrate(app);
     }
     restore_transcripts_and_infractions(app);
+}
+
+/// The IDE audit rows the state directory's file kept before Postgres held any: imported once, oldest
+/// first, as the infractions are (a Postgres run whose `ide_audit` is empty and whose file has rows).
+fn import_ide_audit(app: &App) {
+    match app.db.ide_audit(None, 1) {
+        Ok(rows) if rows.is_empty() => {}
+        Ok(_) => return,
+        Err(e) => {
+            eprintln!("db: ide audit import skipped: {e}");
+            return;
+        }
+    }
+    let mut rows = match files::Files::open(&app.config.state_dir).ide_audit(None, i64::MAX) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("db: ide audit file cannot be read for the import: {e}");
+            return;
+        }
+    };
+    rows.reverse();
+    for row in &rows {
+        if let Err(e) = app.db.append_ide_audit(row) {
+            eprintln!("db: ide audit import stopped part way: {e}");
+            return;
+        }
+    }
+    if !rows.is_empty() {
+        eprintln!("db: imported {} IDE audit rows from the file", rows.len());
+    }
 }
 
 /// Restores every component that Postgres holds (the first run imports the files' copies).
@@ -608,7 +694,13 @@ pub fn test_database(label: &str) -> Option<String> {
     );
     let name = format!("apz_test_{label}_{}", std::process::id());
     let (server, _) = base.rsplit_once('/').expect("APZ_TEST_DATABASE_URL names a database");
-    let mut admin = postgres::Client::connect(&base, postgres::NoTls).expect("connect to the test server");
+    let mut admin = match postgres::Client::connect(&base, postgres::NoTls) {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("db: APZ_TEST_DATABASE_URL server unreachable ({err}); skipping");
+            return None;
+        }
+    };
     admin.batch_execute(&DATABASE_CREATE.replace("{name}", &name)).expect("create the test database");
     Some(format!("{server}/{name}"))
 }
@@ -692,6 +784,22 @@ mod tests {
         assert_eq!(db.infractions(Some(cid), 10), vec![third.clone(), second.clone(), first.clone()]);
         assert_eq!(db.infractions(Some(cid), 1), vec![third.clone()]);
         assert_eq!(db.infractions(None, 10), vec![third, second, first]);
+
+        // The IDE audit: newest first by at_ms (a tie goes to the later row), filtered by workspace.
+        let (ws, other) = (format!("agent:{cid}"), format!("agent:{}", cid + 1));
+        let audit = |at_ms: u64, workspace: &str, kind: &str| {
+            serde_json::json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null })
+        };
+        let (w1, w2, w3) = (audit(10, &ws, "write"), audit(20, &other, "write"), audit(20, &ws, "restore"));
+        for row in [&w1, &w2, &w3] {
+            db.append_ide_audit(row).unwrap();
+        }
+        assert_eq!(db.ide_audit(None, 10).unwrap(), vec![w3.clone(), w2.clone(), w1.clone()]);
+        assert_eq!(db.ide_audit(Some(&ws), 10).unwrap(), vec![w3.clone(), w1.clone()]);
+        assert_eq!(db.ide_audit(Some(&ws), 1).unwrap(), vec![w3.clone()]);
+        assert_eq!(db.ide_audit(Some(&other), 10).unwrap(), vec![w2.clone()]);
+        assert!(db.ide_audit(Some("agent:0"), 10).unwrap().is_empty());
+        assert!(db.append_ide_audit(&serde_json::json!({ "kind": "write" })).is_err(), "a row with no at_ms is refused");
 
         db.delete_transcript(cid);
         assert!(db.transcript(cid, 500).is_empty());

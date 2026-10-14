@@ -1,9 +1,14 @@
-//! The file fallback for transcripts and infractions: used when apid runs without Postgres
+//! The file fallback for transcripts, infractions and the IDE audit: used when apid runs without Postgres
 //! (`APZ_DATABASE_URL` unset), with the same operations and orders as the Postgres queries in
 //! `sql`. Append-only JSON lines, one record per line:
 //!
 //!   <state_dir>/transcripts/<cid>.jsonl        (newest) and <cid>.1.jsonl, <cid>.2.jsonl
 //!   <state_dir>/infractions.jsonl              (newest) and infractions.1.jsonl, infractions.2.jsonl
+//!   <state_dir>/ide-audit.jsonl                (newest) and ide-audit.1.jsonl, ide-audit.2.jsonl
+//!
+//! An IDE audit line is the row as the route returns it (`{at_ms, actor, workspace, kind, ...}`), so a
+//! file from before the audit moved into this store reads as it did. The audit file is private (mode
+//! 0600), as the vault's audit log was.
 //!
 //! A file rotates to `.1` once it reaches `ROTATE_BYTES` (`.1` moves to `.2`; the old `.2` is
 //! dropped). Rotation fsyncs the file it retires. Pages read backwards from the end of the files,
@@ -28,6 +33,8 @@ use super::Infraction;
 
 /// The size at which a file rotates to its first generation.
 pub const ROTATE_BYTES: u64 = 32 * 1024 * 1024;
+/// The IDE audit's file in the state directory (the name the audit had before it moved into this store).
+pub const IDE_AUDIT_FILE: &str = "ide-audit.jsonl";
 /// How much a backwards read takes from the file at a time.
 const CHUNK: u64 = 64 * 1024;
 
@@ -79,6 +86,7 @@ struct Open {
     /// The highest seq stored per cid (None: nothing stored), read lazily from the tail.
     high: HashMap<u64, Option<u64>>,
     infractions: Option<File>,
+    ide_audit: Option<File>,
     /// The next infraction id (read lazily from the tail; ids start at 1, as a bigserial does).
     next_id: Option<u64>,
     /// Appended since the last `sync`.
@@ -115,6 +123,10 @@ impl Files {
         self.dir.join("infractions.jsonl")
     }
 
+    fn ide_audit_path(&self) -> PathBuf {
+        self.dir.join(IDE_AUDIT_FILE)
+    }
+
     /// Appends one transcript record. `Ok(false)` when `seq` is already stored for `cid`.
     pub fn append_transcript(&self, cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value) -> Result<bool, String> {
         let mut guard = self.lock();
@@ -132,7 +144,7 @@ impl Files {
         }
         let line = to_line(&TranscriptOut { seq, work, kind, at_ms, data })?;
         let slot = open.transcripts.entry(cid).or_default();
-        self.append_line(slot, &self.transcript_path(cid), &line).map_err(text)?;
+        self.append_line(slot, &self.transcript_path(cid), &line, false).map_err(text)?;
         open.high.insert(cid, Some(high.map_or(seq, |high| high.max(seq))));
         open.dirty = true;
         Ok(true)
@@ -209,7 +221,7 @@ impl Files {
             tool: &infraction.tool,
             detail: &infraction.detail,
         })?;
-        self.append_line(&mut open.infractions, &self.infraction_path(), &line).map_err(text)?;
+        self.append_line(&mut open.infractions, &self.infraction_path(), &line, false).map_err(text)?;
         open.next_id = Some(id + 1);
         open.dirty = true;
         Ok(())
@@ -240,6 +252,43 @@ impl Files {
             .into_iter()
             .map(|r| Infraction { cid: r.cid, law: r.law, at_ms: r.at_ms, tool: r.tool, detail: r.detail })
             .collect())
+    }
+
+    /// Appends one IDE audit row and fsyncs it before returning: an owner action is on disk when its answer is.
+    pub fn append_ide_audit(&self, row: &Value) -> Result<(), String> {
+        let mut guard = self.lock();
+        let open = &mut *guard;
+        let line = to_line(row)?;
+        self.append_line(&mut open.ide_audit, &self.ide_audit_path(), &line, true).map_err(text)?;
+        match open.ide_audit.as_ref() {
+            Some(file) => file.sync_data().map_err(text),
+            None => Ok(()),
+        }
+    }
+
+    /// IDE audit rows, newest first (by `at_ms`, then the file's order: the same as the table's order),
+    /// of one workspace when `workspace` is given.
+    pub fn ide_audit(&self, workspace: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
+        let limit = limit.max(0) as usize;
+        let _guard = self.lock();
+        let mut rows: Vec<Value> = Vec::new();
+        for file in generations(&self.ide_audit_path()) {
+            if rows.len() >= limit {
+                break;
+            }
+            for_each_line_rev(&file, self.chunk, |line| {
+                let row = serde_json::from_slice::<Value>(line).ok().filter(Value::is_object);
+                if let Some(row) = row.filter(|row| workspace.is_none_or(|wanted| row["workspace"] == wanted)) {
+                    rows.push(row);
+                }
+                rows.len() < limit
+            })
+            .map_err(text)?;
+        }
+        // A stable sort keeps the file's newest-first order among rows with the same at_ms.
+        rows.sort_by_key(|row| std::cmp::Reverse(row["at_ms"].as_u64().unwrap_or(0)));
+        rows.truncate(limit);
+        Ok(rows)
     }
 
     /// Fsyncs the files written since the last call (the periodic saver runs it).
@@ -289,16 +338,16 @@ impl Files {
     }
 
     /// Writes one line to `path` through `slot` (the open file), rotating first when the file has
-    /// reached the limit.
-    fn append_line(&self, slot: &mut Option<File>, path: &Path, line: &[u8]) -> io::Result<()> {
+    /// reached the limit. A `private` file is created mode 0600.
+    fn append_line(&self, slot: &mut Option<File>, path: &Path, line: &[u8], private: bool) -> io::Result<()> {
         let mut file = match slot.take() {
             Some(file) => file,
-            None => open_for_append(path)?,
+            None => open_for_append(path, private)?,
         };
         if file.metadata()?.len() >= self.rotate_bytes {
             drop(file);
             rotate(path)?;
-            file = open_for_append(path)?;
+            file = open_for_append(path, private)?;
         }
         file.write_all(line)?;
         *slot = Some(file);
@@ -335,13 +384,18 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Opens `path` for appending (creating it and its folder). A last line without its newline (a
-/// torn write) gets one first, so the next record starts on its own line.
-fn open_for_append(path: &Path) -> io::Result<File> {
+/// Opens `path` for appending (creating it and its folder; mode 0600 when `private`). A last line
+/// without its newline (a torn write) gets one first, so the next record starts on its own line.
+fn open_for_append(path: &Path, private: bool) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).read(true).open(path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).read(true);
+    if private {
+        private_mode(&mut options);
+    }
+    let mut file = options.open(path)?;
     if file.metadata()?.len() > 0 {
         file.seek(SeekFrom::End(-1))?;
         let mut last = [0u8; 1];
@@ -352,6 +406,15 @@ fn open_for_append(path: &Path) -> io::Result<File> {
     }
     Ok(file)
 }
+
+#[cfg(unix)]
+fn private_mode(options: &mut OpenOptions) {
+    std::os::unix::fs::OpenOptionsExt::mode(options, 0o600);
+}
+
+/// No mode bits on other systems: a file under the user's profile carries the profile's ACL.
+#[cfg(not(unix))]
+fn private_mode(_options: &mut OpenOptions) {}
 
 /// Retires `path` to `.1` (and `.1` to `.2`, dropping the old `.2`), fsyncing it and the folder.
 fn rotate(path: &Path) -> io::Result<()> {
@@ -548,5 +611,56 @@ mod tests {
             text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].as_u64().unwrap()).collect()
         };
         assert_eq!(ids, vec![1, 2, 3, 4], "ids continue after the restart");
+    }
+
+    /// The IDE audit: rows come back newest first (by at_ms, then the later row first), filtered by
+    /// workspace and cut to the limit, across a restart. The file is private.
+    #[test]
+    fn ide_audit_round_trips_filters_limits_and_pages_newest_first() {
+        let dir = state("ide-audit");
+        let row = |at_ms: u64, workspace: &str, kind: &str| {
+            json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null })
+        };
+        let kinds = |rows: Vec<Value>| rows.iter().map(|r| r["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+        let files = Files::open(&dir);
+        files.append_ide_audit(&row(10, "agent:12", "write")).unwrap();
+        files.append_ide_audit(&row(20, "agent:40", "write")).unwrap();
+        files.append_ide_audit(&row(20, "agent:12", "restore")).unwrap();
+        drop(files);
+
+        let files = Files::open(&dir);
+        files.append_ide_audit(&row(30, "agent:12", "run")).unwrap();
+        assert_eq!(kinds(files.ide_audit(None, 10).unwrap()), vec!["run", "restore", "write", "write"]);
+        assert_eq!(kinds(files.ide_audit(Some("agent:12"), 10).unwrap()), vec!["run", "restore", "write"]);
+        assert_eq!(kinds(files.ide_audit(Some("agent:12"), 2).unwrap()), vec!["run", "restore"]);
+        assert_eq!(kinds(files.ide_audit(Some("agent:40"), 10).unwrap()), vec!["write"]);
+        assert!(files.ide_audit(Some("agent:99"), 10).unwrap().is_empty());
+        assert_eq!(files.ide_audit(None, 1).unwrap(), vec![row(30, "agent:12", "run")]);
+        assert!(files.ide_audit(None, 0).unwrap().is_empty());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("ide-audit.jsonl")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "the audit file is private");
+        }
+    }
+
+    /// Rotation keeps two generations of the IDE audit: the newest rows survive, contiguous and newest first.
+    #[test]
+    fn ide_audit_rotation_keeps_the_newest_rows() {
+        let dir = state("ide-audit-rotate");
+        let files = Files::open_with(&dir, 200, CHUNK);
+        for at_ms in 1..=30u64 {
+            files.append_ide_audit(&json!({ "at_ms": at_ms, "actor": "owner", "workspace": "agent:12", "kind": "write" })).unwrap();
+        }
+        assert!(dir.join("ide-audit.1.jsonl").exists());
+        assert!(dir.join("ide-audit.2.jsonl").exists());
+        assert!(!dir.join("ide-audit.3.jsonl").exists(), "only two rotations are kept");
+        let ats: Vec<u64> = files.ide_audit(None, 500).unwrap().iter().map(|r| r["at_ms"].as_u64().unwrap()).collect();
+        assert_eq!(ats.first(), Some(&30));
+        assert!(ats.windows(2).all(|w| w[0] == w[1] + 1), "the kept rows are contiguous: {ats:?}");
+        assert_eq!(files.ide_audit(Some("agent:12"), 3).unwrap().len(), 3);
     }
 }

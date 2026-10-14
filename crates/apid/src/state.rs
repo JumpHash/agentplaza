@@ -128,8 +128,6 @@ pub struct App {
     pub harness: crate::harness_control::Store,
     /// The plaza's git host (Forgejo) and the agents' identities on it.
     pub forge: crate::git::Forge,
-    /// The owner's IDE actions on agent workspaces, appended to `<state-dir>/ide-audit.jsonl`.
-    pub ide: crate::ide::Audit,
     /// Postgres, the plaza's state of record (memory is the working copy).
     pub db: Arc<crate::db::Db>,
     /// STOP ALL / resume.
@@ -223,7 +221,6 @@ impl App {
             projects: crate::projects::Store::load(&config.state_dir),
             harness: crate::harness_control::Store::load(&config.state_dir),
             forge: crate::git::Forge::load(&config.state_dir, &env),
-            ide: crate::ide::Audit::open(config.state_dir.join(crate::ide::AUDIT_FILE)),
             db: Arc::clone(&db),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
