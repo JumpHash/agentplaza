@@ -94,6 +94,18 @@ impl Stage {
         }
     }
 
+    /// The grounding audit of the board (`__apzGroundAudit`, ground.ts on the board scene): every resting part, plate,
+    /// column and room that floats over or sinks into what is under it. "null" without a board.
+    pub fn ground_audit_json(&self) -> String {
+        match self.floor.board.as_ref() {
+            Some(board) => {
+                let roots = [board.model_obj.clone(), self.floor.district_group.clone()];
+                crate::world::ground_audit::ground_audit(&roots).to_json().to_string()
+            }
+            None => "null".to_string(),
+        }
+    }
+
     /// The board's ground audit as `__apzNavAudit` reads it, or "null" without a board.
     pub fn nav_audit_json(&self) -> String {
         match self.floor.nav.as_ref() {

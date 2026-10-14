@@ -51,6 +51,8 @@ export interface WebEngine {
   view_name(): string;
   /** The shown view's camera, JSON: { view, eye, target, fov, roomsTop }. */
   camera_json(): string;
+  /** The grounding audit of the board, JSON: { items, findings: [{ item, kind, amount, at, against }] } or null. */
+  ground_audit(): string;
   /** The floor's robots, JSON (see the engine's debug hooks). */
   bots_json(): string;
   /** The nav grid's cell at (x, z), JSON or "null". */
@@ -822,7 +824,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
       __apzLifts: () => JSON.parse(started.lifts()) as unknown[],
       __apzLiftRide: (index: number, n: number) => JSON.parse(started.lift_ride(index, n)) as Record<string, unknown>,
       __apzShove: (cid: number, x: number, z: number) => started.shove(cid, x, z),
-      __apzGroundAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
+      __apzGroundAudit: () => JSON.parse(started.ground_audit()) as Record<string, unknown> | null,
     };
     for (const [name, fn] of Object.entries(hooks)) w[name] = fn;
     return () => {

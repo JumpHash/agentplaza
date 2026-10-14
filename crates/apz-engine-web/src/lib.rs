@@ -537,6 +537,11 @@ impl WebEngine {
         self.shared.borrow().engine.stage.nav_cell_json(x, z)
     }
 
+    /// The grounding audit of the board, JSON `{items, findings}` or "null" (`__apzGroundAudit`).
+    pub fn ground_audit(&self) -> String {
+        self.shared.borrow().engine.stage.ground_audit_json()
+    }
+
     /// The board's ground audit, JSON or "null" (`__apzNavAudit`).
     pub fn nav_audit(&self) -> String {
         self.shared.borrow().engine.stage.nav_audit_json()

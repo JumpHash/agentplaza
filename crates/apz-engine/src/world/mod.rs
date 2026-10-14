@@ -6,6 +6,7 @@
 
 pub mod behaviour;
 pub mod board_layout;
+pub mod ground_audit;
 pub mod labels;
 pub mod layout;
 pub mod lift_mesh;
