@@ -108,7 +108,7 @@ fn amount(v: &Value) -> String {
 }
 
 /// A count of bytes as a short size: B, KiB, MiB or GiB.
-fn size_text(bytes: f64) -> String {
+pub(crate) fn size_text(bytes: f64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
     let mut value = bytes;
     let mut unit = 0;

@@ -35,6 +35,8 @@ mod workstations;
 const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
 const EVENT_LOG_LINES: usize = 200;
+/// How many recent recordings the Workstations tab lists for the selected workstation.
+const RECENT_RECORDINGS: u32 = 5;
 
 /// The tabs, in the order of their number keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +198,8 @@ enum Msg {
     /// The fixes ended: nothing more to run, or the one that stopped them.
     FixDone(Result<(), String>),
     Fetched(&'static str, Result<Value, String>),
+    /// The selected workstation's sync state (`"sync"`) or its recent recordings (`"recordings"`).
+    Station(String, &'static str, Result<Value, String>),
     Link(bool),
     Event(String, Value),
     Done(String, Result<Value, String>),
@@ -222,9 +226,16 @@ pub struct App {
     pub confirm: Option<Confirm>,
     /// The first-start setup or the tour, while it runs (it takes every key).
     pub onboarding: Option<Onboarding>,
+    /// The sync state of each workstation the Workstations tab has read, by id.
+    pub station_sync: HashMap<String, Value>,
+    /// The recent recordings of each workstation the Workstations tab has read, by id.
+    pub station_recent: HashMap<String, Value>,
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
     watch: Sender<&'static str>,
+    /// The workstation the detail poller follows (None: none, while another tab shows).
+    station_watch: Sender<Option<String>>,
+    station_watched: Option<String>,
 }
 
 impl App {
@@ -234,6 +245,10 @@ impl App {
         let poll_client = client.clone();
         let poll_tx = tx.clone();
         thread::spawn(move || poll(poll_client, watched, poll_tx));
+        let (station_watch, station_watched_rx) = mpsc::channel();
+        let station_client = client.clone();
+        let station_tx = tx.clone();
+        thread::spawn(move || follow_station(station_client, station_watched_rx, station_tx));
         let target = client.target.clone();
         let event_tx = tx.clone();
         thread::spawn(move || follow_events(target, event_tx));
@@ -252,9 +267,13 @@ impl App {
             draft: None,
             confirm: None,
             onboarding: None,
+            station_sync: HashMap::new(),
+            station_recent: HashMap::new(),
             rx,
             tx,
             watch,
+            station_watch,
+            station_watched: None,
         }
     }
 
@@ -402,6 +421,13 @@ impl App {
                     self.error = None;
                 }
                 Msg::Fetched(path, Err(e)) => self.error = Some(format!("{path}: {e}")),
+                Msg::Station(id, "sync", Ok(value)) => {
+                    self.station_sync.insert(id, value);
+                }
+                Msg::Station(id, _, Ok(value)) => {
+                    self.station_recent.insert(id, value);
+                }
+                Msg::Station(id, _, Err(e)) => self.error = Some(format!("/v1/stations/{id}: {e}")),
                 Msg::Facts(facts) => {
                     if let Some(ob) = self.onboarding.as_mut() {
                         ob.facts = Some(facts);
@@ -433,9 +459,11 @@ impl App {
                     if kind != "serial" {
                         self.log.push(event_line(&kind, &data));
                     }
-                    // The Workstations tab reads the stations once more when one changes (not per owner input).
+                    // The Workstations tab reads the stations once more when one changes (not per owner input), and
+                    // the selected one's sync and recordings with them.
                     if self.tab == Tab::Workstations && is_station_change(&kind) {
                         let _ = self.watch.send(Tab::Workstations.path());
+                        let _ = self.station_watch.send(self.station_watched.clone());
                     }
                 }
                 Msg::Done(label, result) => {
@@ -446,6 +474,19 @@ impl App {
                     let _ = self.watch.send(self.tab.path());
                 }
             }
+        }
+        self.follow_selected_station();
+    }
+
+    /// Points the detail poller at the workstation the Workstations tab selects (and at none, off that tab).
+    fn follow_selected_station(&mut self) {
+        let wanted = match self.tab {
+            Tab::Workstations => self.array("/v1/stations").get(self.selected).and_then(|s| s.get("id")).and_then(Value::as_str).map(str::to_string),
+            _ => None,
+        };
+        if wanted != self.station_watched {
+            let _ = self.station_watch.send(wanted.clone());
+            self.station_watched = wanted;
         }
     }
 
@@ -664,6 +705,30 @@ fn poll(mut client: Client, watched: Receiver<&'static str>, tx: Sender<Msg>) {
     }
 }
 
+/// The workstation detail's poller: the followed workstation's sync state and its recent recordings, every 3 s, or at
+/// once when the UI names a workstation (the same one again asks for a refresh). None stops it until one is named.
+fn follow_station(mut client: Client, watched: Receiver<Option<String>>, tx: Sender<Msg>) {
+    client.timeout = Duration::from_secs(5);
+    let mut current: Option<String> = None;
+    loop {
+        if let Some(id) = current.clone() {
+            let sync = client.get(&format!("/v1/stations/{}/sync", seg(&id)));
+            let recent = client.get(&format!("/v1/stations/recordings?station={}&limit={RECENT_RECORDINGS}", seg(&id)));
+            if tx.send(Msg::Station(id.clone(), "sync", sync)).is_err() {
+                return;
+            }
+            if tx.send(Msg::Station(id, "recordings", recent)).is_err() {
+                return;
+            }
+        }
+        match watched.recv_timeout(POLL_EVERY) {
+            Ok(next) => current = next,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
 /// The events socket: frames `{"event": kind, "data": ...}`; reconnects with a backoff up to 15 s.
 fn follow_events(target: Target, tx: Sender<Msg>) {
     let mut wait = Duration::from_millis(500);
@@ -697,10 +762,23 @@ fn follow_events(target: Target, tx: Sender<Msg>) {
     }
 }
 
-/// The hub events that change what the Workstations tab shows: a station's own change, and a lease opened,
-/// queued, granted, released, ended or failed. The owner's input during a takeover is left out (it is frequent).
+/// The hub events that change what the Workstations tab shows: a station's own change, a lease opened, queued,
+/// granted, released, ended or failed, the owner's takeover or give back, and a sync's conflict or pause. The owner's
+/// input during a takeover is left out (it is frequent).
 fn is_station_change(kind: &str) -> bool {
-    matches!(kind, "station" | "lease_waiting" | "lease_granted" | "lease_released" | "lease_ended" | "lease_failed")
+    matches!(
+        kind,
+        "station"
+            | "station_takeover"
+            | "station_give_back"
+            | "station_sync_conflict"
+            | "station_sync_paused"
+            | "lease_waiting"
+            | "lease_granted"
+            | "lease_released"
+            | "lease_ended"
+            | "lease_failed"
+    )
 }
 
 fn parse_frame(text: &str) -> Option<(String, Value)> {
@@ -836,6 +914,15 @@ mod tests {
         assert_eq!(Tab::Workstations.path(), "/v1/stations");
         assert_eq!(Tab::Overview.next().next(), Tab::Tasks);
         assert_eq!(Tab::Floor.next().prev(), Tab::Floor);
+    }
+
+    #[test]
+    fn the_takeover_and_sync_events_refresh_the_workstations_tab() {
+        for kind in ["station_takeover", "station_give_back", "station_sync_conflict", "station_sync_paused", "lease_granted"] {
+            assert!(is_station_change(kind), "{kind} changes the tab");
+        }
+        assert!(!is_station_change("station_sync"), "a pass that moved files is read on the next poll");
+        assert!(!is_station_change("owner_input"));
     }
 
     #[test]

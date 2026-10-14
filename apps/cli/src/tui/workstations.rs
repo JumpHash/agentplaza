@@ -1,19 +1,26 @@
 //! The Workstations tab: the workstations enrolled on the hub (`GET /v1/stations`, the list `agentplaza
 //! stations list` reads), one of them selected, and its detail as `agentplaza stations show` prints it: the
-//! machine's facts, its settings with the takeover policy, and its leases in queue order. Read-only; the
-//! tab refreshes on the hub's station and lease events. Declared from `app.rs`.
+//! machine's facts, its settings with the takeover policy and its leases in queue order. Beside them, the work
+//! folder's sync (a paused banner, the conflicts) and the recent recordings (`agentplaza stations sync` and
+//! `recordings`). Read-only; the tab refreshes on the hub's station, lease, takeover and sync events. Declared from
+//! `app.rs`, which reads the selected workstation's sync and recordings.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table};
+use serde_json::Value;
 
 use super::App;
 use crate::cmd::stations;
+use crate::cmd::stations::{files, recordings};
+
+/// Conflicts listed in the detail before the rest are counted.
+const CONFLICTS_SHOWN: usize = 3;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let [list, detail] = Layout::vertical([Constraint::Min(5), Constraint::Length(18)]).areas(area);
+    let [list, detail] = Layout::vertical([Constraint::Min(5), Constraint::Length(28)]).areas(area);
     table(frame, list, app);
     details(frame, detail, app);
 }
@@ -68,6 +75,7 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
     lines.extend(pairs(&stations::station_fields(station), palette.muted));
     frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" workstation ")), facts);
 
+    let [settings_area, sync_area] = Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(side);
     let mut settings = pairs(&stations::settings_fields(&station["settings"]), palette.muted);
     settings.push(Line::raw(""));
     settings.push(Line::from(Span::styled("leases", Style::new().fg(palette.muted))));
@@ -80,7 +88,48 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
     }
     frame.render_widget(
         Paragraph::new(settings).block(Block::bordered().title(" settings and leases ")),
-        side,
+        settings_area,
+    );
+    sync_and_recordings(frame, sync_area, app, station);
+}
+
+/// The work folder's sync (its paused banner, its state and its conflicts) and the recent recordings.
+fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value) {
+    let palette = app.palette;
+    let id = station.get("id").and_then(Value::as_str).unwrap_or_default();
+    let mut lines: Vec<Line> = Vec::new();
+    match app.station_sync.get(id) {
+        Some(state) => {
+            if let Some(banner) = files::paused_banner(state) {
+                lines.push(Line::from(Span::styled(banner, Style::new().fg(palette.accent).add_modifier(Modifier::BOLD))));
+            }
+            lines.extend(pairs(&files::sync_fields(state), palette.muted));
+            let conflicts = state.get("conflicts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+            for conflict in conflicts.iter().take(CONFLICTS_SHOWN) {
+                let cells = files::conflict_row(conflict);
+                lines.push(Line::raw(format!("  conflict  {}  (copy of {})", cells[0], cells[1])));
+            }
+            if conflicts.len() > CONFLICTS_SHOWN {
+                lines.push(Line::from(Span::styled(
+                    format!("  and {} more conflicts", conflicts.len() - CONFLICTS_SHOWN),
+                    Style::new().fg(palette.muted),
+                )));
+            }
+        }
+        None => lines.push(Line::from(Span::styled("sync: reading", Style::new().fg(palette.muted)))),
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("recent recordings", Style::new().fg(palette.muted))));
+    let recent = app.station_recent.get(id).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    if recent.is_empty() {
+        lines.push(Line::raw("  none"));
+    }
+    for recording in recent.iter().take(super::RECENT_RECORDINGS as usize) {
+        lines.push(Line::raw(format!("  {}", recordings::recording_brief(recording))));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" sync and recordings ")),
+        area,
     );
 }
 
