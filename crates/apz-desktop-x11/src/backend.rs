@@ -1,14 +1,20 @@
 //! The X11 backend: the [`Desktop`] the workstation daemon serves, over its sessions.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use apz_desktop::{AppInfo, Desktop, DesktopError, Frame, Result, SessionSpec, UiNode};
 use apz_station::{InputAction, Selector, SessionId, SessionKind, UiAction};
 
-use crate::apps::{DesktopEntry, application_dirs, expand_exec, find, scan};
+use crate::apps::{DesktopEntry, application_dirs, expand_exec, find, scan, split_exec};
 use crate::display::DisplayPaths;
+use crate::ewmh::{self, Atoms, Names};
+use crate::process::{self, Started};
 use crate::session::{MAX_SIDE, Session};
+
+/// How long a force-ended app's processes get to exit after SIGTERM, before SIGKILL.
+const FORCE_GRACE: Duration = Duration::from_secs(2);
 
 /// The configuration of the backend. [`X11Config::default`] is what a plaza machine uses unless the owner
 /// set something: `Xvfb` from PATH, no window manager, the daemon's own user, the owner's `DISPLAY`.
@@ -54,12 +60,22 @@ pub trait UiHook: Send {
     fn ui_act(&mut self, display: &str, selector: &Selector, action: &UiAction) -> Result<()>;
 }
 
+/// A process the backend started for an app on a session. Only these are ever ended by `quit`.
+#[derive(Debug, Clone)]
+struct Launch {
+    session: SessionId,
+    /// The app's desktop id: what `quit` and `focus` resolve their app name to.
+    app: String,
+    process: Started,
+}
+
 /// The X11 desktop backend. See the crate documentation.
 pub struct X11Desktop {
     config: X11Config,
     sessions: BTreeMap<SessionId, Session>,
     next: SessionId,
     ui: Option<Box<dyn UiHook>>,
+    launches: Vec<Launch>,
 }
 
 impl X11Desktop {
@@ -69,6 +85,7 @@ impl X11Desktop {
             sessions: BTreeMap::new(),
             next: 1,
             ui: None,
+            launches: Vec::new(),
         }
     }
 
@@ -112,6 +129,52 @@ impl X11Desktop {
         });
         scan(&dirs)
     }
+
+    /// The desktop id and the window names of the app `app` names: its entry's id, the program its `Exec` runs and
+    /// its name. An app with no entry is known by the name given.
+    fn names_of(&self, app: &str) -> (String, Names) {
+        let entries = self.entries();
+        let Some(entry) = find(&entries, app) else {
+            return (
+                app.to_string(),
+                Names {
+                    ids: vec![app.to_string()],
+                    titles: vec![app.to_string()],
+                },
+            );
+        };
+        let program = split_exec(&entry.exec)
+            .ok()
+            .and_then(|words| words.into_iter().next())
+            .and_then(|program| {
+                Path::new(&program)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+        let mut ids = vec![entry.id.clone()];
+        ids.extend(program);
+        (
+            entry.id.clone(),
+            Names {
+                ids,
+                titles: vec![entry.name.clone()],
+            },
+        )
+    }
+
+    /// The pids of the processes the backend started for the app `key`, and every process beneath them: what
+    /// `quit` may end by force. A launch whose process has ended, or was replaced by another under its pid, counts
+    /// for nothing.
+    fn launched_tree(&self, key: &str) -> BTreeSet<u32> {
+        let table = process::table();
+        let roots: Vec<Started> = self
+            .launches
+            .iter()
+            .filter(|launch| launch.app == key)
+            .map(|launch| launch.process)
+            .collect();
+        process::tree(&roots, &table)
+    }
 }
 
 impl Desktop for X11Desktop {
@@ -151,10 +214,13 @@ impl Desktop for X11Desktop {
 
     fn close_session(&mut self, id: SessionId) -> Result<()> {
         // Dropping the session stops its processes (a pixel session's server, window manager and apps).
-        self.sessions
+        let closed = self
+            .sessions
             .remove(&id)
             .map(drop)
-            .ok_or(DesktopError::UnknownSession(id))
+            .ok_or(DesktopError::UnknownSession(id));
+        self.launches.retain(|launch| launch.session != id);
+        closed
     }
 
     fn capture(&mut self, id: SessionId) -> Result<Frame> {
@@ -203,7 +269,72 @@ impl Desktop for X11Desktop {
         let entry = find(&entries, app)
             .ok_or_else(|| DesktopError::NotFound(format!("no application \"{app}\"")))?;
         let argv = expand_exec(&entry.exec, args)?;
-        self.session(id)?.spawn(&self.config, &argv)
+        let pid = self.session(id)?.spawn(&self.config, &argv)?;
+        // An app that has already ended has nothing to record: there is no process left to end.
+        if let Some(started) = process::started_at(pid) {
+            self.launches.push(Launch {
+                session: id,
+                app: entry.id.clone(),
+                process: Started { pid, started },
+            });
+        }
+        Ok(())
+    }
+
+    fn focus(&mut self, id: &str) -> Result<()> {
+        let (key, names) = self.names_of(id);
+        let launched = self.launched_tree(&key);
+        for session in self.sessions.values() {
+            let (conn, root) = session.x();
+            let atoms = Atoms::intern(conn)?;
+            let managed = ewmh::has_window_manager(conn, &atoms, root);
+            // Focus may name any window of the app, including one on the owner's display: it moves the keyboard
+            // and nothing else.
+            let found = ewmh::find(conn, &atoms, root, &names, &launched, true);
+            if let Some(first) = found.first() {
+                return ewmh::activate(conn, &atoms, root, first.window, managed);
+            }
+        }
+        Err(DesktopError::NotFound(format!("no window of \"{id}\"")))
+    }
+
+    fn quit(&mut self, id: &str, force: bool) -> Result<()> {
+        let (key, names) = self.names_of(id);
+        let launched = self.launched_tree(&key);
+        // Force ends processes, so it needs ones the backend started; this refuses before anything is asked.
+        if force && launched.is_empty() {
+            return Err(DesktopError::Unsupported(format!(
+                "\"{id}\" was not started by this desktop, so it cannot be ended by force"
+            )));
+        }
+        let mut windows = 0;
+        let mut asked = 0;
+        for session in self.sessions.values() {
+            let (conn, root) = session.x();
+            let atoms = Atoms::intern(conn)?;
+            let managed = ewmh::has_window_manager(conn, &atoms, root);
+            // On the owner's display the backend closes only the windows of processes it started; a window found
+            // by its name there may be the owner's own.
+            let by_name = session.kind == SessionKind::Pixel;
+            for found in ewmh::find(conn, &atoms, root, &names, &launched, by_name) {
+                windows += 1;
+                if ewmh::request_close(conn, &atoms, root, found.window, managed)? {
+                    asked += 1;
+                }
+            }
+        }
+        if force {
+            process::terminate(&launched, FORCE_GRACE);
+        }
+        if windows == 0 && !force {
+            return Err(DesktopError::NotFound(format!("no window of \"{id}\"")));
+        }
+        if asked == 0 && !force {
+            return Err(DesktopError::Unsupported(format!(
+                "no window of \"{id}\" can be asked to close: it has no window manager to ask and does not take WM_DELETE_WINDOW"
+            )));
+        }
+        Ok(())
     }
 
     fn owner_active(&self, id: SessionId) -> bool {

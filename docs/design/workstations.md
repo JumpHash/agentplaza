@@ -32,7 +32,8 @@ installed there (Blender, compilers, browsers, anything).
   the owner's session under a shared lease. Section 5's second-user session on macOS and the shared Windows pixel
   session are not built. Linux pixel sessions use Xvfb, not a headless Wayland compositor.
 - A Windows client edition has one shared session, so the hub queues its pixel leases one at a time.
-- X11 and Wayland have no focus and no quit. Windows has focus but no quit. macOS has both.
+- Wayland has no focus and no quit. X11 has both through EWMH: quit asks the window to close, and ends the app's own
+  processes only when forced. Windows has focus but no quit. macOS has both.
 - Wayland screen capture needs the opt-in `pipewire` feature. Without it a Wayland session takes input but cannot
   capture.
 - Windows guests need the virtio-win `viosock` driver. Without it the guest has no vsock and cannot join.

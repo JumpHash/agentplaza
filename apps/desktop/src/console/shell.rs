@@ -307,6 +307,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             state.working = v["overview"]["agents"]["working"].as_u64().unwrap_or(0) as u32;
             state.idle = v["overview"]["agents"]["idle"].as_u64().unwrap_or(0) as u32;
             state.counts.insert("agents", v["overview"]["agents"]["total"].as_u64().unwrap_or(0) as u32);
+            super::rich::set_plaza_git_host(&v["overview"]);
             set_control(state, &v["control"]);
             state.hub = ctx.client.base().to_string();
             state.target = Some(ctx.client.target.clone());

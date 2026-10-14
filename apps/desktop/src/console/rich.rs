@@ -9,6 +9,7 @@
 //! surface's: [`RichAction::route`] names the screen an action opens, and the IDE handles [`RichAction::OpenPath`].
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use apz_rich::{AgentName, Ctx, Ref, Span};
@@ -227,20 +228,54 @@ pub fn apply(cards: &mut Cards, ev: Ev) {
     }
 }
 
+/// The plaza's git host, as the hub's overview last named it: the forge's web origin (`git_host`). None when the hub
+/// has none. The shell keeps it from each overview load, and every surface's classifier context reads it, so a plaza
+/// git link is a chip on the desktop as it is on the web.
+static PLAZA_GIT_HOST: RwLock<Option<String>> = RwLock::new(None);
+
+/// Keeps the plaza's git host from a `/v1/overview` answer.
+pub fn set_plaza_git_host(overview: &Value) {
+    if let Ok(mut slot) = PLAZA_GIT_HOST.write() {
+        *slot = git_host_of(overview);
+    }
+}
+
+/// The `git_host` of a `/v1/overview` answer, trimmed. Null, empty, or absent (an older hub) is None.
+pub fn git_host_of(overview: &Value) -> Option<String> {
+    overview
+        .get("git_host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+}
+
 /// The classifier's context for a surface: its project and repository, its workspace's paths (the IDE only), the
-/// roster the cards hold, and the hub's own host (its `/v1/files` and `/v1/library` links are library references).
+/// roster the cards hold, the plaza's git host, and the hub's own host (its `/v1/files` and `/v1/library` links are
+/// library references).
 pub fn context(
     cards: &Cards,
     project: Option<&str>,
     project_repo: Option<&str>,
     paths: Option<&BTreeSet<String>>,
 ) -> RichCtx {
+    let plaza_git_host = PLAZA_GIT_HOST.read().ok().and_then(|slot| slot.clone());
+    build_context(cards, project, project_repo, paths, plaza_git_host)
+}
+
+fn build_context(
+    cards: &Cards,
+    project: Option<&str>,
+    project_repo: Option<&str>,
+    paths: Option<&BTreeSet<String>>,
+    plaza_git_host: Option<String>,
+) -> RichCtx {
     Ctx {
         project: project.map(str::to_string),
         project_repo: project_repo.map(str::to_string),
         paths: paths.cloned().unwrap_or_default(),
         agents: cards.roster.clone(),
-        plaza_git_host: None,
+        plaza_git_host,
         hub_host: cards.hub.clone(),
     }
 }
@@ -1611,6 +1646,60 @@ mod tests {
             Some(RichAction::OpenUrl(
                 "https://git.example.test/o/r/pulls/3".into()
             ))
+        );
+    }
+
+    #[test]
+    fn the_plaza_git_host_is_the_overviews_git_host() {
+        assert_eq!(
+            git_host_of(&json!({"git_host": "https://git.example.test"})),
+            Some("https://git.example.test".into())
+        );
+        assert_eq!(
+            git_host_of(&json!({"git_host": " https://git.example.test/ "})),
+            Some("https://git.example.test/".into()),
+            "the value is trimmed"
+        );
+        assert_eq!(git_host_of(&json!({"git_host": null})), None);
+        assert_eq!(git_host_of(&json!({"git_host": ""})), None);
+        assert_eq!(
+            git_host_of(&json!({"agents": {}})),
+            None,
+            "an older hub's overview has no git_host"
+        );
+    }
+
+    #[test]
+    fn a_plaza_link_is_a_plaza_reference_once_the_context_knows_the_host() {
+        let cards = Cards::default();
+        let url = "https://git.example.test/o/r/pulls/3";
+        let known = build_context(
+            &cards,
+            None,
+            Some("o/r"),
+            None,
+            Some("https://git.example.test".into()),
+        );
+        assert_eq!(
+            known.plaza_git_host.as_deref(),
+            Some("https://git.example.test")
+        );
+        assert_eq!(
+            apz_rich::classify_url(url, &known),
+            Some(Ref::PlazaGitPull {
+                owner: "o".into(),
+                repo: "r".into(),
+                number: 3,
+            }),
+            "the link is a chip"
+        );
+        let unknown = build_context(&cards, None, Some("o/r"), None, None);
+        assert!(
+            matches!(
+                apz_rich::classify_url(url, &unknown),
+                Some(Ref::Link { .. })
+            ),
+            "with no host it stays an ordinary link"
         );
     }
 

@@ -174,5 +174,5 @@ context to expected spans), so the three apps recognise the same things.
 - Desktop videos and HTML files show a card whose Open button leaves the app, by design (no webview). The web plays
   video inline and runs HTML in a sandboxed frame.
 - External images load from their own hosts, with no referrer. The hub does not proxy them.
-- The desktop's classifier context has no plaza git host (`apps/desktop/src/console/rich.rs`, `plaza_git_host: None`),
-  so plaza git references show as plain links there. The web takes the host from the hub's overview.
+- The desktop's classifier context takes the plaza git host from the hub's overview (`git_host`), as the web does
+  (`apps/desktop/src/console/rich.rs`, kept by the shell's overview load).

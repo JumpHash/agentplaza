@@ -10,6 +10,10 @@
 //! - **Input** is XTest: motion, buttons, wheel (buttons 4 to 7), keys by keysym through the server's keyboard
 //!   map, and text typed through a scratch keycode remapped for characters the map does not have.
 //! - **Apps** are the `.desktop` entries of the XDG application directories, launched into the session's display.
+//! - **Focus and quit** are EWMH on the session's display: an app's windows are those whose process the backend
+//!   started (its `_NET_WM_PID` is in that process's tree) or, on a private display, whose class or title is the
+//!   app's. `quit` asks gracefully (`_NET_CLOSE_WINDOW`, or `WM_DELETE_WINDOW` without a window manager); with
+//!   `force` it also ends the processes the backend started, and never any other.
 //! - **UI tree and UI actions** belong to the accessibility crate: [`X11Desktop::with_ui`] takes its
 //!   [`UiHook`], and without one they return `Unsupported`.
 //!
@@ -21,8 +25,10 @@ mod apps;
 mod backend;
 mod capture;
 mod display;
+mod ewmh;
 mod input;
 mod keymap;
+mod process;
 mod session;
 
 pub use backend::{UiHook, X11Config, X11Desktop};

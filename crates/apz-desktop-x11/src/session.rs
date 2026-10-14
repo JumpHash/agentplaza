@@ -335,8 +335,14 @@ impl Session {
         matches!(self.owner_seen.get(), Some(seen) if now.saturating_duration_since(seen) < OWNER_WINDOW)
     }
 
-    /// Starts an app on this session's display. Pixel sessions run it under `run_as`, in the session's group.
-    pub(crate) fn spawn(&self, config: &X11Config, argv: &[String]) -> Result<()> {
+    /// The session's X connection and root window, for the calls that work on its windows.
+    pub(crate) fn x(&self) -> (&RustConnection, Window) {
+        (&self.conn, self.root)
+    }
+
+    /// Starts an app on this session's display and gives back the pid of the process started (the `sudo` that runs
+    /// it, when it runs under `run_as`). Pixel sessions run it in the session's group.
+    pub(crate) fn spawn(&self, config: &X11Config, argv: &[String]) -> Result<u32> {
         let mut command = match (self.kind, config.run_as.as_deref()) {
             (SessionKind::Pixel, Some(user)) => {
                 let mut command = Command::new("sudo");
@@ -367,11 +373,12 @@ impl Session {
         let mut child = command.spawn().map_err(|error| {
             DesktopError::Platform(format!("cannot start {}: {error}", argv[0]))
         })?;
+        let pid = child.id();
         // The app outlives this call; a thread reaps it so no zombie is left behind.
         thread::spawn(move || {
             let _ = child.wait();
         });
-        Ok(())
+        Ok(pid)
     }
 
     /// The pointer's position on the root window, or `None` if the server does not say.

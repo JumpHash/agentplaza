@@ -11,13 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use apz_desktop::{Desktop, Frame, SessionSpec};
+use apz_desktop::{Desktop, DesktopError, Frame, SessionSpec};
 use apz_desktop_x11::{X11Config, X11Desktop};
 use apz_station::{Button, InputAction, SessionKind};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    ConnectionExt as _, CreateWindowAux, EventMask, Window, WindowClass,
+    ConnectionExt as _, CreateWindowAux, EventMask, MapState, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
@@ -34,6 +34,7 @@ fn on_path(program: &str) -> bool {
 struct Probe {
     conn: Arc<RustConnection>,
     root: Window,
+    window: Window,
     events: Arc<Mutex<Vec<Event>>>,
 }
 
@@ -72,7 +73,12 @@ fn open_probe(display: &str) -> Probe {
             sink.lock().expect("the event list").push(event);
         }
     });
-    Probe { conn, root, events }
+    Probe {
+        conn,
+        root,
+        window,
+        events,
+    }
 }
 
 impl Probe {
@@ -103,14 +109,34 @@ impl Probe {
         reply.keysyms.contains(&keysym)
     }
 
-    fn root_children(&self) -> usize {
+    /// The windows directly below the root, in stacking order.
+    fn root_windows(&self) -> Vec<Window> {
         self.conn
             .query_tree(self.root)
             .expect("the tree is requested")
             .reply()
             .expect("the tree is read")
             .children
-            .len()
+    }
+
+    fn viewable(&self, window: Window) -> bool {
+        self.conn
+            .get_window_attributes(window)
+            .expect("the attributes are requested")
+            .reply()
+            .expect("the attributes are read")
+            .map_state
+            == MapState::VIEWABLE
+    }
+
+    /// The window that holds the keyboard, as the server reports it.
+    fn focus(&self) -> Window {
+        self.conn
+            .get_input_focus()
+            .expect("the focus is requested")
+            .reply()
+            .expect("the focus is read")
+            .focus
     }
 
     fn recorded(&self) -> Vec<Event> {
@@ -152,6 +178,39 @@ fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
+/// The window that appears on the root after `before` was listed, once it is viewable.
+fn new_window(probe: &Probe, before: &[Window]) -> Window {
+    let mut found = None;
+    wait_for("a new window on the display", || {
+        found = probe
+            .root_windows()
+            .into_iter()
+            .find(|window| !before.contains(window) && probe.viewable(*window));
+        found.is_some()
+    });
+    found.expect("the window")
+}
+
+/// The Exec line of a Tk window script in `dir`, when python3 has tkinter. The window is titled "Test Window".
+fn tk_client(dir: &Path) -> Option<String> {
+    let has_tk = std::process::Command::new("python3")
+        .args(["-c", "import tkinter"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !has_tk {
+        return None;
+    }
+    let script = dir.join("test-window.py");
+    fs::write(
+        &script,
+        "import tkinter as tk\nroot = tk.Tk()\nroot.title(\"Test Window\")\nroot.geometry(\"200x100+100+100\")\nroot.mainloop()\n",
+    )
+    .expect("the client script");
+    Some(format!("python3 {}", script.display()))
+}
+
 fn scratch_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("apz-x11-live-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -168,14 +227,27 @@ fn a_private_display_captures_takes_input_launches_and_closes() {
     let dir = scratch_dir();
     let apps = dir.join("applications");
     fs::create_dir_all(&apps).expect("an applications directory");
-    let has_xterm = on_path("xterm");
-    if has_xterm {
-        fs::write(
-            apps.join("test-terminal.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Test Terminal\nExec=xterm\n",
+    // The client the window checks launch. A Tk window (python3 with tkinter) takes WM_DELETE_WINDOW and closes, so
+    // a graceful quit is checked on it. xterm and xmessage are the fallbacks: xmessage ignores WM_DELETE_WINDOW (only
+    // a forced quit is checked on it), and it sets no _NET_WM_PID, so its window is found by its class.
+    let client = tk_client(&dir)
+        .map(|exec| (exec, true))
+        .or_else(|| on_path("xterm").then(|| ("xterm".to_string(), false)))
+        .or_else(|| {
+            on_path("xmessage").then(|| ("xmessage -center apz-window-check".to_string(), false))
+        });
+    let closes = client.as_ref().is_some_and(|(_, closes)| *closes);
+    match &client {
+        Some((exec, _)) => fs::write(
+            apps.join("test-window.desktop"),
+            format!("[Desktop Entry]\nType=Application\nName=Test Window\nExec={exec}\n"),
         )
-        .expect("a desktop entry");
+        .expect("a desktop entry"),
+        None => {
+            eprintln!("no Tk, xterm or xmessage to launch; the focus and quit checks were skipped")
+        }
     }
+    let has_client = client.is_some();
 
     let config = X11Config {
         application_dirs: Some(vec![apps]),
@@ -266,14 +338,58 @@ fn a_private_display_captures_takes_input_launches_and_closes() {
         "the scratch keycode is cleared after the remap"
     );
 
-    // An app from the test's own entry runs on the private display.
-    if has_xterm {
-        let before = probe.root_children();
+    // An app from the test's own entry runs on the private display, is focused, is asked to close, and is ended
+    // by force. The probe's window is never one of them.
+    if has_client {
+        let before = probe.root_windows();
         desktop
-            .launch(id, "Test Terminal", &[])
-            .expect("the terminal starts");
-        wait_for("the terminal's window", || probe.root_children() > before);
+            .launch(id, "Test Window", &[])
+            .expect("the client starts");
+        let window = new_window(&probe, &before);
+
+        desktop
+            .focus("Test Window")
+            .expect("the client's window is focused");
+        wait_for("the client's window to hold the keyboard", || {
+            probe.focus() == window
+        });
+
+        desktop
+            .quit("Test Window", false)
+            .expect("the client's window is asked to close");
+        if closes {
+            wait_for("the client's window to close", || {
+                !probe.root_windows().contains(&window)
+            });
+        }
+        assert!(
+            probe.root_windows().contains(&probe.window),
+            "the probe's window is not the app's, so it stays"
+        );
+
+        let before = probe.root_windows();
+        desktop
+            .launch(id, "Test Window", &[])
+            .expect("the client starts again");
+        let second = new_window(&probe, &before);
+        desktop
+            .quit("Test Window", true)
+            .expect("the client is ended by force");
+        wait_for("the forced client's window to be gone", || {
+            !probe.root_windows().contains(&second)
+        });
     }
+    assert!(
+        matches!(desktop.focus("no such app"), Err(DesktopError::NotFound(_))),
+        "focus names no window of an app that is not running"
+    );
+    assert!(
+        matches!(
+            desktop.quit("no such app", true),
+            Err(DesktopError::Unsupported(_))
+        ),
+        "force refuses an app the backend did not start"
+    );
 
     // Closing kills the server and everything on it.
     drop(probe);
