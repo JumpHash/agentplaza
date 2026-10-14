@@ -35,6 +35,7 @@ pub mod machines;
 pub mod nodes;
 pub mod setup;
 pub mod agent;
+pub mod ide_terminal;
 pub mod sanctions;
 pub mod lab;
 pub mod lab_common;

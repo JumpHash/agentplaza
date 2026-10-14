@@ -93,6 +93,7 @@ dependencies = [
  "apz-setup",
  "apz-skill",
  "apz-trust",
+ "apz-vt",
  "base64 0.22.1",
  "bytemuck",
  "chrono",
@@ -487,6 +488,13 @@ version = "0.1.0"
 dependencies = [
  "vm-memory",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "apz-vt"
+version = "0.1.0"
+dependencies = [
+ "vte",
 ]
 
 [[package]]
@@ -7675,6 +7683,16 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "memchr",
 ]
 
 [[package]]

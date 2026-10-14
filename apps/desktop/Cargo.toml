@@ -45,6 +45,8 @@ ab_glyph = "0.2"
 # The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
 apz-engine = { path = "../../crates/apz-engine" }
 apz-http = { path = "../../crates/apz-http" }
+# The IDE terminal's emulator (the VT screen over vte; no UI, so it stays testable here).
+apz-vt = { path = "../../crates/apz-vt" }
 apz-plaza = { path = "../../crates/apz-plaza" }
 apz-os = { path = "../../crates/apz-os" }
 apz-setup = { path = "../../crates/apz-setup" }
