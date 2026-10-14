@@ -611,10 +611,160 @@ mod tests {
     }
 
     #[test]
-    fn empty_fires_on_blank_bodies_only() {
-        let f = fired(Kind::Fragment, " \n\t\n", "empty");
-        assert_eq!((f.len(), f[0].line, f[0].severity), (1, 0, Severity::Error));
-        assert!(fired(Kind::Fragment, "Some text", "empty").is_empty());
+    fn rules_fire_at_their_line_and_stay_silent_on_clean_text() {
+        /// `rule` reports on `body` at `line`, or stays silent when `line` is `None`.
+        struct Case {
+            rule: &'static str,
+            kind: Kind,
+            body: &'static str,
+            line: Option<u32>,
+        }
+        const CASES: &[Case] = &[
+            Case {
+                rule: "empty",
+                kind: Kind::Fragment,
+                body: " \n\t\n",
+                line: Some(0),
+            },
+            Case {
+                rule: "empty",
+                kind: Kind::Fragment,
+                body: "Some text",
+                line: None,
+            },
+            Case {
+                rule: "unclosed-fence",
+                kind: Kind::Fragment,
+                body: "# T\n\n```bash\nls -la",
+                line: Some(3),
+            },
+            Case {
+                rule: "unclosed-fence",
+                kind: Kind::Fragment,
+                body: "```bash\nls -la\n```",
+                line: None,
+            },
+            Case {
+                rule: "heading-first",
+                kind: Kind::System,
+                body: "Some text\n# Title",
+                line: Some(1),
+            },
+            Case {
+                rule: "heading-first",
+                kind: Kind::System,
+                body: "# Title\nSome text",
+                line: None,
+            },
+            Case {
+                rule: "heading-first",
+                kind: Kind::Fragment,
+                body: "Some text",
+                line: None,
+            },
+            Case {
+                rule: "heading-skip",
+                kind: Kind::Fragment,
+                body: "# A\ntext\n### B\ntext",
+                line: Some(3),
+            },
+            Case {
+                rule: "heading-skip",
+                kind: Kind::Fragment,
+                body: "### Only\ntext",
+                line: None,
+            },
+            Case {
+                rule: "heading-skip",
+                kind: Kind::Fragment,
+                body: "# A\n## B\n### C\n## D",
+                line: None,
+            },
+            Case {
+                rule: "empty-section",
+                kind: Kind::Fragment,
+                body: "# A\n## B\n\n## C\ntext",
+                line: Some(2),
+            },
+            Case {
+                rule: "empty-section",
+                kind: Kind::Fragment,
+                body: "# A\n\ntext",
+                line: None,
+            },
+            Case {
+                rule: "duplicate-heading",
+                kind: Kind::Fragment,
+                body: "# A\ntext\n# a",
+                line: Some(3),
+            },
+            Case {
+                rule: "duplicate-heading",
+                kind: Kind::Fragment,
+                body: "# A\n## A",
+                line: None,
+            },
+            Case {
+                rule: "duplicate-line",
+                kind: Kind::Fragment,
+                body: "Always run the test suite first.\n\nAlways run the test suite first.",
+                line: Some(3),
+            },
+            Case {
+                rule: "duplicate-line",
+                kind: Kind::Fragment,
+                body: "Short\nShort",
+                line: None,
+            },
+            Case {
+                rule: "shouting",
+                kind: Kind::Fragment,
+                body: "MUST do a. MUST do b. MUST do c. MUST do d. MUST do e. MUST do f.",
+                line: Some(0),
+            },
+            Case {
+                rule: "shouting",
+                kind: Kind::Fragment,
+                body: "Use `MUST`, `NEVER`, `ALWAYS`, `IMPORTANT`, `CRITICAL` and `MUST` in code only. Call the API and read JSON over HTTP.",
+                line: None,
+            },
+            Case {
+                rule: "negative-only",
+                kind: Kind::Fragment,
+                body: "# Rules\n- Don't lie.\n- Never guess.\n- Avoid fluff.\n- Use JSON.",
+                line: Some(1),
+            },
+            Case {
+                rule: "negative-only",
+                kind: Kind::Fragment,
+                body: "# Rules\n- Be brief.\n- Never guess.\n- Cite sources.",
+                line: None,
+            },
+            Case {
+                rule: "fence-language",
+                kind: Kind::Fragment,
+                body: "```\nx\n```",
+                line: Some(1),
+            },
+            Case {
+                rule: "fence-language",
+                kind: Kind::Fragment,
+                body: "```rust\nx\n```",
+                line: None,
+            },
+        ];
+        for case in CASES {
+            let f = fired(case.kind, case.body, case.rule);
+            let name = format!("{} on {:?}", case.rule, case.body);
+            match case.line {
+                Some(line) => {
+                    let severity = RULES.iter().find(|r| r.id == case.rule).unwrap().severity;
+                    assert_eq!(f.len(), 1, "{name}: {f:?}");
+                    assert_eq!((f[0].line, f[0].severity), (line, severity), "{name}");
+                }
+                None => assert!(f.is_empty(), "{name}: {f:?}"),
+            }
+        }
     }
 
     #[test]
@@ -663,78 +813,11 @@ mod tests {
     }
 
     #[test]
-    fn unclosed_fence_fires_at_the_last_opening_fence() {
-        let f = fired(Kind::Fragment, "# T\n\n```bash\nls -la", "unclosed-fence");
-        assert_eq!((f.len(), f[0].line), (1, 3));
-        assert!(fired(Kind::Fragment, "```bash\nls -la\n```", "unclosed-fence").is_empty());
-    }
-
-    #[test]
     fn template_var_fires_on_unknown_names() {
         let f = fired(Kind::Fragment, "Hello\nHi {{nope}}", "template-var");
         assert_eq!((f.len(), f[0].line, f[0].severity), (1, 2, Severity::Error));
         assert!(f[0].message.starts_with("{{nope}}"));
         assert!(fired(Kind::Fragment, "Hi {{name}} from {{plaza}}", "template-var").is_empty());
-    }
-
-    #[test]
-    fn heading_first_applies_to_system_prompts_only() {
-        let f = fired(Kind::System, "Some text\n# Title", "heading-first");
-        assert_eq!((f.len(), f[0].line), (1, 1));
-        assert!(fired(Kind::System, "# Title\nSome text", "heading-first").is_empty());
-        assert!(fired(Kind::Fragment, "Some text", "heading-first").is_empty());
-    }
-
-    #[test]
-    fn heading_skip_fires_on_a_jump_of_two_levels() {
-        let f = fired(Kind::Fragment, "# A\ntext\n### B\ntext", "heading-skip");
-        assert_eq!((f.len(), f[0].line), (1, 3));
-        assert!(fired(Kind::Fragment, "### Only\ntext", "heading-skip").is_empty());
-        assert!(fired(Kind::Fragment, "# A\n## B\n### C\n## D", "heading-skip").is_empty());
-    }
-
-    #[test]
-    fn empty_section_fires_on_a_heading_with_only_blank_lines_under_it() {
-        let f = fired(Kind::Fragment, "# A\n## B\n\n## C\ntext", "empty-section");
-        assert_eq!((f.len(), f[0].line), (1, 2));
-        assert!(fired(Kind::Fragment, "# A\n\ntext", "empty-section").is_empty());
-    }
-
-    #[test]
-    fn duplicate_heading_compares_level_and_case_insensitively() {
-        let f = fired(Kind::Fragment, "# A\ntext\n# a", "duplicate-heading");
-        assert_eq!((f.len(), f[0].line), (1, 3));
-        assert!(fired(Kind::Fragment, "# A\n## A", "duplicate-heading").is_empty());
-    }
-
-    #[test]
-    fn duplicate_line_fires_on_a_repeat_of_twelve_characters_or_more() {
-        let f = fired(
-            Kind::Fragment,
-            "Always run the test suite first.\n\nAlways run the test suite first.",
-            "duplicate-line",
-        );
-        assert_eq!((f.len(), f[0].line), (1, 3));
-        assert!(fired(Kind::Fragment, "Short\nShort", "duplicate-line").is_empty());
-    }
-
-    #[test]
-    fn shouting_counts_emphasis_outside_code() {
-        let f = fired(
-            Kind::Fragment,
-            "MUST do a. MUST do b. MUST do c. MUST do d. MUST do e. MUST do f.",
-            "shouting",
-        );
-        assert_eq!(
-            (f.len(), f[0].line, f[0].severity),
-            (1, 0, Severity::Warning)
-        );
-        assert!(fired(
-            Kind::Fragment,
-            "Use `MUST`, `NEVER`, `ALWAYS`, `IMPORTANT`, `CRITICAL` and `MUST` in code only. Call the API and read JSON over HTTP.",
-            "shouting",
-        )
-        .is_empty());
     }
 
     #[test]
@@ -751,35 +834,10 @@ mod tests {
     }
 
     #[test]
-    fn negative_only_fires_when_most_items_are_prohibitions() {
-        let f = fired(
-            Kind::Fragment,
-            "# Rules\n- Don't lie.\n- Never guess.\n- Avoid fluff.\n- Use JSON.",
-            "negative-only",
-        );
-        assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
-        assert!(
-            fired(
-                Kind::Fragment,
-                "# Rules\n- Be brief.\n- Never guess.\n- Cite sources.",
-                "negative-only"
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
     fn long_line_fires_above_400_characters() {
         let f = fired(Kind::Fragment, &"a".repeat(401), "long-line");
         assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
         assert!(fired(Kind::Fragment, &"a".repeat(400), "long-line").is_empty());
-    }
-
-    #[test]
-    fn fence_language_fires_on_an_unnamed_fence() {
-        let f = fired(Kind::Fragment, "```\nx\n```", "fence-language");
-        assert_eq!((f.len(), f[0].line), (1, 1));
-        assert!(fired(Kind::Fragment, "```rust\nx\n```", "fence-language").is_empty());
     }
 
     #[test]

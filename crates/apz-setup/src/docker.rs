@@ -369,39 +369,19 @@ mod tests {
     const GENTOO: &str = "NAME=Gentoo\nID=gentoo\n";
 
     #[test]
-    fn ubuntu_uses_apt() {
-        assert_eq!(manager_for(UBUNTU), Some("apt"));
-    }
-
-    #[test]
-    fn raspbian_uses_apt() {
-        assert_eq!(manager_for(RASPBIAN), Some("apt"));
-    }
-
-    #[test]
-    fn fedora_uses_dnf() {
-        assert_eq!(manager_for(FEDORA), Some("dnf"));
-    }
-
-    #[test]
-    fn rhel_uses_dnf_through_id_like() {
-        assert_eq!(manager_for(RHEL), Some("dnf"));
-    }
-
-    #[test]
-    fn arch_uses_pacman() {
-        assert_eq!(manager_for(ARCH), Some("pacman"));
-    }
-
-    #[test]
-    fn opensuse_uses_zypper() {
-        assert_eq!(manager_for(TUMBLEWEED), Some("zypper"));
-    }
-
-    #[test]
-    fn unknown_distro_has_no_manager() {
-        assert_eq!(manager_for(GENTOO), None);
-        assert_eq!(manager_for(""), None);
+    fn manager_for_maps_each_distro_to_its_package_manager() {
+        for (case, os_release, want) in [
+            ("ubuntu", UBUNTU, Some("apt")),
+            ("raspbian", RASPBIAN, Some("apt")),
+            ("fedora", FEDORA, Some("dnf")),
+            ("rhel, through ID_LIKE", RHEL, Some("dnf")),
+            ("arch", ARCH, Some("pacman")),
+            ("opensuse-tumbleweed", TUMBLEWEED, Some("zypper")),
+            ("gentoo, no known manager", GENTOO, None),
+            ("empty os-release", "", None),
+        ] {
+            assert_eq!(manager_for(os_release), want, "{case}");
+        }
     }
 
     /// Every command succeeds; `docker info` answers with a version.

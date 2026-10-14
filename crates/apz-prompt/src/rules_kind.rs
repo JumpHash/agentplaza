@@ -310,12 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn system_sections_accept_synonyms_in_any_case() {
-        let body = "# Role\n\n## MISSION\n\n## Duties\n\n## Results\n\n## Constraints\n";
-        assert!(found(Kind::System, body, "system-sections").is_empty());
-    }
-
-    #[test]
     fn second_person_fires_once_at_the_first_third_person_line() {
         let body = "# Role\n\nYou review code.\n\n- The agent should check the diff.\n- The assistant replies in English.\n";
         let f = found(Kind::System, body, "second-person");
@@ -347,9 +341,23 @@ mod tests {
     }
 
     #[test]
-    fn agents_md_sections_accept_every_section_in_any_case() {
-        let body = "## Overview\n## Getting started\n## TESTING\n## Lint rules\n## Pull request guidelines\n## Secrets\n";
-        assert!(found(Kind::AgentsMd, body, "agents-md-sections").is_empty());
+    fn section_names_are_accepted_in_any_case() {
+        for (case, kind, rule, body) in [
+            (
+                "system synonyms",
+                Kind::System,
+                "system-sections",
+                "# Role\n\n## MISSION\n\n## Duties\n\n## Results\n\n## Constraints\n",
+            ),
+            (
+                "agents.md sections",
+                Kind::AgentsMd,
+                "agents-md-sections",
+                "## Overview\n## Getting started\n## TESTING\n## Lint rules\n## Pull request guidelines\n## Secrets\n",
+            ),
+        ] {
+            assert!(found(kind, body, rule).is_empty(), "{case}");
+        }
     }
 
     #[test]
