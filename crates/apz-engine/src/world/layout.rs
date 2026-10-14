@@ -543,6 +543,7 @@ impl Floor {
             atom: [0.0; 3],
             bounds: Bounds { cx: 0.0, cz: 0.0, w: 0.0, d: 0.0 },
             pcb_top: 0.0,
+            plates: Vec::new(),
             shared: None,
         };
 

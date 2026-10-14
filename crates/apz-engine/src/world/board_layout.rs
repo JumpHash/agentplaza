@@ -82,6 +82,9 @@ pub struct BoardLayout {
     pub atom: [f32; 3],
     pub bounds: Bounds,
     pub pcb_top: f32,
+    /// The plates: each usable slot's footprint [x, z, w, d] and its walking top (board-layout.ts BoardLayout.plates). A
+    /// robot on a plate stands on its top, aisles included.
+    pub plates: Vec<([f32; 4], f32)>,
     /// The shared layout this one came from and its GPU count (None for the engine's own layout): the board's
     /// navigation (nav.rs) is built from it.
     pub shared: Option<(std::sync::Arc<apz_board::layout::Layout>, u32)>,
@@ -510,6 +513,7 @@ pub fn layout_on_board_with(
     // grid of homes, sorted by cid.
     let mut districts = Vec::with_capacity(built.len());
     let mut homes = HashMap::new();
+    let mut plates: Vec<([f32; 4], f32)> = Vec::new();
     for &gi in &built {
         let g = &groups[gi];
         let s = &live[slot_of[gi].expect("a built room has a slot")];
@@ -527,9 +531,12 @@ pub fn layout_on_board_with(
         members.sort_by_key(|a| a.cid);
         place_homes(&mut homes, districts.len(), &district, &members, w.min(d));
         districts.push(BoardDistrict { plan: None, key: g.key.clone(), district, y: s.top, slot: s.id.clone(), w, d });
+        if !plates.iter().any(|(r, _)| *r == s.rect) {
+            plates.push((s.rect, s.top));
+        }
     }
 
-    BoardLayout { districts, homes, atom, bounds, pcb_top, shared: None }
+    BoardLayout { districts, homes, atom, bounds, pcb_top, plates, shared: None }
 }
 
 /// The world scale the shared board core may grow a layout to (the apz-board tests' cap).
@@ -766,6 +773,7 @@ pub fn board_layout_of(shared: &apz_board::layout::Layout) -> BoardLayout {
         atom: [ax as f32, ay as f32, az as f32],
         bounds: Bounds { cx: b.cx as f32, cz: b.cz as f32, w: b.w as f32, d: b.d as f32 },
         pcb_top: shared.pcb_top as f32,
+        plates: shared.plates.iter().map(|p| (p.rect.map(|v| v as f32), p.y as f32)).collect(),
         shared: None,
     }
 }
@@ -775,6 +783,12 @@ pub fn board_layout_of(shared: &apz_board::layout::Layout) -> BoardLayout {
 /// PCB top.
 #[allow(dead_code)] // the Floor integration consumes it next
 pub fn board_height_at(x: f32, z: f32, layout: &BoardLayout) -> f32 {
+    // A plate is walkable at its top everywhere inside it, aisles included (the rooms fill only part of it).
+    for &([px, pz, pw, pd], top) in &layout.plates {
+        if x >= px && x < px + pw && z >= pz && z < pz + pd {
+            return top;
+        }
+    }
     let mut best = layout.pcb_top;
     for bd in &layout.districts {
         let dx = ((bd.district.cx - x).abs() - bd.w / 2.0).max(0.0);
