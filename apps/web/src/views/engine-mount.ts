@@ -68,16 +68,6 @@ interface EngineGlue {
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
 
-/** One reusable DOM label: the pool grows to the most labels a view has, and is never rebuilt per frame. */
-interface LabelEntry {
-  el: HTMLDivElement;
-  key: HTMLElement;
-  name: HTMLElement;
-  x: number;
-  y: number;
-  shown: boolean;
-}
-
 /** The same cadence as the DOM Machines view and the desktop. */
 const FLEET_POLL_MS = 5000;
 const AGENTS_POLL_MS = 4000;
@@ -348,8 +338,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   canvas.className = 'floor-canvas';
   // touch-action none: the pointer drives the orbit on touch screens too, so the page does not pan or zoom under it.
   canvas.style.cssText = 'touch-action:none';
-  const labelLayer = document.createElement('div');
-  labelLayer.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
   const status = document.createElement('div');
   status.style.cssText = 'position:absolute;left:16px;bottom:16px;font:13px/1.4 system-ui,sans-serif;color:#ddd;pointer-events:none';
   status.textContent = 'Starting the engine';
@@ -362,7 +350,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   card.className = 'floor-card machine-card';
   card.style.cssText = 'right:16px;top:16px;left:auto';
   card.hidden = true;
-  wrap.append(canvas, labelLayer, status, crumb, card);
+  wrap.append(canvas, status, crumb, card);
   root.append(wrap);
   // The Floor fills the window (floor.css): the view and the page take the three.js Floor's floor mode.
   root.classList.add('floor-view');
@@ -380,8 +368,6 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
   let entered: string | null = null; // the machine whose board is shown, or null for the Machines view
   let pendingEnter: string | null = initialId; // a direct load's machine, entered once the fleet is in the engine
   let labels: LabelMeta[] = [];
-  const pool: LabelEntry[] = [];
-  let lastDrawn = -1;
   let raf = 0;
   const timers: number[] = [];
 
@@ -532,46 +518,10 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null):
     // DOM label on top would give the same agent a second box.
   };
 
-  /** Places the labels from the last drawn frame (`label_positions`: flat [cid, x, y, visible] per label). */
-  const placeLabels = (): void => {
-    if (engine === null) return;
-    const flat = engine.label_positions();
-    const count = Math.min(labels.length, flat.length >> 2);
-    for (let i = 0; i < pool.length; i++) {
-      const p = pool[i]!;
-      const visible = i < count && flat[i * 4 + 3]! > 0.5;
-      if (!visible) {
-        if (p.shown) {
-          p.el.style.display = 'none';
-          p.shown = false;
-        }
-        continue;
-      }
-      if (!p.shown) {
-        p.el.style.display = 'flex';
-        p.shown = true;
-      }
-      const x = flat[i * 4 + 1]!;
-      const y = flat[i * 4 + 2]!;
-      if (x !== p.x || y !== p.y) {
-        p.x = x;
-        p.y = y;
-        p.el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -100%) translateY(-6px)`;
-      }
-    }
-  };
-
-  /** One display frame: the labels follow the engine's draws (a frame counter, so an idle engine costs nothing here). */
+  /** One display frame: the picked card follows its anchor (the engine paints the labels itself). */
   const frame = (): void => {
     raf = 0;
     if (closed) return;
-    if (engine !== null) {
-      const drawn = engine.frames_drawn();
-      if (drawn !== lastDrawn) {
-        lastDrawn = drawn;
-        placeLabels();
-      }
-    }
     anchorCard();
     raf = requestAnimationFrame(frame);
   };
