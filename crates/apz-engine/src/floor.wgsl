@@ -31,6 +31,10 @@ struct Globals {
     point_color: array<vec4<f32>, 4>,
     // x: number of point lights; y: shadow map texel size.
     counts: vec4<f32>,
+    // The fans' angles by fleet machine (hw_anim.wgsl reads them; here only for the layout).
+    machine_angle: array<vec4<f32>, 32>,
+    // Each fleet machine's state (render.rs `Globals`): z is its hover lift (units).
+    machine_state: array<vec4<f32>, 128>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -112,26 +116,36 @@ fn finish(v: Varyings, world: vec4<f32>, n: vec3<f32>, uv: vec2<f32>, i: Instanc
     return o;
 }
 
+// The hover lift of a baked fleet machine's vertex: the slot above the robot byte is the machine slot + 1 (0: none).
+fn lift(slot: u32) -> vec4<f32> {
+    let k = slot >> 8u;
+    if k == 0u {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(0.0, g.machine_state[min(k - 1u, 127u)].z, 0.0, 0.0);
+}
+
 @vertex
 fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
     let m = model_of(i);
     var o: Varyings;
     o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
-    var r = finish(o, m * vec4<f32>(v.position, 1.0), world_normal(m, v.normal), v.uv, i);
+    var r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), world_normal(m, v.normal), v.uv, i);
+    let slot = v.slot & 0xffu;
     r.color = vec4<f32>(r.color.rgb * v.color, r.color.a);
     if has(i.emissive.a, 8.0) {
         // Slots 1 to 3 take the robot's hue (x the vertex colour); 4 is glass (no emissive).
         var hue = vec3<f32>(0.0);
-        if v.slot == 1u {
+        if slot == 1u {
             hue = i.robot_shell.rgb;
-        } else if v.slot == 2u {
+        } else if slot == 2u {
             hue = i.robot_shell2.rgb;
-        } else if v.slot == 3u {
+        } else if slot == 3u {
             hue = i.robot_panel.rgb;
         }
-        let paint = v.slot >= 1u && v.slot <= 3u;
+        let paint = slot >= 1u && slot <= 3u;
         r.robot = vec4<f32>(select(vec3<f32>(0.0), hue * v.color, paint), select(0.0, 1.0, paint));
-        r.glass = select(0.0, 1.0, v.slot == 4u);
+        r.glass = select(0.0, 1.0, slot == 4u);
     }
     return r;
 }
@@ -155,13 +169,13 @@ fn vs_grass(v: VertexIn, i: InstanceIn) -> Varyings {
 @vertex
 fn vs_outline(v: VertexIn, i: InstanceIn) -> Varyings {
     let m = model_of(i);
-    var mv = g.view * m * vec4<f32>(v.position, 1.0);
+    var mv = g.view * (m * vec4<f32>(v.position, 1.0) + lift(v.slot));
     let n = normalize((g.view * vec4<f32>(world_normal(m, v.normal), 0.0)).xyz);
     let grow = g.params.y * clamp(-mv.z * 0.06, 0.7, 4.0);
     mv = vec4<f32>(mv.xyz + n * grow, 1.0);
     var o: Varyings;
     o.clip = g.proj * mv;
-    o.world = (m * vec4<f32>(v.position, 1.0)).xyz;
+    o.world = (m * vec4<f32>(v.position, 1.0) + lift(v.slot)).xyz;
     o.normal = n;
     o.uv = vec2<f32>(0.0);
     o.color = vec4<f32>(g.ink.rgb, 1.0);
@@ -220,7 +234,7 @@ fn vs_points(@builtin(vertex_index) vi: u32, i: InstanceIn) -> Varyings {
 
 @vertex
 fn vs_shadow(v: VertexIn, i: InstanceIn) -> @builtin(position) vec4<f32> {
-    return g.light_view_proj * model_of(i) * vec4<f32>(v.position, 1.0);
+    return g.light_view_proj * (model_of(i) * vec4<f32>(v.position, 1.0) + lift(v.slot));
 }
 
 @vertex

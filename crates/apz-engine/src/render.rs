@@ -121,6 +121,9 @@ fn program_index(prog: Prog) -> usize {
     }
 }
 
+/// The bytes of mesh geometry uploaded so far, over every renderer (a cache that keeps missing shows here).
+pub static MESH_UPLOAD_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The draw calls of a frame by category, for the performance pass. `shadow` is the shadow map's draws; `main` the
 /// scene's mesh draws that do not outline; `outline` the outline program's; `sprite_label` the point sprites and the
 /// labels; `other` the host's blit. `programs` counts the mesh and sprite draws by the program that selects their
@@ -325,7 +328,8 @@ struct Globals {
     counts: [f32; 4],
     /// The fans' angles by fleet machine (`fleet::FleetInstances::machine_angles`), read by hw_anim.wgsl only.
     machine_angle: [[f32; 4]; MACHINE_VEC4],
-    /// Each fleet machine's state (`fleet::FleetInstances::machine_states`): busy, activity, 0, 0. Read by hw_anim.wgsl only.
+    /// Each fleet machine's state (`fleet::FleetInstances::machine_states`): busy, activity, hover lift, 0. hw_anim.wgsl
+    /// reads it; floor.wgsl reads the lift.
     machine_state: [[f32; 4]; crate::fleet::MACHINE_SLOTS],
     /// Each machine's status colour (`fleet::FleetInstances::machine_statuses`): rgb, 0. Read by hw_anim.wgsl only.
     machine_status: [[f32; 4]; crate::fleet::MACHINE_SLOTS],
@@ -642,10 +646,10 @@ fn machine_rows(rows: Option<&[[f32; 4]]>) -> [[f32; 4]; crate::fleet::MACHINE_S
 }
 
 /// The bytes of one animated vertex: position, normal, colour, params, axis and machine, 19 floats.
-const ANIM_STRIDE: u64 = 19 * 4;
+const ANIM_STRIDE: u64 = 20 * 4;
 
 fn anim_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32];
+    const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32, 6 => Float32];
     wgpu::VertexBufferLayout { array_stride: ANIM_STRIDE, step_mode: wgpu::VertexStepMode::Vertex, attributes: &ATTRS }
 }
 
@@ -738,7 +742,7 @@ impl AnimGpu {
 /// An animated batch's buffers: its vertices as flat `AnimVertex` floats, and its indices (identity when the
 /// geometry has none).
 fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::AnimBatch) -> GpuAnimBatch {
-    let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 19);
+    let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 20);
     for v in &b.vertices {
         flat.extend(v.pos);
         flat.extend(v.normal);
@@ -746,6 +750,7 @@ fn upload_anim(device: &wgpu::Device, queue: &wgpu::Queue, b: &super::scene::Ani
         flat.extend(v.params);
         flat.extend(v.axis);
         flat.push(v.machine);
+        flat.push(v.lift);
     }
     let indices: Vec<u32> = if b.draw.geo.indices.is_empty() { (0..b.vertices.len() as u32).collect() } else { b.draw.geo.indices.clone() };
     let vertex_bytes: &[u8] = bytemuck::cast_slice(&flat);
@@ -1280,7 +1285,8 @@ impl Pipeline {
                 normal: geo.normals[i],
                 uv: geo.uvs[i],
                 color: geo.colors.get(i).copied().unwrap_or([1.0; 3]),
-                slot: u32::from(geo.slots.get(i).copied().unwrap_or(0)),
+                // The robot slot in the low byte, the lift slot (scene::Node::lift) above it.
+                slot: u32::from(geo.slots.get(i).copied().unwrap_or(0)) | (u32::from(geo.lifts.get(i).copied().unwrap_or(0)) << 8),
             })
             .collect();
         let mut indices: Vec<u32> = if geo.indices.is_empty() { (0..geo.positions.len() as u32).collect() } else { geo.indices.clone() };
@@ -1310,6 +1316,7 @@ impl Pipeline {
             mapped_at_creation: false,
         });
         queue.write_buffer(&indices, 0, index_bytes);
+        MESH_UPLOAD_BYTES.fetch_add((vertex_bytes.len() + index_bytes.len()) as u64, std::sync::atomic::Ordering::Relaxed);
         self.meshes.insert(geo.id, GpuMesh { vertices, indices, count });
     }
 

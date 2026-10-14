@@ -49,7 +49,7 @@ struct Globals {
     counts: vec4<f32>,
     // The fans' angles by fleet machine, 4 per vec4 (render.rs `Globals`; the floor does not read them).
     machine_angle: array<vec4<f32>, 32>,
-    // Each fleet machine's state: x busy (1 while its activity is above 0), y activity; zw unused.
+    // Each fleet machine's state: x busy (1 while its activity is above 0), y activity, z hover lift; w unused.
     machine_state: array<vec4<f32>, 128>,
     // Each machine's status colour (rgb; w unused).
     machine_status: array<vec4<f32>, 128>,
@@ -194,6 +194,16 @@ struct SpinIn {
     @location(3) pivot_phase: vec4<f32>,  // xyz pivot (the part's origin), w phase (radians at time 0)
     @location(4) axis_rps: vec4<f32>,     // xyz unit axis, w revolutions per second
     @location(5) machine: f32,            // the fleet machine whose fan angle it turns by, or -1 for its own rate
+    @location(6) lift: f32,               // the lift slot: the fleet machine + 1 whose hover lift it rises by, or 0
+}
+
+// The hover lift of a part with lift slot `slot` (floor.wgsl's `lift`).
+fn lift_at(slot: f32) -> vec3<f32> {
+    let k = u32(clamp(slot, 0.0, 128.0));
+    if k == 0u {
+        return vec3<f32>(0.0);
+    }
+    return vec3<f32>(0.0, g.machine_state[k - 1u].z, 0.0);
 }
 
 struct Pose {
@@ -212,7 +222,7 @@ fn spin_pose(v: SpinIn) -> Pose {
     let angle = select(own, fan_angle(v.machine), v.machine >= 0.0);
     let k = v.axis_rps.xyz;
     var p: Pose;
-    p.world = v.pivot_phase.xyz + rotate_about(k, angle, v.pos - v.pivot_phase.xyz);
+    p.world = v.pivot_phase.xyz + rotate_about(k, angle, v.pos - v.pivot_phase.xyz) + lift_at(v.lift);
     p.normal = rotate_about(k, angle, v.normal);
     return p;
 }
@@ -249,24 +259,26 @@ struct BlinkIn {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) blink: vec4<f32>, // x period (s), y phase (s), z glow, w off level
+    @location(6) lift: f32,        // the lift slot (SpinIn's)
 }
 
 @vertex
 fn vs_blink(v: BlinkIn) -> Out {
     let on = ((g.counts.z + v.blink.y) % v.blink.x) < v.blink.x * 0.5;
+    let pos = v.pos + lift_at(v.lift);
     var o: Out;
-    o.clip = g.view_proj * vec4<f32>(v.pos, 1.0);
+    o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.color = v.color;
     o.normal = v.normal;
     o.emissive = select(v.blink.z * v.blink.w, v.blink.z, on);
-    o.world = v.pos;
-    o.view_depth = -(g.view * vec4<f32>(v.pos, 1.0)).z;
+    o.world = pos;
+    o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
     return o;
 }
 
 @vertex
 fn vs_blink_outline(v: BlinkIn) -> Out {
-    return hull(v.pos, v.normal);
+    return hull(v.pos + lift_at(v.lift), v.normal);
 }
 
 // ---- Machines (status LEDs, activity LEDs, screens) ------------------------------------------
@@ -277,6 +289,7 @@ struct MachineIn {
     @location(2) color: vec4<f32>,
     @location(3) params: vec4<f32>, // x: the LED (0 status, 1 activity, 2 screen), y: the part's glow
     @location(5) machine: f32,      // the fleet machine whose row it reads, or -1 (no row: the baked colour, idle)
+    @location(6) lift: f32,         // the lift slot (SpinIn's)
 }
 
 // vs_machine: hardware.rs `Built::update`'s rules for the tag, from the machine's row.
@@ -306,12 +319,13 @@ fn vs_machine(v: MachineIn) -> Out {
     } else {
         e = v.params.y * (0.5 + 0.5 * activity);
     }
+    let pos = v.pos + lift_at(v.lift);
     var o: Out;
-    o.clip = g.view_proj * vec4<f32>(v.pos, 1.0);
+    o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.color = vec4<f32>(c, v.color.a);
     o.normal = v.normal;
     o.emissive = e;
-    o.world = v.pos;
-    o.view_depth = -(g.view * vec4<f32>(v.pos, 1.0)).z;
+    o.world = pos;
+    o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
     return o;
 }

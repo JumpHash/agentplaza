@@ -489,6 +489,10 @@ fn place_machine(
     root.add(&built.root);
     root.set_position(base[0], base[1], base[2])
         .set_rotation(0.0, turn, 0.0);
+    // Its hover lift rises in the shaders, by its slot's row (no re-bake).
+    if let Some(i) = built.machine().filter(|&i| i < MACHINE_SLOTS) {
+        root.set_lift(i);
+    }
     group.add(&root);
 
     let anim = hardware::place_atom(model, &built.root, palette);
@@ -769,10 +773,11 @@ impl FleetScene {
     /// Advances the scene by `dt` seconds with the fleet's latest snapshot. Rebuilds when the
     /// machines or the links change; otherwise it updates status colours, fan spin, activity LEDs,
     /// the status rings, the hover lift and the atoms. Packets are instanced, not stepped here.
-    /// Advances the scene. Returns whether a machine is still lifting (its baked pose changes), so
-    /// the Machines view re-bakes its statics.
-    pub fn update(&mut self, dt: f32, ambient: f32, ambient_dt: f32, fleet: &FleetResponse) -> bool {
-        let mut lifting = false;
+    /// Advances the scene. The hover lift needs no re-bake: a baked machine rises in the shaders (its slot's lift in
+    /// [`FleetInstances::machine_states`]) and its rigs by the root's `lift_y`. While the fleet is one dynamic group (the
+    /// ENTER flight walks it each frame), the lift is in the root's position instead.
+    pub fn update(&mut self, dt: f32, ambient: f32, ambient_dt: f32, fleet: &FleetResponse) {
+        let walked = self.group.get().dynamic;
         let layout = layout_of(fleet);
         if self.layout.as_ref() != Some(&layout) {
             self.rebuild(fleet, layout);
@@ -808,11 +813,13 @@ impl FleetScene {
                 mat.emissive_intensity = if online { pulse } else { 0.2 };
             }
             let target = if hovered { HOVER_LIFT } else { 0.0 };
-            let before = node.lift;
             node.lift += (target - node.lift) * (1.0 - (-dt * HOVER_RATE).exp());
-            lifting |= (node.lift - before).abs() > 1e-6;
-            node.root
-                .set_position(node.base[0], node.base[1] + node.lift, node.base[2]);
+            if !hovered && node.lift.abs() < 1e-4 {
+                node.lift = 0.0;
+            }
+            node.root.set_lift_y(node.lift);
+            let y = if walked { node.base[1] + node.lift } else { node.base[1] };
+            node.root.set_position(node.base[0], y, node.base[2]);
             if let Some(atom) = &node.atom {
                 atom.set_visible(online);
             }
@@ -826,7 +833,6 @@ impl FleetScene {
             let base = named("cable");
             link.cable.get().color = if online { base } else { base.scale(0.5) };
         }
-        lifting
     }
 
     /// The animated draws' instance data for the scene as `fleet` describes it: each cable's slots both
@@ -847,6 +853,7 @@ impl FleetScene {
             if let Some(i) = m.built.machine().filter(|&i| i < MACHINE_SLOTS) {
                 out.machine_angles[i] = m.built.fan_angle();
                 out.machine_states[i] = m.built.machine_state();
+                out.machine_states[i][2] = m.lift;
                 out.machine_statuses[i] = rgba(m.built.led_status());
             }
             let online = m.status == Status::Online;
@@ -983,6 +990,31 @@ mod tests {
         let gpu = crate::scene::bake_split(&scene.group, true);
         eprintln!("fleet with GPU_HW_ANIM: {} static draws + {} animation batches (the animated nodes leave the per-frame draws)", gpu.statics.len(), gpu.animated.len());
         (statics, dynamic)
+    }
+
+    /// A hover lifts the machine without a re-bake: the lift reaches its slot's row, which the shaders add to the
+    /// baked vertices that carry the slot, and its rigs follow the root's `lift_y`.
+    #[test]
+    fn a_hover_lift_is_a_uniform_not_a_rebake() {
+        let fleet: FleetResponse = serde_json::from_str(include_str!("../testdata/floor-15.json")).expect("the fixture parses");
+        let mut scene = build_fleet(&fleet, &plaza_palette());
+        let id = fleet.machines[0].id.clone();
+        let slot = scene.machines[&id].built.machine().expect("the machine has a slot");
+        let rest = scene.machines[&id].root.position();
+        let baked = crate::scene::bake(&scene.group);
+        assert!(
+            baked.iter().any(|d| d.geo.lifts.contains(&(slot as u8 + 1))),
+            "no baked vertex carries the machine's lift slot"
+        );
+        scene.hover(Some(id.as_str()));
+        for _ in 0..60 {
+            scene.update(1.0 / 60.0, 0.0, 0.0, &fleet);
+        }
+        let lift = scene.instances(&fleet).machine_states[slot][2];
+        assert!(lift > 0.5 * HOVER_LIFT, "the lift {lift} did not reach the machine's row");
+        let node = &scene.machines[&id];
+        assert_eq!(node.root.position(), rest, "the baked root moved (a re-bake would be needed)");
+        assert_eq!(node.root.get().lift_y, lift, "the rigs do not follow the lift");
     }
 
     #[test]

@@ -621,10 +621,7 @@ pub fn tick(&mut self, now: Instant) -> Motion {
                 motion = motion.max(Motion::Ambient); // the model's fans, LEDs and pulses run on the clock
             }
             if let (Some(fleet), Some(data)) = (self.fleet.as_mut(), self.fleet_data.as_ref()) {
-                if fleet.update(dt, ambient, ambient_dt, data) {
-                    self.machines.statics_dirty = true; // a machine is lifting: its pose is baked
-                    motion = Motion::Active;
-                }
+                fleet.update(dt, ambient, ambient_dt, data);
             }
             if let Some(fleet) = &self.fleet {
                 motion = motion.max(fleet.motion());

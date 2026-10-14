@@ -127,6 +127,7 @@ fn backdrop(hue: f32) -> Draw {
         render_order: -1000,
         lod: 0,
         fade: 0,
+        lift: 0,
     }
 }
 
@@ -158,6 +159,7 @@ fn shadow_disc() -> Draw {
         render_order: 0,
         lod: 0,
         fade: 0,
+        lift: 0,
     }
 }
 

@@ -200,6 +200,9 @@ pub struct Geometry {
     /// The per-vertex material slot (toon robots only; see [`RobotHues`]): 0 unchanged, 1 shell,
     /// 2 shell2, 3 panel, 4 fixed glass. One per vertex; empty: all 0.
     pub slots: Vec<u8>,
+    /// The per-vertex lift slot of a static bake (see [`Node::lift`]): 0 none, else the fleet machine slot + 1 whose
+    /// hover lift the vertex shader adds. One per vertex; empty: all 0.
+    pub lifts: Vec<u8>,
 }
 
 pub type Geo = Arc<Geometry>;
@@ -218,7 +221,7 @@ impl Geometry {
         }
         let center = if positions.is_empty() { Vec3::ZERO } else { (lo + hi) * 0.5 };
         let radius = positions.iter().map(|p| Vec3::from(*p).distance(center)).fold(0.0, f32::max);
-        Arc::new(Geometry { id: next_id(), positions, normals, uvs, indices, center: center.to_array(), radius, colors: Vec::new(), slots: Vec::new() })
+        Arc::new(Geometry { id: next_id(), positions, normals, uvs, indices, center: center.to_array(), radius, colors: Vec::new(), slots: Vec::new(), lifts: Vec::new() })
     }
 }
 
@@ -434,6 +437,12 @@ pub struct Node {
     pub render_order: i32,
     /// `userData.dynamic`: moves or changes after the world is built, so it is never baked.
     pub dynamic: bool,
+    /// The fleet machine slot + 1 this subtree lifts with (0: none). A Machines view machine lifts on hover without a
+    /// re-bake: its baked vertices carry the slot (the shaders add the machine's lift from the Globals), and its rigs
+    /// move by `lift_y`.
+    pub lift: u8,
+    /// The current lift (units) of a node with a `lift` slot: what its rigs add each frame.
+    pub lift_y: f32,
     /// The GPU animation of this node's own mesh (None: none). See [`NodeAnim`].
     pub anim: Option<NodeAnim>,
     /// The ink hull `outline()` gave this mesh (`toon.ts`), drawn behind it.
@@ -476,6 +485,8 @@ impl Obj {
             receive_shadow: false,
             render_order: 0,
             dynamic: false,
+            lift: 0,
+            lift_y: 0.0,
             anim: None,
             hull: None,
             no_outline: false,
@@ -570,6 +581,16 @@ impl Obj {
     }
     pub fn set_dynamic(&self, on: bool) -> &Self {
         self.get().dynamic = on;
+        self
+    }
+    /// Marks this subtree as lifting with fleet machine `slot` (see [`Node::lift`]).
+    pub fn set_lift(&self, slot: usize) -> &Self {
+        self.get().lift = u8::try_from(slot + 1).unwrap_or(0);
+        self
+    }
+    /// Sets the current lift of a node with a lift slot (its rigs follow it).
+    pub fn set_lift_y(&self, y: f32) -> &Self {
+        self.get().lift_y = y;
         self
     }
     pub fn set_tag(&self, tag: u64) -> &Self {
@@ -833,6 +854,8 @@ pub struct Draw {
     pub lod: u8,
     /// The cutaway it belongs to (0: none; see [`Fade`]).
     pub fade: u32,
+    /// The lift slot of its node (see [`Node::lift`]); a static bake writes it to the merged vertices.
+    pub lift: u8,
 }
 
 /// Whether the static bake takes the GPU-animated nodes (fan spins, LED blinks) out of the per-frame
@@ -862,6 +885,8 @@ pub struct AnimVertex {
     pub axis: [f32; 4],
     /// The fleet machine whose fan-angle table entry a fan turns by, or -1 (a spin's own angle, or a blink).
     pub machine: f32,
+    /// The lift slot of the part (see [`Node::lift`]): 0 none, else the fleet machine slot + 1.
+    pub lift: f32,
 }
 
 /// Animated parts merged into one draw of one kind (`draw.model` is identity; `vertices` line up with
@@ -954,7 +979,7 @@ pub struct Overlay {
 pub fn flatten(root: &Obj, filter: Filter) -> (Vec<Draw>, Vec<PointLightDraw>) {
     let mut draws = Vec::new();
     let mut lights = Vec::new();
-    walk(root, Mat4::IDENTITY, false, filter, &mut draws, &mut lights, None);
+    walk(root, Mat4::IDENTITY, false, 0, filter, &mut draws, &mut lights, None);
     (draws, lights)
 }
 
@@ -974,23 +999,26 @@ struct AnimDraw {
 
 /// [`walk`], with `split`: the static nodes that carry a [`NodeAnim`] go there (their mesh and hull draws)
 /// rather than into `draws`.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Obj,
     parent: Mat4,
     dynamic_above: bool,
+    lift_above: u8,
     filter: Filter,
     draws: &mut Vec<Draw>,
     lights: &mut Vec<PointLightDraw>,
     mut split: Option<&mut Vec<AnimDraw>>,
 ) {
-    let (world, dynamic, children, anim) = {
+    let (world, dynamic, children, anim, lift) = {
         let n = node.get();
         if !n.visible {
             return;
         }
         let world = parent * local_of(&n);
-        (world, dynamic_above || n.dynamic, n.children.clone(), n.anim)
+        (world, dynamic_above || n.dynamic, n.children.clone(), n.anim, if n.lift != 0 { n.lift } else { lift_above })
     };
+    let first = draws.len();
     let wanted = match filter {
         Filter::All => true,
         Filter::Static => !dynamic,
@@ -1001,7 +1029,8 @@ fn walk(
             (Some(out), Some(anim)) => {
                 let mut own = Vec::new();
                 emit(node, world, &mut own, &mut Vec::new());
-                for draw in own {
+                for mut draw in own {
+                    draw.lift = lift;
                     if matches!(draw.kind, DrawKind::Mesh | DrawKind::Outline) {
                         out.push(AnimDraw { draw, anim });
                     } else {
@@ -1011,9 +1040,14 @@ fn walk(
             }
             _ => emit(node, world, draws, lights),
         }
+        if lift != 0 {
+            for d in &mut draws[first..] {
+                d.lift = lift;
+            }
+        }
     }
     for child in &children {
-        walk(child, world, dynamic, filter, draws, lights, split.as_deref_mut());
+        walk(child, world, dynamic, lift, filter, draws, lights, split.as_deref_mut());
     }
 }
 
@@ -1047,6 +1081,7 @@ fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Opti
         render_order: at.order,
         lod: at.lod,
         fade: at.fade,
+        lift: 0,
     })
 }
 
@@ -1137,11 +1172,13 @@ pub struct Rig {
     /// The content of `merged` (see [`rig_signature`]): rigs with equal keys draw alike.
     sig: u64,
     children: Vec<Rig>,
+    /// The lifting node above a top rig (see [`Node::lift`]): its `lift_y` raises the rig each frame.
+    lift: Option<Obj>,
 }
 
 /// The rig of dynamic `node`, whose parent sits at `chain` (see [`Rig`]).
 fn rig_of(node: &Obj, chain: Mat4) -> Rig {
-    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), sig: 0, children: Vec::new() };
+    let mut rig = Rig { node: node.clone(), chain, loose: Vec::new(), merged: Vec::new(), sig: 0, children: Vec::new(), lift: None };
     let mut meshes = Vec::new();
     gather(node, Mat4::IDENTITY, true, &mut rig, &mut meshes);
     rig.merged = merge_draws(meshes, true);
@@ -1204,7 +1241,39 @@ fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<
 /// The rigs of the topmost dynamic nodes in `node`'s subtree (`node` included), each built once:
 /// `parent` is the world matrix above `node`.
 pub fn rigs(node: &Obj, parent: Mat4) -> Vec<Rig> {
-    dynamic_roots(node, parent).into_iter().map(|(root, chain)| rig_of(&root, chain)).collect()
+    lifted_roots(node, parent)
+        .into_iter()
+        .map(|(root, chain, lift)| Rig { lift, ..rig_of(&root, chain) })
+        .collect()
+}
+
+/// [`dynamic_roots`], each with the nearest node above it that has a lift slot (see [`Node::lift`]).
+fn lifted_roots(node: &Obj, parent: Mat4) -> Vec<(Obj, Mat4, Option<Obj>)> {
+    let mut found = Vec::new();
+    fn visit(node: &Obj, parent: Mat4, lift: Option<&Obj>, found: &mut Vec<(Obj, Mat4, Option<Obj>)>) {
+        let (dynamic, visible, world, children, lifts) = {
+            let n = node.get();
+            (n.dynamic, n.visible, parent * local_of(&n), n.children.clone(), n.lift != 0)
+        };
+        if dynamic {
+            found.push((node.clone(), parent, lift.cloned()));
+            return;
+        }
+        if !visible {
+            return;
+        }
+        let lift = if lifts { Some(node) } else { lift };
+        for child in &children {
+            visit(child, world, lift, found);
+        }
+    }
+    visit(node, parent, None, &mut found);
+    found
+}
+
+/// The lift a top rig rises by this frame (identity without a lifting node).
+fn lift_of(rig: &Rig) -> Mat4 {
+    rig.lift.as_ref().map_or(Mat4::IDENTITY, |n| Mat4::from_translation(Vec3::new(0.0, n.get().lift_y, 0.0)))
 }
 
 /// Draws one rig this frame: `parent` is the frame its chain hangs from (identity at the top).
@@ -1214,7 +1283,7 @@ fn frame_rig(rig: &Rig, parent: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<Po
         if !n.visible {
             return;
         }
-        parent * rig.chain * local_of(&n)
+        lift_of(rig) * parent * rig.chain * local_of(&n)
     };
     draws.extend(rig.merged.iter().map(|d| Draw { model: frame * d.model, ..d.clone() }));
     for (node, rel) in &rig.loose {
@@ -1243,7 +1312,7 @@ fn frame_rig_into<'a>(rig: &'a Rig, parent: Mat4, shown: &mut Vec<(&'a Rig, Mat4
         if !n.visible {
             return;
         }
-        parent * rig.chain * local_of(&n)
+        lift_of(rig) * parent * rig.chain * local_of(&n)
     };
     shown.push((rig, frame));
     for (node, rel) in &rig.loose {
@@ -1299,7 +1368,7 @@ pub fn flatten_roots(roots: &[(Obj, Mat4)]) -> (Vec<Draw>, Vec<PointLightDraw>) 
     let mut draws = Vec::new();
     let mut lights = Vec::new();
     for (node, parent) in roots {
-        walk(node, *parent, true, Filter::Dynamic, &mut draws, &mut lights, None);
+        walk(node, *parent, true, 0, Filter::Dynamic, &mut draws, &mut lights, None);
     }
     (draws, lights)
 }
@@ -1320,7 +1389,7 @@ pub fn bake(root: &Obj) -> Vec<Draw> {
 pub fn bake_split(root: &Obj, gpu_anim: bool) -> Baked {
     let (mut draws, mut lights, mut anim) = (Vec::new(), Vec::new(), Vec::new());
     let split = if gpu_anim { Some(&mut anim) } else { None };
-    walk(root, Mat4::IDENTITY, false, Filter::Static, &mut draws, &mut lights, split);
+    walk(root, Mat4::IDENTITY, false, 0, Filter::Static, &mut draws, &mut lights, split);
     Baked { statics: merge_draws(draws, false), animated: merge_anim(anim) }
 }
 
@@ -1352,7 +1421,7 @@ fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4], f
 /// each vertex carrying its part's animation parameters.
 fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
     // Per part: its geometry, world matrix, tint, and animation parameters.
-    type Part = (Geo, Mat4, Option<[f32; 3]>, [f32; 4], [f32; 4], f32);
+    type Part = (Geo, Mat4, Option<[f32; 3]>, [f32; 4], [f32; 4], f32, u8);
     let mut groups: Vec<(Draw, AnimKind, Vec<Part>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for AnimDraw { draw: d, anim } in items {
@@ -1378,7 +1447,7 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
             ),
             _ => (format!("m|{tag}|{}|{}|{}|{}|{}|{}", d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade), None),
         };
-        let part = (Arc::clone(&d.geo), d.model, tint, params, axis, machine);
+        let part = (Arc::clone(&d.geo), d.model, tint, params, axis, machine, d.lift);
         match index.get(&key) {
             Some(&at) => groups[at].2.push(part),
             None => {
@@ -1406,6 +1475,7 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
                         params: p.3,
                         axis: p.4,
                         machine: p.5,
+                        lift: f32::from(p.6),
                     });
                 }
             }
@@ -1421,7 +1491,7 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
 /// draws never merge with the rest. Other draws (instances, points) pass through.
 fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
     // One merged draw per key.
-    type Part = (Geo, Mat4, Option<[f32; 3]>);
+    type Part = (Geo, Mat4, Option<[f32; 3]>, u8);
     let mut groups: Vec<(Draw, Vec<Part>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut rest = Vec::new();
@@ -1455,10 +1525,10 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
             }
         };
         match index.get(&key) {
-            Some(&at) => groups[at].1.push((Arc::clone(&d.geo), d.model, tint)),
+            Some(&at) => groups[at].1.push((Arc::clone(&d.geo), d.model, tint, d.lift)),
             None => {
                 index.insert(key, groups.len());
-                let parts = vec![(Arc::clone(&d.geo), d.model, tint)];
+                let parts = vec![(Arc::clone(&d.geo), d.model, tint, d.lift)];
                 groups.push((d, parts));
             }
         }
@@ -1469,7 +1539,13 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
             if parts.iter().any(|p| p.2.is_some()) {
                 first.material.color = Color::WHITE;
             }
-            Draw { geo: merge_tinted(&parts), model: Mat4::IDENTITY, ..first }
+            let tinted: Vec<(Geo, Mat4, Option<[f32; 3]>)> = parts.iter().map(|p| (Arc::clone(&p.0), p.1, p.2)).collect();
+            let mut geo = merge_tinted(&tinted);
+            if parts.iter().any(|p| p.3 != 0) {
+                let lifts = parts.iter().flat_map(|p| std::iter::repeat_n(p.3, p.0.positions.len())).collect();
+                Arc::get_mut(&mut geo).expect("a fresh geometry has one owner").lifts = lifts;
+            }
+            Draw { geo, model: Mat4::IDENTITY, lift: 0, ..first }
         })
         .collect();
     out.extend(rest);
