@@ -74,9 +74,8 @@ fn a_crowd_of_eight_arrives_and_rides_the_lifts() {
     for kind in ["edge", "laptop", "phone", "workstation", "server", "apple-soc"] {
         let ((arrived, total, unreachable), r) = walk_rides(kind, 8, 180.0);
         eprintln!("{kind}: {arrived}/{total} arrived, {unreachable} unreachable, {r} lift steps");
-        // A crowd still stalls at a chokepoint now and then (a robot parked at a lift's exit or in a narrow aisle is not
-        // asked to step aside), as on the web (test/nav-sim.mjs fails the same way): at least half the crowd arrives.
-        assert!(arrived * 2 >= total, "{kind}: {arrived} of {total} arrived, {unreachable} unreachable");
+        // A parked robot in a walker's way steps aside and comes back (crowd.rs step_aside): the whole crowd arrives.
+        assert_eq!((arrived, unreachable), (total, 0), "{kind}: {arrived} of {total} arrived, {unreachable} unreachable");
         rides += r;
     }
     assert!(rides > 0, "no robot rode a lift");
@@ -118,6 +117,15 @@ fn debug_walk() {
                 for l in trail.get(&id).into_iter().flatten() {
                     eprintln!("  {l}");
                 }
+                let me = world.robots.get(&id).map(|r| (r.x, r.z)).unwrap_or_default();
+                for (oid, o) in &world.robots {
+                    if *oid != id && (o.x - me.0).hypot(o.z - me.1) < 1.5 {
+                        eprintln!(" NEAR r{oid}:");
+                        for l in trail.get(oid).into_iter().flatten() {
+                            eprintln!("  {l}");
+                        }
+                    }
+                }
                 for (oid, o) in &world.robots {
                     eprintln!("  other r{oid} ({:.2},{:.2},{:.2}) {:?} goal={:?} ride={} wait={} v={:.2} path_left={:?}", o.x, o.z, o.body.y, o.body.mode, o.goal.map(|g| (g.x, g.z)), o.riding, o.waiting, o.v, o.path.as_ref().map(|p| p.len().saturating_sub(o.next)));
                 }
@@ -125,6 +133,13 @@ fn debug_walk() {
                     let st = l.ctrl.state();
                     eprintln!("  lift{lk} ({:.2},{:.2}) phase={:?} cab_y={:.2} calls={:?} boarding={:?} door_t={:.2}", l.def.x, l.def.z, st.phase, st.cab_y, st.calls, st.boarding, st.door_t);
                 }
+            }
+        }
+        if k == 180 * 60 - 1 {
+            for (id, r) in &world.robots {
+                let g = homes[(*id as usize + 1) % homes.len()];
+                let st = world.avoidance.get(id);
+                eprintln!("END r{id} at ({:.2},{:.2}) goal_home ({:.2},{:.2}) d={:.2} goal={:?} path_left={:?} v={:.2} yielding={:?} saved={:?} blocker={:?}", r.x, r.z, g[0], g[1], (r.x - g[0]).hypot(r.z - g[1]), r.goal.map(|g| (g.x, g.z)), r.path.as_ref().map(|p| p.len().saturating_sub(r.next)), r.v, st.map(|a| a.yielding), st.and_then(|a| a.saved.map(|g| (g.x, g.z))), st.map(|a| a.blocker));
             }
         }
     }

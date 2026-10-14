@@ -189,6 +189,9 @@ impl NavWorld {
             let mut rival: Option<u32> = None;
             for &o in &others {
                 let Some(ro) = self.robots.get(&o) else { continue };
+                if !same_level(self, id, o) {
+                    continue;
+                }
                 let (ox, oz) = (ro.x, ro.z);
                 let no_yield_until = self.avoid_state(id).no_yield.get(&o).copied().unwrap_or(f64::NEG_INFINITY);
                 if no_yield_until > self.sim_time {
@@ -200,6 +203,12 @@ impl NavWorld {
                 }
             }
             if let Some(rv) = rival {
+                // A parked robot in the way steps aside instead (and comes back once this one has passed): yielding to it
+                // would only stall this robot until it gave up, since a parked robot never moves on.
+                let rival_yields = self.avoidance.get(&rv).is_some_and(|a| a.yielding);
+                if !rival_yields && self.robots.get(&id).is_some_and(|r| !parked(r)) && self.robots.get(&rv).is_some_and(parked) && self.step_aside(rv, id) {
+                    continue;
+                }
                 let Some(o) = self.robots.get(&rv) else { continue };
                 let (rriding, rpri) = (o.riding, o.priority);
                 if rriding || rprio < rpri || (rprio == rpri && id > rv) {
@@ -209,13 +218,47 @@ impl NavWorld {
         }
     }
 
+    /// A parked robot `id` steps aside for `walker`: to the nearest free walk cell clear of the walker's remaining path,
+    /// as a yield whose saved goal is the robot's stand, so the rejoin walks it back once the walker is clear. False
+    /// when there is no such cell (the walker then yields as before).
+    pub(super) fn step_aside(&mut self, id: u32, walker: u32) -> bool {
+        let Some(w) = self.robots.get(&walker) else { return false };
+        let remaining: Vec<NavPoint> = w.path.as_ref().and_then(|p| p.get(w.next..)).map(|s| s.to_vec()).unwrap_or_default();
+        let others: Vec<u32> = self.robot_order().into_iter().filter(|&o| o != id).collect();
+        let Some(side) = self.side_cell(id, &others, &remaining) else { return false };
+        let Some(r) = self.robots.get(&id) else { return false };
+        // Back to its own goal (where it stands, its path being done), or to this spot when it has none.
+        let stand = r.goal.unwrap_or(NavGoal { x: r.x, z: r.z, face: r.final_face.or(Some(r.heading)) });
+        let (rx, ry, rz) = (r.x, r.y, r.z);
+        {
+            let st = self.avoid_state(id);
+            st.yielding = true;
+            st.blocker = walker as i64;
+            st.clear = 0.0;
+            st.yield_t = 0.0;
+            st.saved = Some(stand);
+            st.hold = None;
+        }
+        if let Some(r) = self.robots.get_mut(&id) {
+            r.goal = Some(NavGoal { x: side[0], z: side[1], face: None });
+        }
+        self.plan(id, [rx, ry, rz]);
+        true
+    }
+
     /// Starts a yield: a side-step (its path is planned to the side cell) or a hold on the spot when there is none.
     pub(super) fn yield_to(&mut self, id: u32, rival: u32, others: &[u32]) {
         let Some(r) = self.robots.get(&id) else { return };
         let (rx, ry, rz) = (r.x, r.y, r.z);
-        let remaining: Vec<NavPoint> = r.path.as_ref().and_then(|p| p.get(r.next..)).map(|s| s.to_vec()).unwrap_or_default();
+        let own: Vec<NavPoint> = r.path.as_ref().and_then(|p| p.get(r.next..)).map(|s| s.to_vec()).unwrap_or_default();
         let saved = r.goal.clone();
-        let side = self.side_cell(id, others, &remaining);
+        // Clear of the rival's way too (the web's rule is the yielder's own path only): a side-step onto the cells the
+        // rival walks next leaves both stuck at a chokepoint. In a corridor with no such cell, the yielder backs off
+        // along its own path, clear of the rival's alone.
+        let theirs: Vec<NavPoint> =
+            self.robots.get(&rival).and_then(|w| w.path.as_ref().and_then(|p| p.get(w.next..)).map(|s| s.to_vec())).unwrap_or_default();
+        let both: Vec<NavPoint> = own.iter().chain(&theirs).copied().collect();
+        let side = self.side_cell(id, others, &both).or_else(|| self.side_cell(id, others, &theirs));
         {
             let st = self.avoid_state(id);
             st.yielding = true;
@@ -344,7 +387,7 @@ impl NavWorld {
             for j in (i + 1)..ids.len() {
                 let (a, b) = (ids[i], ids[j]);
                 let (fa, fb) = (fixed(self, a), fixed(self, b));
-                if fa && fb {
+                if fa && fb || !same_level(self, a, b) {
                     continue;
                 }
                 let pa = self.at(a);
@@ -527,5 +570,27 @@ impl NavWorld {
             r.waiting = false;
             r.moving = false;
         }
+    }
+}
+
+/// A robot standing with nothing to do: not riding or waiting for a lift, and either without a goal or with its path
+/// walked to the end and stopped (a yielding robot is checked by the caller).
+fn parked(r: &RobotState) -> bool {
+    // A goal without a path is a plan that failed and will be retried: that robot is not done.
+    let done = match (&r.goal, &r.path) {
+        (None, _) => true,
+        (Some(_), Some(p)) => r.next >= p.len(),
+        (Some(_), None) => false,
+    };
+    !r.riding && !r.waiting && !r.lift_wait && r.proposal.is_none_or(|p| !p.lift) && done && r.v < WALK_SPEED
+}
+
+/// Whether two robots stand at one level: their bodies within a jump of each other. A robot at another height (a rider in
+/// the shaft below a waiting robot, one on a plate over the board) is not in the other's way, so neither avoidance nor
+/// separation pairs them (the web pairs them, and a robot waiting at a lift door is pushed off it by the rider below).
+fn same_level(w: &NavWorld, a: u32, b: u32) -> bool {
+    match (w.robots.get(&a), w.robots.get(&b)) {
+        (Some(ra), Some(rb)) => (ra.body.y - rb.body.y).abs() <= crate::grid::NAV_JUMP_UP,
+        _ => false,
     }
 }
