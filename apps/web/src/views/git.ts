@@ -11,9 +11,9 @@ import { append, h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
-/** The rich-content context of a repository's pages: `PR #N` there is a pull request on the plaza's git host. The
- * organisation is the forge's (apid's ORG). */
-const richOf = (c: Ctx) => embedContextFromStore({ project_repo: `agentplaza/${c.repo}` });
+/** The rich-content context of a repository's pages: `PR #N` there is a pull request on the plaza's git host, in the
+ * forge's organisation (`/v1/git`'s org, known once the page has drawn its status). */
+const richOf = (c: Ctx) => embedContextFromStore({ project_repo: c.org && c.repo ? `${c.org}/${c.repo}` : null });
 
 type PullState = 'open' | 'closed' | 'all';
 type ReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
@@ -25,6 +25,8 @@ const PULL_LIMIT = 50;
 /** One mounted view: its route, the live flag, and the state that survives a redraw. */
 interface Ctx {
   root: HTMLElement;
+  /** The forge's organisation, from `/v1/git`; empty until the page has that status. */
+  org: string;
   repo: string;
   tab: string;
   num: string;
@@ -47,6 +49,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let live = true;
   const ctx: Ctx = {
     root,
+    org: '',
     repo: params[0] ?? '',
     tab: TABS.find((t) => t.key === params[1])?.key ?? 'code',
     num: params[2] ?? '',
@@ -76,6 +79,7 @@ async function draw(c: Ctx): Promise<void> {
     }
     return;
   }
+  c.org = git.org;
   try {
     if (!c.live()) return;
     if (!git.configured) {

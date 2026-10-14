@@ -416,7 +416,9 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
 
 /// The content security policy of a served HTML file. `sandbox allow-scripts` gives the page an opaque origin (no
 /// same-origin, no forms, no top navigation), so its script cannot reach the console's storage or the hub as the owner.
-const HTML_CSP: &str = "sandbox allow-scripts; default-src 'self' data: blob: https:; script-src 'unsafe-inline' 'self' https:";
+/// Its styles (inline `<style>` included) and images (data:, blob: and https:) load, so a report renders as its author
+/// made it; nothing in the policy reaches the console's origin.
+const HTML_CSP: &str = "sandbox allow-scripts; default-src 'self' data: blob: https:; script-src 'unsafe-inline' 'self' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:";
 
 /// A file is HTML when its content type says so or its name ends `.html` or `.htm`.
 fn is_html(content_type: &str, name: &str) -> bool {
@@ -700,6 +702,24 @@ mod tests {
         assert_eq!(get("x-content-type-options").as_deref(), Some("nosniff"));
         assert_eq!(get("content-disposition"), None);
         assert!(HTML_CSP.starts_with("sandbox allow-scripts;"));
+    }
+
+    #[test]
+    fn html_reports_may_style_and_show_images_but_stay_sandboxed() {
+        let policy = HTML_CSP;
+        // The sandbox stays first and without allow-same-origin: the page is an opaque origin.
+        assert!(policy.starts_with("sandbox allow-scripts;"));
+        assert!(!policy.contains("allow-same-origin"));
+        assert!(!policy.contains("allow-top-navigation"));
+        // The directives the reports need: inline styles, and images from data:, blob: and https:.
+        let directive = |name: &str| policy.split(';').map(str::trim).find(|d| d.starts_with(name)).map(str::to_string);
+        assert_eq!(directive("style-src").as_deref(), Some("style-src 'self' 'unsafe-inline' https:"));
+        assert_eq!(directive("img-src").as_deref(), Some("img-src 'self' data: blob: https:"));
+        // Scripts keep their own rule, unchanged.
+        assert_eq!(directive("script-src").as_deref(), Some("script-src 'unsafe-inline' 'self' https:"));
+        // The policy is served with HTML, and nothing else gets it.
+        let (_, headers) = served("text/html", "report.html", false);
+        assert!(headers.iter().any(|(k, v)| *k == "content-security-policy" && v == policy));
     }
 
     #[test]

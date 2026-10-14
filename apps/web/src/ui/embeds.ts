@@ -14,6 +14,7 @@ import { agentHue } from '../views/floor-common';
 import { BRAND_ICONS } from './brands.gen';
 import { ago } from './components';
 import { h, icon, replace } from './dom';
+import { monogramOf, personOf, toneOf, type Person, type Subject } from './embed-model';
 import { label, targetOf, type AgentName, type Ref, type RefSpan, type RichCtx } from './rich';
 
 /** What markdown needs to render rich content: the classifier's context and the handlers for clicks. */
@@ -164,23 +165,8 @@ const textOf = (c: UnfurlCard, k: string): string | null => {
   return typeof v === 'number' ? String(v) : str(c, k);
 };
 
-interface Person {
-  name: string;
-  avatar: string | null;
-}
-
-/** An author: a user object (login, avatar_url, name) or a plain name. Avatars are https only. */
-function person(c: UnfurlCard, k: string): Person | null {
-  const v = c[k];
-  if (typeof v === 'string' && v !== '') return { name: v, avatar: null };
-  if (!v || typeof v !== 'object') return null;
-  const o = v as Record<string, unknown>;
-  const login = typeof o.login === 'string' && o.login !== '' ? o.login : null;
-  const name = login ?? (typeof o.name === 'string' && o.name !== '' ? o.name : null);
-  if (name === null) return null;
-  const avatar = typeof o.avatar_url === 'string' && o.avatar_url.startsWith('https://') ? o.avatar_url : null;
-  return { name, avatar };
-}
+/** An author field of a card (see `personOf`). */
+const person = (c: UnfurlCard, k: string): Person | null => personOf(c[k]);
 
 const when = (ms: number | null): string | null => (ms === null ? null : ago(ms));
 const bytesText = (n: number | null): string | null => {
@@ -202,10 +188,24 @@ const meta = (...parts: Array<string | null>): Block => {
   const shown = parts.filter((p): p is string => !!p);
   return shown.length ? h('div.embed-meta', null, shown.join(' · ')) : null;
 };
-const badge = (state: string): Block => (state ? h('span.embed-state', { 'data-state': state }, state) : null);
+const badge = (state: string, subject: Subject): Block => (state ? h('span.embed-state', { 'data-tone': toneOf(subject, state) }, state) : null);
+
+/** An author's picture, 20px and round; its monogram when there is no picture or it fails to load. */
+function avatarNode(p: Person): HTMLElement {
+  const box = h('span.embed-avatar', { 'aria-hidden': 'true' });
+  const monogram = (): void => replace(box, monogramOf(p.name));
+  if (p.avatar === null) monogram();
+  else {
+    const img = h('img', { src: p.avatar, alt: '', width: 20, height: 20, loading: 'lazy', referrerpolicy: 'no-referrer' });
+    img.addEventListener('error', monogram, { once: true });
+    box.append(img);
+  }
+  return box;
+}
+
 function byline(p: Person | null): Block {
   if (!p) return null;
-  return h('span.embed-byline', null, p.avatar ? h('img.embed-avatar', { src: p.avatar, alt: '', width: 20, height: 20, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null, p.name);
+  return h('span.embed-byline', null, avatarNode(p), p.name);
 }
 
 function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
@@ -261,7 +261,7 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
       return [
         kicker(label(r)),
         titleOf(str(c, 'title') ?? str(c, 'name') ?? label(r)),
-        h('div.embed-row', null, badge(str(c, 'conclusion') ?? str(c, 'state') ?? ''), str(c, 'branch')),
+        h('div.embed-row', null, badge(str(c, 'conclusion') ?? str(c, 'state') ?? '', 'run'), str(c, 'branch')),
         meta(str(c, 'actor'), when(num(c, 'created_ms'))),
       ];
     case 'gist': {
@@ -275,7 +275,7 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
       return [
         kicker(label(r)),
         titleOf(str(c, 'title') ?? 'Task'),
-        h('div.embed-row', null, badge(state), textOf(c, 'assignee') ? `Assignee ${textOf(c, 'assignee')}` : null),
+        h('div.embed-row', null, badge(state, 'task'), textOf(c, 'assignee') ? `Assignee ${textOf(c, 'assignee')}` : null),
         meta(str(c, 'project'), when(num(c, 'updated_ms'))),
       ];
     }
@@ -292,7 +292,7 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
         kicker(label(r)),
         titleOf(str(c, 'name') ?? r.name),
         excerpt(str(c, 'description')),
-        h('div.embed-row', null, badge(str(c, 'state') ?? ''), byline(person(c, 'author'))),
+        h('div.embed-row', null, badge(str(c, 'state') ?? '', 'run'), byline(person(c, 'author'))),
         meta(typeof files === 'number' ? plural(files, 'file') : null, when(num(c, 'created_ms'))),
       ];
     }
@@ -316,7 +316,7 @@ function issueBody(title: string, c: UnfurlCard, pull: boolean): Block[] {
   return [
     kicker(title),
     titleOf(str(c, 'title') ?? 'Untitled'),
-    h('div.embed-row', null, byline(person(c, 'author')), badge(str(c, 'state') ?? '')),
+    h('div.embed-row', null, byline(person(c, 'author')), badge(str(c, 'state') ?? '', 'change')),
     pull
       ? h('div.embed-row.embed-mono', null, `${str(c, 'head') ?? '?'} → ${str(c, 'base') ?? '?'}`, h('span.embed-add', null, `+${num(c, 'additions') ?? 0}`), h('span.embed-del', null, `−${num(c, 'deletions') ?? 0}`))
       : labels.length
@@ -432,10 +432,16 @@ function actionFor(r: Ref, embeds: EmbedContext): (() => void) | null {
 function paint(el: HTMLElement, r: Ref, card: UnfurlCard): void {
   if (r.kind === 'github_pull' || r.kind === 'plaza_git_pull' || r.kind === 'github_issue' || r.kind === 'plaza_git_issue') {
     const state = str(card, 'state');
-    if (state) el.dataset.state = state;
-  } else if (r.kind === 'task' || r.kind === 'agent') {
+    if (state) el.dataset.tone = toneOf('change', state);
+  } else if (r.kind === 'github_run' || r.kind === 'plaza_git_run') {
+    const state = str(card, 'conclusion') ?? str(card, 'state');
+    if (state) el.dataset.tone = toneOf('run', state);
+  } else if (r.kind === 'task') {
     const status = str(card, 'status');
-    if (status) el.dataset.status = status;
+    if (status) el.dataset.tone = toneOf('task', status);
+  } else if (r.kind === 'agent') {
+    const status = str(card, 'status');
+    if (status) el.dataset.tone = toneOf('agent', status);
   }
 }
 
@@ -466,7 +472,7 @@ function chip(r: Ref, raw: string, text: string | null, embeds: EmbedContext): H
   if (r.kind === 'agent' && agentCid !== null) {
     el.style.setProperty('--hue', String(agentHue(agentCid)));
     const status = roster.get().find((a) => a.cid === agentCid)?.status;
-    if (status) el.dataset.status = status;
+    if (status) el.dataset.tone = toneOf('agent', status);
   }
 
   let webUrl: string | null = null;
@@ -629,6 +635,9 @@ let popSeq = 0;
 let globalsInstalled = false;
 /** Chips whose long press opened a card: the click that ends the press does nothing. */
 const pressed = new WeakSet<Element>();
+/** When a touch last began on a chip: a context menu that follows it is the long press's, and is held back. */
+let touchedAt = 0;
+const CONTEXT_MS = 1000;
 
 function scheduleHide(): void {
   clearTimeout(hideTimer);
@@ -729,6 +738,7 @@ function wireHover(el: HTMLElement, r: Ref, embeds: EmbedContext): void {
   el.addEventListener('pointerdown', (e) => {
     pressed.delete(el);
     if (e.pointerType === 'mouse') return;
+    touchedAt = Date.now();
     stopPress();
     pressTimer = setTimeout(() => {
       pressed.add(el);
@@ -737,6 +747,10 @@ function wireHover(el: HTMLElement, r: Ref, embeds: EmbedContext): void {
   });
   el.addEventListener('pointerup', stopPress);
   el.addEventListener('pointercancel', stopPress);
+  // A long press on a touch screen is the card's gesture, not the system's menu for a link.
+  el.addEventListener('contextmenu', (e) => {
+    if (Date.now() - touchedAt < CONTEXT_MS) e.preventDefault();
+  });
 }
 
 /** Once per page: Escape closes the open layer, a tap outside closes a card, and cards follow their anchors. */

@@ -1,6 +1,7 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href } from '../src/router';
 import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
+import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
 import richVectors from '../../../crates/apz-rich/tests/vectors.json';
 import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
 import { ago, clip, compact } from '../src/ui/components';
@@ -791,6 +792,46 @@ sectionEnd('ide agent view model tests: ok');
   eq(label({ kind: 'library_tool', name: 'search', version: 3 }), 'search v3', 'rich label: library tool');
 }
 sectionEnd('rich content tests: ok');
+
+// ---- Rich content chips and cards: the tone a state takes, an author's avatar and its monogram (src/ui/embed-model.ts) ----
+{
+  // A chip's border and icon take the tone of its state: open is success, a draft secondary, merged purple, closed an error.
+  eq(toneOf('change', 'open'), 'ok', 'chip tone: an open pull request is success');
+  eq(toneOf('change', 'draft'), 'neutral', 'chip tone: a draft is secondary');
+  eq(toneOf('change', 'merged'), 'merged', 'chip tone: a merged pull request is purple');
+  eq(toneOf('change', 'closed'), 'danger', 'chip tone: a closed pull request is an error');
+  eq(toneOf('task', 'open'), 'neutral', 'chip tone: an open task is neutral');
+  eq(toneOf('task', 'claimed'), 'info', 'chip tone: a claimed task is in progress');
+  eq(toneOf('task', 'awaiting_review'), 'warn', 'chip tone: a task awaiting review is a warning');
+  eq(toneOf('task', 'done'), 'ok', 'chip tone: a done task is success');
+  eq(toneOf('task', 'failed'), 'danger', 'chip tone: a failed task is an error');
+  eq(toneOf('agent', 'idle'), 'ok', 'chip tone: an idle agent is a green status dot');
+  eq(toneOf('agent', 'working'), 'info', 'chip tone: a working agent is blue, not the owner orange');
+  eq(toneOf('agent', 'offline'), 'neutral', 'chip tone: an offline agent is neutral');
+  eq(toneOf('run', 'success'), 'ok', 'chip tone: a successful run');
+  eq(toneOf('run', 'failure'), 'danger', 'chip tone: a failed run');
+  eq(toneOf('run', 'in_progress'), 'info', 'chip tone: a run in progress');
+  eq(toneOf('change', 'weird'), 'neutral', 'chip tone: an unknown state is neutral');
+  eq(toneOf('change', 'constructor'), 'neutral', 'chip tone: a prototype name is not a state');
+
+  // An author: a user object with an https avatar, a user object without one, or a plain name.
+  eq(personOf({ login: 'ada', avatar_url: 'https://avatars.example/ada.png' }), { name: 'ada', avatar: 'https://avatars.example/ada.png' }, 'card author: a picture over https');
+  eq(personOf({ login: 'ada', avatar_url: 'http://avatars.example/ada.png' }), { name: 'ada', avatar: null }, 'card author: an http picture is not shown');
+  eq(personOf({ login: 'ada' }), { name: 'ada', avatar: null }, 'card author: no picture falls back to the monogram');
+  eq(personOf({ name: 'Grace' }), { name: 'Grace', avatar: null }, 'card author: a name without a login');
+  eq(personOf('Bob'), { name: 'Bob', avatar: null }, 'card author: a plain name');
+  eq(personOf({ login: '' }), null, 'card author: an empty login is no author');
+  eq(personOf(null), null, 'card author: null is no author');
+
+  // The monogram: the first letter or digit of the name, upper case; a question mark when there is none.
+  eq(monogramOf('zarathos'), 'Z', 'avatar monogram: the first letter, upper case');
+  eq(monogramOf('@ada'), 'A', 'avatar monogram: a leading mark is skipped');
+  eq(monogramOf('9lives'), '9', 'avatar monogram: a digit counts');
+  eq(monogramOf('ünal'), 'Ü', 'avatar monogram: a letter outside ASCII');
+  eq(monogramOf(''), '?', 'avatar monogram: an empty name');
+  eq(monogramOf('  '), '?', 'avatar monogram: a blank name');
+}
+sectionEnd('rich card tests: ok');
 
 // ---- IDE grouping by project, duplicate names and the start choice (src/ide/groups.ts) ----
 {

@@ -17,7 +17,7 @@ const DEBOUNCE_MS = 300;
 
 /** The rich-content context of one project's documents and critiques: its id (`task #N` is a task) and its repository
  * on the plaza's git host (the organisation is the forge's, apid's ORG). */
-const richOf = (p: Project) => embedContextFromStore({ project: p.id, project_repo: p.repo ? `agentplaza/${p.repo}` : null });
+const richOf = (p: Project) => embedContextFromStore({ project: p.id, project_repo: p.repo });
 const VERDICT_TONE: Record<ProjectCritique['verdict'], Tone> = { approve: 'ok', revise: 'danger', comment: 'muted' };
 const APPROVABLE: ProjectStage[] = ['critique', 'approval'];
 

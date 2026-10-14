@@ -47,7 +47,7 @@ async function readHead(c: IdeCtx, path: string): Promise<string[] | null> {
 export function ideEmbeds(c: IdeCtx, project: Project | null): EmbedContext {
   return embedContextFromStore({
     project: project?.id ?? null,
-    project_repo: project?.repo ? `agentplaza/${project.repo}` : null,
+    project_repo: project?.repo ?? null,
     paths: workspacePaths(c),
     // An agent in the IDE's sidebar is selected there; one the IDE does not list opens nothing.
     openAgent: (who) => {
