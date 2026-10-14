@@ -6,8 +6,21 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
-use apz_setup::node::{self, cid_list, find_pids, repo_dir, resource, Layout};
+use apz_setup::node::{self, cid_list, find_plan_pids, named_pids, repo_dir, resource, stop_pids, Layout, PlanProcess};
+
+/// The bind address of a hub other machines join, and the public URL it advertises (`https://<this machine>:7700`).
+/// `status` and `stop` rebuild the hub's plan with these, so they match the processes `start` made.
+const HUB_BIND: &str = "0.0.0.0";
+
+fn hub_public_url() -> String {
+    format!("https://{}:7700", hostname())
+}
+
+/// The pids this app started, by service name (one per name: a restart replaces it). Stop trusts only
+/// these on Windows, where a process's command line cannot be read to tell whose it is.
+static STARTED: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
 
 /// One local service and its state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +67,7 @@ enum How {
 
 /// The services of `mode` and their state now.
 pub fn status(mode: Mode) -> Vec<Service> {
-    plan(mode, None)
+    plan_of(mode)
         .iter()
         .map(|svc| {
             let (state, detail) = svc_state(svc);
@@ -66,19 +79,26 @@ pub fn status(mode: Mode) -> Vec<Service> {
 /// Starts what `mode` needs that is not running; returns a line per service.
 pub fn start(mode: Mode) -> Result<Vec<String>, String> {
     if mode == Mode::Hub {
-        return start_hub("0.0.0.0", &format!("https://{}:7700", hostname()));
+        return start_hub(HUB_BIND, &hub_public_url());
     }
     start_with(mode, None)
 }
 
-/// Starts a hub other machines join: apid binds `bind` with TLS and advertises `public_url`.
+/// Starts a hub other machines join: apid binds `bind` with TLS and advertises `public_url`. The
+/// console's hub is `HUB_BIND` with `hub_public_url()`: `status` and `stop` assume those.
 pub fn start_hub(bind: &str, public_url: &str) -> Result<Vec<String>, String> {
     start_with(Mode::Hub, Some((bind, public_url)))
 }
 
 /// Stops the services `mode` started (SIGTERM to the processes; containers are left running).
 pub fn stop(mode: Mode) -> Result<Vec<String>, String> {
-    Ok(plan(mode, None).iter().rev().map(stop_one).collect())
+    Ok(plan_of(mode).iter().rev().map(stop_one).collect())
+}
+
+/// The services of `mode` as the console starts them: a hub's apid carries the public bind arguments.
+fn plan_of(mode: Mode) -> Vec<Svc> {
+    let public = hub_public_url();
+    plan(mode, (mode == Mode::Hub).then_some((HUB_BIND, public.as_str())))
 }
 
 /// The owner token a local hub wrote for this machine (`<state>/owner-token`), if any.
@@ -132,7 +152,7 @@ pub fn node_status() -> NodeStatus {
         (Some(base), Some(count)) if count > 0 => node::cid_range(base, count),
         _ => String::new(),
     };
-    let pids = find_pids("apz-link");
+    let pids = find_plan_pids(&node::link());
     NodeStatus {
         joined: node.is_some(),
         hub: text("hub_url"),
@@ -241,7 +261,7 @@ fn svc_state(svc: &Svc) -> (&'static str, String) {
             state => (state, format!("container {docker}")),
         },
         How::Process { bin, .. } => {
-            if let Some(pid) = find_pids(svc.name).first() {
+            if let Some(pid) = process_of(svc).and_then(|process| find_plan_pids(&process).first().copied()) {
                 return ("running", format!("pid {pid}"));
             }
             match bin {
@@ -268,8 +288,8 @@ fn start_one(svc: &Svc) -> String {
             _ => format!("{name}: not installed"),
         },
         How::Process { bin, args, env } => {
-            if !find_pids(name).is_empty() {
-                return format!("{name}: already running");
+            if let Some(pid) = process_of(svc).and_then(|process| find_plan_pids(&process).first().copied()) {
+                return format!("{name}: already running (pid {pid})");
             }
             let Some(bin) = bin else {
                 if name == OPTIONAL_SERVICE {
@@ -277,6 +297,10 @@ fn start_one(svc: &Svc) -> String {
                 }
                 return format!("{name}: not installed");
             };
+            // Another process of this name that is not the plan's holds the ports this one needs.
+            if let Some(pid) = named_pids(name).first() {
+                return format!("{name}: not started: another {name} runs (pid {pid}) that this app did not start");
+            }
             match spawn(name, bin, args, *env) {
                 Ok(pid) => format!("{name}: started (pid {pid})"),
                 Err(e) => format!("{name}: failed ({e})"),
@@ -285,24 +309,45 @@ fn start_one(svc: &Svc) -> String {
     }
 }
 
+/// Stops the service's own processes: the plan's, matched by name and arguments (see `node::stop_pids`).
+/// A process of the same name that is not the plan's is left alone.
 fn stop_one(svc: &Svc) -> String {
     let name = svc.name;
-    match &svc.how {
-        How::Container { .. } => format!("{name}: left running (the container persists)"),
-        How::Process { .. } => {
-            let pids = find_pids(name);
-            if pids.is_empty() {
-                return format!("{name}: not running");
-            }
-            let signalled: Vec<bool> = pids.iter().map(|pid| signal(*pid)).collect();
-            let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
-            if signalled.iter().all(|ok| *ok) {
-                format!("{name}: stopped (pid {list})")
-            } else {
-                format!("{name}: could not signal pid {list}")
-            }
-        }
+    let Some(process) = process_of(svc) else {
+        return format!("{name}: left running (the container persists)");
+    };
+    let pids = stop_pids(&process, &recorded_pids(name));
+    if pids.is_empty() {
+        return if find_plan_pids(&process).is_empty() {
+            format!("{name}: not running")
+        } else {
+            format!("{name}: running, but not started by this app; left alone")
+        };
     }
+    let signalled: Vec<bool> = pids.iter().map(|pid| signal(*pid)).collect();
+    let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+    if signalled.iter().all(|ok| *ok) {
+        format!("{name}: stopped (pid {list})")
+    } else {
+        format!("{name}: could not signal pid {list}")
+    }
+}
+
+/// The plan's process of a service: its name and the exact arguments it was started with. None for a
+/// Docker container, which is not a process.
+fn process_of(svc: &Svc) -> Option<PlanProcess> {
+    match &svc.how {
+        How::Process { args, env, .. } => Some(PlanProcess { name: svc.name, args: args.clone(), env: *env }),
+        How::Container { .. } => None,
+    }
+}
+
+/// The pids this app started for a service (see `STARTED`).
+fn recorded_pids(name: &str) -> Vec<u32> {
+    STARTED
+        .lock()
+        .map(|started| started.iter().filter(|(n, _)| n == name).map(|(_, pid)| *pid).collect())
+        .unwrap_or_default()
 }
 
 /// Asks process `pid` to stop: `kill` on Unix, `taskkill` on Windows.
@@ -334,6 +379,10 @@ fn spawn(name: &str, bin: &Path, args: &[String], env: Option<(&str, &str)>) -> 
         cmd.env(key, value);
     }
     let child = cmd.spawn().map_err(|e| e.to_string())?;
+    if let Ok(mut started) = STARTED.lock() {
+        started.retain(|(n, _)| n != name);
+        started.push((name.to_string(), child.id()));
+    }
     Ok(child.id())
 }
 
@@ -426,7 +475,24 @@ fn first_line(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use apz_setup::node::{runs_plan, Layout};
+
     use super::*;
+
+    /// The command line a process of a plan runs: its program, then its arguments.
+    fn command(process: &PlanProcess) -> Vec<String> {
+        std::iter::once(process.name.to_string()).chain(process.args.iter().cloned()).collect()
+    }
+
+    /// The command line of a process started with these arguments (the owner's main plaza's, say).
+    fn owner(name: &str, args: &[&str]) -> Vec<String> {
+        std::iter::once(name.to_string()).chain(args.iter().map(|a| a.to_string())).collect()
+    }
+
+    fn svc_process(services: &[Svc], name: &str) -> PlanProcess {
+        let svc = services.iter().find(|svc| svc.name == name).expect("a service of the plan");
+        process_of(svc).expect("a process")
+    }
 
     #[test]
     fn local_cids_run_from_20_to_130() {
@@ -436,8 +502,59 @@ mod tests {
     }
 
     #[test]
-    fn proc_scan_finds_nothing_for_an_impossible_name() {
-        assert!(find_pids("agentplaza-no-such-service-zz9").is_empty());
+    fn a_name_that_runs_nowhere_matches_no_process() {
+        let nowhere = PlanProcess { name: "agentplaza-no-such-service-zz9", args: vec!["--x".into()], env: None };
+        assert!(find_plan_pids(&nowhere).is_empty());
+    }
+
+    #[test]
+    fn a_node_and_the_hub_on_one_machine_are_told_apart_by_their_arguments() {
+        let hub = plan(Mode::Local, None);
+        let layout = Layout { roles: "/share/roles.json".into(), uds_dir: "/run/uds".into(), token: "/state/node/internal-token".into() };
+        let node = node::plan(20, 4, &layout);
+        let node_proc = |name: &str| node.iter().find(|p| p.name == name).expect("a node process").clone();
+        let hub_vsockd = svc_process(&hub, "vsockd");
+        let hub_noded = svc_process(&hub, "noded");
+        let hub_apid = svc_process(&hub, "apid");
+
+        // What each plan starts: the node's own command lines, and the hub's (its own plan's arguments).
+        let node_vsockd_cmd = command(&node_proc("vsockd"));
+        let node_noded_cmd = command(&node_proc("noded"));
+        let hub_vsockd_cmd = command(&hub_vsockd);
+        let hub_noded_cmd = command(&hub_noded);
+        let hub_apid_cmd = command(&hub_apid);
+        assert!(runs_plan(&node_vsockd_cmd, &node_proc("vsockd")));
+        assert!(!runs_plan(&node_vsockd_cmd, &hub_vsockd), "a node's vsockd is not the hub's");
+        assert!(runs_plan(&hub_vsockd_cmd, &hub_vsockd));
+        assert!(!runs_plan(&hub_vsockd_cmd, &node_proc("vsockd")), "a hub's vsockd is not the node's");
+        // The node's noded has every argument of the hub's noded and --run-cids besides.
+        assert!(runs_plan(&node_noded_cmd, &node_proc("noded")));
+        assert!(!runs_plan(&node_noded_cmd, &hub_noded), "stopping the hub must not stop a node's noded");
+        assert!(runs_plan(&hub_noded_cmd, &hub_noded));
+        assert!(!runs_plan(&hub_noded_cmd, &node_proc("noded")), "a hub's noded is not the node's");
+        assert!(runs_plan(&hub_apid_cmd, &hub_apid));
+
+        // The owner's main plaza, started with its own paths and CIDs, is neither's.
+        let owner_apid = owner("apid", &["--port", "7700", "--noded-port", "8899", "--hub-port", "19080"]);
+        let owner_vsockd = owner("vsockd", &["--uds-dir", "/home/u/.local/state/agentplaza/vsock", "--cids", "200,201,202"]);
+        let owner_noded = owner("noded", &["--port", "8899", "--uds-dir", "/home/u/.local/state/agentplaza/vsock", "--agents", "/srv/roles.json"]);
+        for cmd in [&owner_apid, &owner_vsockd, &owner_noded] {
+            for process in [&hub_vsockd, &hub_noded, &hub_apid, &node_proc("vsockd"), &node_proc("noded")] {
+                assert!(!runs_plan(cmd, process), "{cmd:?} must not be {}", process.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_hub_plan_for_the_console_carries_its_bind_arguments_and_nothing_else_moves() {
+        let hub = plan_of(Mode::Hub);
+        let apid = svc_process(&hub, "apid");
+        let flag = |name: &str| apid.args.iter().position(|a| a == name).and_then(|i| apid.args.get(i + 1)).cloned();
+        assert_eq!(flag("--bind").as_deref(), Some(HUB_BIND));
+        assert_eq!(flag("--public-url"), Some(hub_public_url()));
+        assert!(apid.args.iter().any(|a| a == "--tls"));
+        // Local is the hub without those arguments.
+        assert!(!plan_of(Mode::Local).iter().any(|svc| matches!(&svc.how, How::Process { args, .. } if args.iter().any(|a| a == "--tls"))));
     }
 
     #[test]
