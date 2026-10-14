@@ -26,9 +26,11 @@ use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::screens;
 use crate::ctx::{Client, Config, seg};
 
-// The Machines tab's module sits beside this file (the tui module lists its own modules).
+// The Machines and Workstations tabs' modules sit beside this file (the tui module lists its own modules).
 #[path = "machines.rs"]
 mod machines;
+#[path = "workstations.rs"]
+mod workstations;
 
 const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
@@ -46,10 +48,11 @@ pub enum Tab {
     Conversations,
     Nodes,
     Machines,
+    Workstations,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Floor,
         Tab::Overview,
         Tab::Agents,
@@ -59,6 +62,7 @@ impl Tab {
         Tab::Conversations,
         Tab::Nodes,
         Tab::Machines,
+        Tab::Workstations,
     ];
 
     pub fn label(self) -> &'static str {
@@ -72,6 +76,7 @@ impl Tab {
             Tab::Conversations => "Conversations",
             Tab::Nodes => "Nodes",
             Tab::Machines => "Machines",
+            Tab::Workstations => "Workstations",
         }
     }
 
@@ -86,6 +91,7 @@ impl Tab {
             Tab::Conversations => "/v1/conversations",
             Tab::Nodes => "/v1/nodes",
             Tab::Machines => "/v1/machines",
+            Tab::Workstations => "/v1/stations",
         }
     }
 
@@ -380,6 +386,7 @@ impl App {
             Tab::Conversations => self.wrapped("/v1/conversations", "conversations").len(),
             Tab::Nodes => self.array("/v1/nodes").len(),
             Tab::Machines => self.array("/v1/machines").len(),
+            Tab::Workstations => self.array("/v1/stations").len(),
         }
     }
 
@@ -426,6 +433,10 @@ impl App {
                     if kind != "serial" {
                         self.log.push(event_line(&kind, &data));
                     }
+                    // The Workstations tab reads the stations once more when one changes (not per owner input).
+                    if self.tab == Tab::Workstations && is_station_change(&kind) {
+                        let _ = self.watch.send(Tab::Workstations.path());
+                    }
                 }
                 Msg::Done(label, result) => {
                     self.notice = Some(match result {
@@ -466,6 +477,7 @@ impl App {
             Tab::Conversations => screens::conversations(frame, body, self),
             Tab::Nodes => screens::nodes(frame, body, self),
             Tab::Machines => machines::render(frame, body, self),
+            Tab::Workstations => workstations::render(frame, body, self),
         }
         if let Some(ob) = &self.onboarding {
             ob.draw(frame, body, self.palette, self.client.base());
@@ -505,6 +517,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return true,
             KeyCode::Char(c @ '1'..='9') => self.select_tab(Tab::ALL[usize::from(c as u8 - b'1')]),
+            KeyCode::Char('0') => self.select_tab(Tab::Workstations),
             KeyCode::Tab => self.select_tab(self.tab.next()),
             KeyCode::BackTab => self.select_tab(self.tab.prev()),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
@@ -684,6 +697,12 @@ fn follow_events(target: Target, tx: Sender<Msg>) {
     }
 }
 
+/// The hub events that change what the Workstations tab shows: a station's own change, and a lease opened,
+/// queued, granted, released, ended or failed. The owner's input during a takeover is left out (it is frequent).
+fn is_station_change(kind: &str) -> bool {
+    matches!(kind, "station" | "lease_waiting" | "lease_granted" | "lease_released" | "lease_ended" | "lease_failed")
+}
+
 fn parse_frame(text: &str) -> Option<(String, Value)> {
     let frame: Value = serde_json::from_str(text).ok()?;
     let kind = frame.get("event")?.as_str()?.to_string();
@@ -809,10 +828,12 @@ mod tests {
 
     #[test]
     fn tabs_cycle_both_ways() {
-        assert_eq!(Tab::ALL.len(), 9);
-        assert_eq!(Tab::Floor.prev(), Tab::Machines);
-        assert_eq!(Tab::Machines.next(), Tab::Floor);
+        assert_eq!(Tab::ALL.len(), 10);
+        assert_eq!(Tab::Floor.prev(), Tab::Workstations);
+        assert_eq!(Tab::Workstations.next(), Tab::Floor);
+        assert_eq!(Tab::Machines.next(), Tab::Workstations);
         assert_eq!(Tab::Nodes.next(), Tab::Machines);
+        assert_eq!(Tab::Workstations.path(), "/v1/stations");
         assert_eq!(Tab::Overview.next().next(), Tab::Tasks);
         assert_eq!(Tab::Floor.next().prev(), Tab::Floor);
     }

@@ -69,6 +69,7 @@ dependencies = [
  "apz-os",
  "apz-setup",
  "apz-skill",
+ "apz-station",
  "base64 0.22.1",
  "clap",
  "crossterm",

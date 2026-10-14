@@ -100,6 +100,9 @@ enum Command {
     /// The network's nodes: list, join codes, drain, revoke.
     #[command(subcommand)]
     Nodes(cmd::nodes::Cmd),
+    /// Workstations on the hub: list, join codes, leases, settings with the takeover policy, drain, revoke, audit.
+    #[command(subcommand)]
+    Stations(cmd::stations::Cmd),
     /// This machine as a node of a network: join with a code, status, leave.
     #[command(subcommand)]
     Node(cmd::node::Cmd),
@@ -180,6 +183,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Tools(c) => cmd::tools::run(&ctx, c),
         Command::Machines(c) => cmd::machines::run(&ctx, c),
         Command::Nodes(c) => cmd::nodes::run(&ctx, c),
+        Command::Stations(c) => cmd::stations::run(&ctx, c),
         Command::Plaza(c) => cmd::plaza::run(&ctx, c),
         Command::Decide(a) => cmd::decide::run(&ctx, a),
         Command::Events(a) => cmd::events::run(&ctx, a),

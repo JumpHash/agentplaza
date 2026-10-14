@@ -25,6 +25,7 @@ pub mod setup;
 pub mod rules;
 pub mod sanctions;
 pub mod skills;
+pub mod stations;
 pub mod society;
 pub mod tasks;
 pub mod tools;

@@ -16,6 +16,7 @@ apz-skill = { path = "../../crates/apz-skill" }
 apz-ide = { path = "../../crates/apz-ide" }
 apz-os = { path = "../../crates/apz-os" }
 apz-setup = { path = "../../crates/apz-setup" }
+apz-station = { path = "../../crates/apz-station" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64.workspace = true

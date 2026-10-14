@@ -184,7 +184,7 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(format!(" {notice}"), Style::new().fg(palette.ok)))
     } else {
         Line::from(Span::styled(
-            " 1-9 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
+            " 1-9, 0 tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
             Style::new().fg(palette.muted),
         ))
     };
