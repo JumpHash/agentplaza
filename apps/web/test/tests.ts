@@ -20,6 +20,7 @@ import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag }
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, viewedKey, withViewed } from '../src/ide/model';
 import type { FileChange } from '../src/ide/types';
+import { CENTRE_MIN, clampSize, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftViewFor, originFallback, parseLayout, RIGHT_SIZE, rightTabFor, serializeLayout } from '../src/ide/layout';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -539,6 +540,30 @@ sectionEnd('ide wrapper tests: ok');
   eq([parentDir('a/b/c.txt'), parentDir('x.ts')], ['a/b', ''], 'ide tree: a file’s directory');
 }
 sectionEnd('ide view model tests: ok');
+
+{
+  // The layout: sizes kept in range, the stored layout read back safely, panels fitted to the window, the narrow
+  // breakpoint, the screen the Console button returns to, and the panel an openIde link names.
+  eq([clampSize(900, 180, 520, 260), clampSize('x', 180, 520, 260), clampSize(10.6, 180, 520, 260)], [520, 260, 180], 'ide layout: a size is clamped, and a non-number is the default');
+  eq(defaultLayout(1200), { left: 260, right: 380, leftOpen: true, rightOpen: true }, 'ide layout: both panels open on a wide window');
+  eq(defaultLayout(800), { left: 260, right: 380, leftOpen: false, rightOpen: false }, 'ide layout: both panels closed on a narrow window');
+  eq(parseLayout(null, 1200), defaultLayout(1200), 'ide layout: nothing stored is the default');
+  eq(parseLayout('{not json', 1200), defaultLayout(1200), 'ide layout: corrupt storage is the default');
+  eq(parseLayout('{"left":9999,"right":1,"leftOpen":false,"rightOpen":"yes"}', 1200), { left: LEFT_SIZE.max, right: RIGHT_SIZE.min, leftOpen: false, rightOpen: true }, 'ide layout: out-of-range sizes are clamped and a non-boolean open flag is the default');
+  const kept = { left: 333, right: 401, leftOpen: false, rightOpen: true };
+  eq(parseLayout(serializeLayout(kept), 1200), kept, 'ide layout: a stored layout reads back as it was saved');
+  eq(
+    [fitSize(900, 'left', 1000, 0), fitSize(900, 'right', 1000, 300), fitSize(900, 'right', 800, 400)],
+    [LEFT_SIZE.max, 1000 - 44 - 300 - CENTRE_MIN, RIGHT_SIZE.min],
+    'ide layout: a panel is fitted to the window, keeping the editor its minimum',
+  );
+  eq([isNarrow(899), isNarrow(900)], [true, false], 'ide layout: narrow is under 900px');
+  eq(originFallback(null), '#/overview', 'ide origin: no console route is the overview');
+  eq([originFallback('#/ide/agent:7'), originFallback('#/ide'), originFallback('#/ide?panel=changes')], ['#/overview', '#/overview', '#/overview'], 'ide origin: an IDE route is never the origin');
+  eq(originFallback('#/agents/105'), '#/agents/105', 'ide origin: the console route the IDE was opened from');
+  eq([leftViewFor('changes'), leftViewFor('agent'), rightTabFor('agent'), rightTabFor('changes')], ['changes', null, 'agent', null], 'ide layout: a link’s panel is a left view or a right tab');
+}
+sectionEnd('ide layout tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

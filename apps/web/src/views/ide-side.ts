@@ -1,18 +1,74 @@
-// The IDE's right panel: the changes since a base (a collapsible diff per file, with viewed marks) and the checkpoints to
-// restore. Pure rendering: the screen (views/ide.ts) owns the data and passes callbacks.
+// The IDE's side views: the changed files (a list for the side panel, and the per-file diffs of the review in the
+// centre) and the checkpoints to restore. Pure rendering: the screen (views/ide.ts) owns the data and passes callbacks.
 
 import type { IdeCheckpoint } from '../api';
 import { diffMark, isViewed, lineCounts, type Viewed } from '../ide/model';
 import type { FileChange, Hunk, Line, Stats } from '../ide/types';
 import { ago, badge, empty, type Tone } from '../ui/components';
-import { h } from '../ui/dom';
+import { h, icon } from '../ui/dom';
 
-const STATUS: Record<FileChange['status'], { label: string; tone: Tone }> = {
-  added: { label: 'added', tone: 'ok' },
-  modified: { label: 'modified', tone: 'info' },
-  deleted: { label: 'deleted', tone: 'danger' },
-  renamed: { label: 'renamed', tone: 'warn' },
+const STATUS: Record<FileChange['status'], { label: string; tone: Tone; letter: string }> = {
+  added: { label: 'added', tone: 'ok', letter: 'A' },
+  modified: { label: 'modified', tone: 'info', letter: 'M' },
+  deleted: { label: 'deleted', tone: 'danger', letter: 'D' },
+  renamed: { label: 'renamed', tone: 'warn', letter: 'R' },
 };
+
+export interface ChangedListProps {
+  files: FileChange[];
+  stats: Stats;
+  base: string;
+  bases: { value: string; label: string }[];
+  marks: Viewed;
+  /** The file the editor shows: its row is marked. */
+  active: string | null;
+  error: string;
+  onBase(value: string): void;
+  /** A click on the name: the file's diff, in the review. */
+  onFocus(path: string): void;
+  /** The open button: the file in the editor. */
+  onOpen(path: string): void;
+  onMark(path: string, mark: string, on: boolean): void;
+}
+
+/** The side panel's Changes view: the base, the totals, and one row per changed file (its viewed mark and its counts). */
+export function changedList(p: ChangedListProps): HTMLElement {
+  const viewed = p.files.filter((f) => isViewed(p.marks, f.path, diffMark(f))).length;
+  const picker = h(
+    'select.select.ide-chg-base',
+    { 'aria-label': 'Compare against' },
+    p.bases.map((b) => h('option', { value: b.value, selected: b.value === p.base }, b.label)),
+  );
+  picker.addEventListener('change', () => p.onBase(picker.value));
+  return h(
+    'div.ide-chg',
+    null,
+    h('div.ide-chg-head', null, picker, h('span.ide-totals', null, `${p.stats.files} files · +${p.stats.additions} −${p.stats.deletions}`), h('span.ide-totals', null, `${viewed} of ${p.files.length} viewed`)),
+    p.error ? h('p.ide-note.error', null, p.error) : null,
+    p.files.length === 0
+      ? empty('check', 'Nothing changed', 'No file differs from this base.')
+      : h('ul.ide-chg-list', { role: 'list' }, p.files.map((f) => changedRow(f, p))),
+  );
+}
+
+function changedRow(file: FileChange, p: ChangedListProps): HTMLElement {
+  const mark = diffMark(file);
+  const seen = isViewed(p.marks, file.path, mark);
+  const { add, del } = lineCounts(file);
+  const status = STATUS[file.status];
+  const name = file.old_path ? `${file.old_path} → ${file.path}` : file.path;
+  const check = h('input', { type: 'checkbox', checked: seen, 'aria-label': `Viewed: ${file.path}` });
+  check.addEventListener('change', () => p.onMark(file.path, mark, check.checked));
+  return h(
+    'li.ide-chg-row',
+    { class: [seen ? 'seen' : '', p.active === file.path ? 'on' : ''].filter(Boolean).join(' '), 'data-path': file.path },
+    h('span.ide-chg-status', { class: file.status, title: status.label }, status.letter),
+    h('button.ide-chg-name', { type: 'button', title: `${name}: the diff`, onclick: () => p.onFocus(file.path) }, name),
+    h('span.ide-counts', null, h('span.add', null, `+${add}`), h('span.del', null, `−${del}`)),
+    h('button.ide-chg-open', { type: 'button', title: 'Open in the editor', 'aria-label': `Open ${file.path} in the editor`, onclick: () => p.onOpen(file.path) }, icon('file')),
+    h('label.ide-chg-viewed', { title: 'Viewed' }, check),
+  );
+}
 
 const SIGN: Record<Line['kind'], string> = { context: ' ', add: '+', remove: '-', no_newline: '\\' };
 
@@ -67,7 +123,7 @@ function fileBlock(file: FileChange, p: ChangesProps): HTMLElement {
   if (file.binary) body.push(h('p.ide-note', null, 'Binary file: no text diff.'));
   else if (file.hunks.length === 0) body.push(h('p.ide-note', null, 'No text change.'));
   for (const hunk of file.hunks) body.push(hunkBlock(hunk));
-  return h('details.ide-file', { class: file.status, open: !seen }, summary, h('div.ide-file-body', null, body));
+  return h('details.ide-file', { class: file.status, open: !seen, 'data-path': file.path }, summary, h('div.ide-file-body', null, body));
 }
 
 function hunkBlock(hunk: Hunk): HTMLElement {

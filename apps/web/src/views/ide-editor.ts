@@ -108,6 +108,8 @@ export interface StateOpts {
   readOnly: boolean;
   /** Runs on each edit the user makes (not on a reload). */
   onEdit: () => void;
+  /** Runs when the cursor or selection moves, or the text changes (the status bar reads the position). */
+  onSelect: () => void;
 }
 
 /** The state for one file: its text, its language, and whether it may be edited. */
@@ -121,6 +123,7 @@ export function stateFor(path: string, text: string, opts: StateOpts): EditorSta
       EditorView.editable.of(!opts.readOnly),
       EditorView.updateListener.of((u) => {
         if (u.docChanged && !u.transactions.some((t) => t.annotation(external))) opts.onEdit();
+        if (u.selectionSet || u.docChanged) opts.onSelect();
       }),
     ],
   });

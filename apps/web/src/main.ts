@@ -1,6 +1,9 @@
 // The console: the shell (sidebar, top bar, banners) and the screen mount.
 
 import { api, ApiError } from './api';
+// The plaza control's styles load with the console (the IDE's held strip uses them too), so the CSS is imported here, not
+// in the module: a lazy screen that imports the module would otherwise split the styles into a stylesheet of its own.
+import './styles/plaza-control.css';
 import { heldBanner, plazaControl } from './ui/plaza-control';
 import './ui/theme';
 import './styles/tokens.css';
@@ -9,7 +12,7 @@ import './styles/views.css';
 import { applySidebar, sidebar, sidebarToggle } from './ui/sidebar';
 
 import { onRoute, type Route } from './router';
-import { openIde } from './ide/open';
+import { noteConsoleRoute, openIde } from './ide/open';
 import { agents, overview, startShared } from './store';
 import { button, dot, modal } from './ui/components';
 import { h, icon, replace } from './ui/dom';
@@ -97,7 +100,9 @@ function main(): void {
   const title = h('span.title');
   const content = h('main.view-host');
   const app = h('div.app', null, sidebar({ counts, navLinks }), h('div.main', null, topbar(title), heldBanner(), banner(), content));
-  document.body.replaceChildren(app);
+  // The IDE is a view of its own: its host is the whole window, and the console shell (.app) is hidden while it shows.
+  const ideHost = h('div.ide-root', { hidden: true });
+  document.body.replaceChildren(app, ideHost);
   applySidebar();
   // Ctrl+Shift+E (Cmd+Shift+E on a Mac) opens the IDE. Not while the owner types in a field or in the editor.
   document.addEventListener('keydown', (e) => {
@@ -123,15 +128,27 @@ function main(): void {
       if (key === screen.key) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
+    const ide = screen.key === 'ide';
+    if (!ide) noteConsoleRoute(location.hash);
+    app.hidden = ide;
+    ideHost.hidden = !ide;
     const key = `${screen.key}/${route.params.join('/')}`;
     if (key === mounted) return;
     mounted = key;
     cleanup?.();
     title.textContent = screen.label;
     document.title = `${screen.label} · AgentPlaza`;
-    const root = h('div.view');
-    content.replaceChildren(root);
-    cleanup = screen.mount(root, route.params);
+    if (ide) {
+      // The IDE mounts into the window itself, with no console content beside it.
+      content.replaceChildren();
+      ideHost.replaceChildren();
+      cleanup = screen.mount(ideHost, route.params);
+    } else {
+      ideHost.replaceChildren();
+      const root = h('div.view');
+      content.replaceChildren(root);
+      cleanup = screen.mount(root, route.params);
+    }
   });
   // The wizard and the tour: once, on the first start.
   runFirstStart();

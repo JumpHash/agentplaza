@@ -2,21 +2,19 @@
    remove --ok-ink and --crit, and the dark theme comes with the tokens. Square corners; code in --mono. This sheet is
    inserted on the first visit (views/ide.ts), so every rule is scoped under .ide or .ide-host. */
 
-.view.ide-host {
-  margin: 0;
-  padding: 0;
-  max-width: none;
-  border: 0;
-  background: var(--paper);
-  gap: 0;
-}
-
+/* The IDE is a full-window view: the root fills the window (ide-root in styles/sidebar.css) and the page does not scroll.
+   The columns are CSS variables that views/ide.ts sets: --ide-left and --ide-right are 0 when a panel is closed. */
 .ide {
+  --ide-rail: 44px;
+  --ide-left: 260px;
+  --ide-right: 380px;
   position: relative;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--topbar-h));
-  min-height: 480px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   color: var(--ink);
   background: var(--paper);
   font: 400 var(--fs-sm) / 1.45 var(--serif);
@@ -26,20 +24,86 @@
   display: none !important;
 }
 
-/* The top strip */
-.ide-top {
+.ide.dragging,
+.ide.dragging * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+/* The header: the mark, the workspace, the state, and the actions on the right; the held strip takes a row of its own */
+.ide-head {
+  flex: none;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--s3);
-  padding: var(--s2) var(--s4);
+  gap: var(--s2) var(--s3);
+  min-height: var(--topbar-h);
+  padding: var(--s2) var(--s3);
   border-bottom: 1px solid var(--rule);
   background: var(--paper);
 }
 
+.ide-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.ide-brand .brand-mark {
+  flex: none;
+  color: var(--ink);
+  overflow: visible;
+}
+
+.ide-brand-name {
+  font: 600 13px / 1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ide-ws {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ide-kind {
+  display: inline-flex;
+  color: var(--ink-3);
+}
+
+.ide-meta {
+  font: 400 var(--fs-xs) / 1.4 var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.ide-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* The panel toggles: lit while their panel shows; the right one is the left icon mirrored */
+.ide-head .btn[aria-pressed="true"] {
+  color: var(--signal-ink);
+  background: var(--hover);
+}
+
+.ide-flip svg {
+  transform: scaleX(-1);
+}
+
+.ide-head .held-banner {
+  flex: 1 0 100%;
+  margin: 0 calc(var(--s3) * -1) calc(var(--s2) * -1);
+}
+
 .ide-picker {
-  min-width: 260px;
-  max-width: 380px;
+  min-width: 200px;
+  max-width: 340px;
   font: 400 var(--fs-xs) / 1.4 var(--mono);
 }
 
@@ -51,29 +115,257 @@
   color: var(--ink-3);
 }
 
-/* Three columns: tree, editor, changes */
+/* The body: the activity rail, the side panel, the editor, the right panel */
 .ide-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 380px;
+  grid-template-columns: var(--ide-rail) var(--ide-left) minmax(0, 1fr) var(--ide-right);
   grid-template-rows: minmax(0, 1fr);
 }
 
-.ide-tree,
-.ide-side {
+/* The activity rail: the side panel's views, with a count on the changes and checkpoints */
+.ide-rail {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: var(--s2) 0;
+  border-right: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.ide-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.ide-rail-item:hover {
+  color: var(--ink);
+  background: var(--rule-faint);
+}
+
+.ide-rail-item.on {
+  color: var(--signal-ink);
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--signal);
+}
+
+.ide-rail-count {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 14px;
+  padding: 0 3px;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  font: 600 9px / 12px var(--mono);
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.ide-rail-count:empty {
+  display: none;
+}
+
+/* The side panel (left) and the right panel: a header, a body, and an edge that drags their width */
+.ide-left,
+.ide-right {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--sheet);
 }
 
-.ide-tree {
+.ide-left {
   border-right: 1px solid var(--rule);
 }
 
-.ide-side {
+.ide-right {
   border-left: 1px solid var(--rule);
+}
+
+.ide-left-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 34px;
+  padding: 0 var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.ide-left-title {
+  font: 600 11px / 1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.ide-left-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.ide-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 4;
+}
+
+.ide-edge::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+}
+
+.ide-left > .ide-edge {
+  right: 0;
+}
+
+.ide-left > .ide-edge::after {
+  right: 0;
+}
+
+.ide-right > .ide-edge {
+  left: 0;
+}
+
+.ide-right > .ide-edge::after {
+  left: 0;
+}
+
+.ide-edge:hover::after,
+.ide-edge.on::after {
+  background: var(--signal);
+}
+
+/* The status bar: the workspace, its base and the connection on the left; the cursor, language and unsaved on the right */
+.ide-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: 24px;
+  padding: 0 var(--s2);
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+  font: 400 11px / 1.4 var(--mono);
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.ide-status .spacer {
+  flex: 1;
+}
+
+.ide-st-group {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ide-st-ws,
+.ide-st-base {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ide-st-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+}
+
+.ide-st-help {
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ide-st-help:hover {
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+
+/* The keyboard help: a popover under the header, opened by ? or the status bar */
+.ide-help {
+  position: absolute;
+  top: 52px;
+  right: var(--s3);
+  z-index: 25;
+  width: min(360px, calc(100% - 24px));
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: var(--shadow);
+}
+
+.ide-help h2 {
+  margin: 0 0 var(--s2);
+  font: 600 11px / 1.3 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.ide-help dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font: 400 12px / 1.4 var(--mono);
+}
+
+.ide-help dt {
+  white-space: nowrap;
+}
+
+.ide-help dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-family: var(--serif);
+  font-size: var(--fs-sm);
+}
+
+.ide-help kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 11px var(--mono);
 }
 
 .ide-tree-tools {
@@ -553,39 +845,57 @@
   white-space: pre;
 }
 
-/* Narrower windows: the changes panel moves under the editor, then the tree goes above it */
-@media (max-width: 1100px) {
-  .ide-body {
-    grid-template-columns: 220px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(220px, 40%);
-  }
-
-  .ide-side {
-    grid-column: 1 / -1;
-    border-left: 0;
-    border-top: 1px solid var(--rule);
-  }
+/* Under 900px (the .narrow class, set by views/ide.ts): the side panel is a drawer over the editor, from the rail, and the
+   right panel is a sheet along the bottom. Neither takes a column, and their edges do not drag. */
+.ide.narrow .ide-body {
+  grid-template-columns: var(--ide-rail) minmax(0, 1fr);
 }
 
-@media (max-width: 680px) {
-  .ide-body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 180px minmax(260px, 1fr) minmax(260px, auto);
-  }
+.ide.narrow .ide-left {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--ide-rail);
+  z-index: 12;
+  width: min(86%, 340px);
+  box-shadow: var(--shadow);
+}
 
-  .ide-tree {
-    border-right: 0;
-    border-bottom: 1px solid var(--rule);
-  }
+.ide.narrow .ide-right {
+  position: absolute;
+  top: auto;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 12;
+  height: min(56%, 460px);
+  border-left: 0;
+  border-top: 1px solid var(--rule);
+  box-shadow: var(--shadow);
+}
 
-  .ide-top {
-    padding: var(--s2) var(--s3);
-  }
+.ide.narrow .ide-edge,
+.ide.narrow .ide-count,
+.ide.narrow .ide-st-ws,
+.ide.narrow .ide-st-base,
+.ide.narrow .ide-st-lang {
+  display: none;
+}
 
-  .ide-picker {
-    min-width: 0;
-    flex: 1 1 100%;
-  }
+.ide.narrow .ide-head .theme-switch .lbl {
+  display: none;
+}
+
+.ide.narrow .ide-picker {
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 160px;
+}
+
+.ide.narrow .ide-help {
+  right: var(--s2);
+  left: var(--s2);
+  width: auto;
 }
 
 /* The right panel's tabs: the strip scrolls when the panel is narrow */
@@ -822,4 +1132,157 @@
 
 .ide-term {
   padding: 12px;
+}
+
+/* The side panel's files tree: the tools over a scrolling list */
+.ide-tree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The side panel's Changes view: the base and totals, then one row per changed file */
+.ide-chg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+}
+
+.ide-chg-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s1);
+}
+
+.ide-chg-base {
+  max-width: 100%;
+  font: 400 var(--fs-xs) / 1.4 var(--mono);
+}
+
+.ide-chg-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ide-chg-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--rule-faint);
+  font: 400 12px / 1.6 var(--mono);
+  color: var(--ink-2);
+}
+
+.ide-chg-row:hover {
+  background: var(--hover);
+}
+
+.ide-chg-row.on {
+  background: var(--accent-bg);
+  box-shadow: inset 2px 0 0 var(--signal);
+  color: var(--ink);
+}
+
+.ide-chg-row.seen .ide-chg-name {
+  color: var(--ink-3);
+}
+
+.ide-chg-status {
+  font: 600 11px / 1 var(--mono);
+  text-align: center;
+  color: var(--ink-3);
+}
+
+.ide-chg-status.added {
+  color: var(--ok-ink);
+}
+
+.ide-chg-status.modified {
+  color: var(--info-ink);
+}
+
+.ide-chg-status.deleted {
+  color: var(--crit);
+}
+
+.ide-chg-status.renamed {
+  color: var(--warn-ink);
+}
+
+.ide-chg-name {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ide-chg-name:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.ide-chg-row .ide-counts {
+  font-size: 11px;
+}
+
+.ide-chg-open {
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.ide-chg-open:hover {
+  color: var(--ink);
+}
+
+.ide-chg-viewed {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+/* The side panel's Search view: the fields over the results */
+.ide-search {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-search-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.ide-search-fields .input {
+  width: 100%;
+  font: 400 12px / 1.4 var(--mono);
+}
+
+.ide-search .ide-note {
+  padding: var(--s2) var(--s2) 0;
+}
+
+.ide-search .ide-hits {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }

@@ -1,18 +1,21 @@
-// The IDE screen (route #/ide and #/ide/<workspace>): one workspace's files, an editor tab per open file, the changes
-// since a base, the checkpoints, and the quick-open and search overlays. This module owns the data; the editor, panels
-// and overlays are rendered by ide-editor, ide-side and ide-find. It loads on the first visit (views/index.ts), with
-// CodeMirror. openIde (ide/open.ts) is how other screens get here.
+// The IDE screen (route #/ide and #/ide/<workspace>): a full-window view of its own, with no console shell beside it. Its
+// header (the workspace, the state, the actions), an activity rail that picks the side panel (files, search, changes,
+// checkpoints), the editor tabs or the review in the centre, a right panel (agent, approvals, run, terminal) and a status
+// bar. This module owns the data; the chrome is ide-chrome, the editor ide-editor, the panels ide-side, ide-find and
+// ide-tabs. It loads on the first visit (views/index.ts), with CodeMirror. openIde (ide/open.ts) is how other screens get
+// here, and the Console button (and Escape) goes back to the screen it came from.
 
 import type { EditorState } from '@codemirror/state';
 import ideCss from '../styles/ide.css';
 import { ApiError, ideApi, type IdeChanges, type IdeCheckpoint, type IdeWorkspaceInfo } from '../api';
 import { go } from '../router';
-import { takeOpenedFromApp } from '../ide/open';
+import { consoleOrigin } from '../ide/open';
 import {
   applyBuffer,
   badgeOf,
   type Buffer,
   dirsOf,
+  languageFor,
   lineCounts,
   LAST_WORKSPACE_KEY,
   onRemote,
@@ -23,25 +26,26 @@ import {
   withViewed,
   type Viewed,
 } from '../ide/model';
+import { fitSize, LEFT_SIZE, leftViewFor, type LeftView, NARROW_QUERY, parseLayout, rightTabFor, RIGHT_SIZE, RAIL_WIDTH, type RightTab, serializeLayout, type Layout } from '../ide/layout';
 import { loadIde, type Ide } from '../ide/wasm';
 import type { Base, Entry, FileChange, IdeState, Panel, Stats } from '../ide/types';
-import { agents, on } from '../store';
+import { agents, on, onConnection } from '../store';
+import { brandMark } from '../ui/brand';
 import { badge, button, empty, modal, tabs, toast, type Tone } from '../ui/components';
-import { h, replace } from '../ui/dom';
+import { h, icon, replace } from '../ui/dom';
+import { heldBanner, onPlazaHeld } from '../ui/plaza-control';
+import { themeSwitch } from '../ui/theme';
 import type { Cleanup } from './index';
 import { Editor, stateFor } from './ide-editor';
-import { quickOpen, searchPanel } from './ide-find';
-import { changesPanel, checkpointsPanel } from './ide-side';
+import { quickOpen, searchView } from './ide-find';
+import { activityRail, keyboardHelp, LANG_LABEL, panelEdge, statusBar, type StatusInfo } from './ide-chrome';
+import { changedList, changesPanel, checkpointsPanel } from './ide-side';
 import { agentPanel, approvalsPanel, runPanel, terminalPanel, type Panel as TabPanel } from './ide-tabs';
 
 const STYLE_ID = 'apz-ide-style';
 const REFRESH_MS = 400;
-
-/** The right-hand tabs. Checkpoints is the screen's own; the others are the reducer's panels (`Panel`). */
-type SideTab = 'changes' | 'checkpoints' | 'agent' | 'approvals' | 'run' | 'terminal';
-const SIDE_TABS: readonly SideTab[] = ['changes', 'checkpoints', 'agent', 'approvals', 'run', 'terminal'];
-/** The tabs the reducer keeps as its active panel (`set_panel`). */
-const REDUCER_PANELS = new Set<string>(['changes', 'agent', 'approvals', 'run', 'terminal']);
+/** The panel sizes and open flags, kept per browser. */
+const LAYOUT_KEY = 'apz.ide.layout';
 
 /** One open file: its buffer, and its editor state while another tab is shown (the shown tab's state is the view's). */
 interface Tab {
@@ -51,7 +55,7 @@ interface Tab {
   version: number;
 }
 
-const TONE: Record<string, Tone> = { conflict: 'danger', 'agent working': 'info', saved: 'ok', idle: 'muted' };
+const TONE: Record<string, Tone> = { conflict: 'danger', 'agent working': 'info', saved: 'ok', idle: 'muted', held: 'danger' };
 
 /** The stylesheet, inserted once on the first visit (build.mjs makes it text). */
 function ensureStyle(): void {
@@ -90,6 +94,9 @@ function toBase(v: string): Base {
   return v.startsWith('checkpoint:') ? { checkpoint: Number(v.slice('checkpoint:'.length)) } : 'work_start';
 }
 
+/** A repository workspace's branch (the ref after the @), else ''. */
+const refOf = (w: IdeWorkspaceInfo): string => (w.kind === 'repo' ? w.id.slice(w.id.lastIndexOf('@') + 1) : '');
+
 function totalsOf(files: FileChange[]): Stats {
   let additions = 0;
   let deletions = 0;
@@ -101,11 +108,16 @@ function totalsOf(files: FileChange[]): Stats {
   return { files: files.length, additions, deletions };
 }
 
+/** Whether a key press is typed into a field or the editor (so a shortcut that is a letter or a `?` does not fire). */
+const inTyping = (target: EventTarget | null): boolean =>
+  !!(target as Element | null)?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), .cm-editor');
+
+/** Whether the key press is in a form field (Escape there is the field's, not the screen's). */
+const inField = (target: EventTarget | null): boolean => !!(target as Element | null)?.closest?.('input, textarea, select');
+
 export function mount(root: HTMLElement, params: string[]): Cleanup {
   ensureStyle();
   root.classList.add('ide-host');
-  // Read once, at mount: Escape goes back only to where openIde was called from.
-  const fromApp = takeOpenedFromApp();
   const query = new URLSearchParams(location.hash.split('?')[1] ?? '');
   const requested = params[0] ?? null;
   const startFile = query.get('file');
@@ -122,9 +134,18 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let stats: Stats = { files: 0, additions: 0, deletions: 0 };
   let checkpoints: IdeCheckpoint[] = [];
   let marks: Viewed = {};
-  let side: SideTab = SIDE_TABS.find((t) => t === startPanel) ?? 'changes';
+  /** The side panel's view, and the right panel's tab. A link's `panel` picks one of them and opens its panel. */
+  let leftView: LeftView = leftViewFor(startPanel) ?? 'files';
+  let rightTab: RightTab = rightTabFor(startPanel) ?? 'agent';
+  const narrowMq = matchMedia(NARROW_QUERY);
+  let narrow = narrowMq.matches;
+  let layout: Layout = parseLayout(readStore(LAYOUT_KEY), window.innerWidth);
+  if (leftViewFor(startPanel)) layout.leftOpen = true;
+  if (rightTabFor(startPanel)) layout.rightOpen = true;
   /** Review mode from openIde: applied once, to the first workspace this screen opens. */
   let reviewPending = query.get('review') === '1';
+  /** The file whose diff the review scrolls to, once it is drawn. */
+  let focusPath: string | null = null;
   /** The Agent, Approvals and Run tabs' controllers, per workspace: a tab switch keeps a draft or a running command. */
   let panels: { agent: TabPanel | null; approvals: TabPanel | null; run: TabPanel | null } = { agent: null, approvals: null, run: null };
   let approvalCount = 0;
@@ -132,9 +153,13 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let saved = false;
   let agentWorking = false;
   let wasWorking = false;
+  let held = false;
+  let connected = true;
   let overlay: (() => void) | null = null;
   /** The file the editor shows (the reducer's `active` is the tab; this is what the view holds). */
   let shown: string | null = null;
+  /** The search view of the side panel, per workspace: its results stay while the panel shows another view. */
+  let search: { wsId: string; ui: { el: HTMLElement; focus: () => void } } | null = null;
   const entries = new Map<string, Entry>();
   const loadedDirs = new Set<string>();
   const expanded = new Set<string>();
@@ -146,11 +171,46 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   // ---- The shell ------------------------------------------------------------
   const picker = h('select.select.ide-picker', { 'aria-label': 'Workspace' });
   picker.addEventListener('change', () => go('ide', picker.value));
+  const kindHost = h('span.ide-kind');
+  const metaHost = h('span.ide-meta');
   const countEl = h('span.ide-count');
   const badgeHost = h('span.ide-badge-host');
   const saveBtn = button('Save', () => void save(), { kind: 'primary', size: 'sm', title: 'Save (Ctrl+S)' });
   const reviewBtn = button('Review', () => toggleReview(), { size: 'sm', title: 'Show the diff in the centre instead of the editor' });
-  const top = h('div.ide-top', null, picker, countEl, badgeHost, h('span.spacer'), reviewBtn, saveBtn);
+  const consoleBtn = button('Console', () => leaveIde(), { kind: 'ghost', size: 'sm', icon: 'overview', title: 'Back to the screen you opened the IDE from (Esc)' });
+  const leftToggle = button('', () => toggleLeft(), { kind: 'ghost', size: 'sm', icon: 'panel-left', title: 'Show or hide the side panel (Ctrl/Cmd+Alt+B)' });
+  const rightToggle = button('', () => toggleRight(), { kind: 'ghost', size: 'sm', icon: 'panel-left', title: 'Show or hide the right panel (Ctrl/Cmd+Alt+J)' });
+  rightToggle.classList.add('ide-flip');
+  const help = keyboardHelp();
+  const head = h(
+    'header.ide-head',
+    { 'aria-label': 'IDE header' },
+    h('div.ide-brand', null, brandMark(20), h('span.ide-brand-name', null, 'IDE')),
+    leftToggle,
+    h('div.ide-ws', null, kindHost, picker, metaHost),
+    countEl,
+    badgeHost,
+    h('span.spacer'),
+    h('div.ide-actions', null, reviewBtn, saveBtn),
+    // Repository actions (Commit, Open PR) go in this slot when repository workspaces get them.
+    h('span.ide-repo-actions'),
+    rightToggle,
+    themeSwitch(),
+    consoleBtn,
+    // The plaza's held state: the strip shows only while STOP ALL holds the plaza.
+    heldBanner(),
+  );
+
+  const rail = activityRail((key) => pickLeft(key));
+  const leftTitle = h('span.ide-left-title');
+  const leftBody = h('div.ide-left-body');
+  const leftHead = h(
+    'div.ide-left-head',
+    null,
+    leftTitle,
+    h('span.spacer'),
+    button('', () => setLeft(false), { icon: 'x', size: 'sm', title: 'Hide the side panel (Ctrl/Cmd+Alt+B)' }),
+  );
 
   const changedBox = h('input', { type: 'checkbox' });
   const changedToggle = h('label.ide-toggle', null, changedBox, h('span', null, 'Changed only'));
@@ -161,11 +221,25 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     renderAll();
   });
   const treeList = h('div.ide-tree-list', { role: 'tree' });
-  const tree = h(
-    'aside.ide-tree',
-    { 'aria-label': 'Files' },
-    h('div.ide-tree-tools', null, changedToggle, button('', () => openQuick(), { icon: 'search', title: 'Quick open (Ctrl+P)', size: 'sm' })),
-    treeList,
+  const filesView = h('div.ide-tree', null, h('div.ide-tree-tools', null, changedToggle, button('', () => openQuick(), { icon: 'search', title: 'Quick open (Ctrl/Cmd+P)', size: 'sm' })), treeList);
+  const leftPanel = h(
+    'aside.ide-left',
+    { 'aria-label': 'Side panel' },
+    leftHead,
+    leftBody,
+    panelEdge(
+      'left',
+      (x) => {
+        layout.left = fitSize(x - body.getBoundingClientRect().left - RAIL_WIDTH, 'left', window.innerWidth, layout.rightOpen ? layout.right : 0);
+        applyLayout();
+      },
+      saveLayout,
+      () => {
+        layout.left = LEFT_SIZE.def;
+        applyLayout();
+        saveLayout();
+      },
+    ),
   );
 
   const tabBar = h('div.ide-tabbar', { role: 'tablist' });
@@ -177,13 +251,99 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const centre = h('section.ide-centre', { 'aria-label': 'Editor' }, tabBar, banners, cmHost, emptyHost, reviewHost);
   const editor = new Editor(cmHost);
 
-  const sideTabs = h('div.ide-side-tabs');
-  const sideBody = h('div.ide-side-body');
-  const side$ = h('aside.ide-side', { 'aria-label': 'Changes and checkpoints' }, sideTabs, sideBody);
+  const rightTabs = h('div.ide-side-tabs');
+  const rightBody = h('div.ide-side-body');
+  const rightPanel = h(
+    'aside.ide-right',
+    { 'aria-label': 'Agent, approvals, run and terminal' },
+    rightTabs,
+    rightBody,
+    panelEdge(
+      'right',
+      (x) => {
+        layout.right = fitSize(body.getBoundingClientRect().right - x, 'right', window.innerWidth, layout.leftOpen ? layout.left : 0);
+        applyLayout();
+      },
+      saveLayout,
+      () => {
+        layout.right = RIGHT_SIZE.def;
+        applyLayout();
+        saveLayout();
+      },
+    ),
+  );
 
-  const body = h('div.ide-body', null, tree, centre, side$);
-  const screen = h('div.ide', null, top, body);
+  const status = statusBar(() => help.set(!help.isOpen()));
+  const body = h('div.ide-body', null, rail.el, leftPanel, centre, rightPanel);
+  const screen = h('div.ide', null, head, body, status.el, help.el);
   root.replaceChildren(screen);
+  applyLayout();
+
+  // ---- Layout ---------------------------------------------------------------
+  /** Puts the sizes and open flags on the screen: the columns are CSS variables, and a closed panel is hidden. */
+  function applyLayout(): void {
+    const width = window.innerWidth;
+    const leftPx = fitSize(layout.left, 'left', width, layout.rightOpen && !narrow ? layout.right : 0);
+    const rightPx = fitSize(layout.right, 'right', width, layout.leftOpen && !narrow ? leftPx : 0);
+    screen.style.setProperty('--ide-left', layout.leftOpen && !narrow ? `${leftPx}px` : '0px');
+    screen.style.setProperty('--ide-right', layout.rightOpen && !narrow ? `${rightPx}px` : '0px');
+    screen.classList.toggle('narrow', narrow);
+    leftPanel.hidden = !layout.leftOpen;
+    rightPanel.hidden = !layout.rightOpen;
+    leftToggle.setAttribute('aria-pressed', String(layout.leftOpen));
+    rightToggle.setAttribute('aria-pressed', String(layout.rightOpen));
+    rail.paint({ active: layout.leftOpen ? leftView : null, counts: { changes: files.length, checkpoints: checkpoints.length } });
+  }
+
+  function saveLayout(): void {
+    writeStore(LAYOUT_KEY, serializeLayout(layout));
+  }
+
+  function setLeft(open: boolean): void {
+    layout.leftOpen = open;
+    saveLayout();
+    renderAll();
+  }
+
+  function toggleLeft(): void {
+    setLeft(!layout.leftOpen);
+  }
+
+  function toggleRight(): void {
+    layout.rightOpen = !layout.rightOpen;
+    saveLayout();
+    renderAll();
+  }
+
+  /** Narrow screens: the drawer closes once the owner has picked something in it. */
+  function closeDrawerIfNarrow(): void {
+    if (narrow) layout.leftOpen = false;
+  }
+
+  /** The rail's click: the open view's item closes the panel; any other shows its view. */
+  function pickLeft(key: LeftView): void {
+    if (layout.leftOpen && leftView === key) {
+      setLeft(false);
+      return;
+    }
+    showLeft(key);
+  }
+
+  function showLeft(key: LeftView): void {
+    leftView = key;
+    layout.leftOpen = true;
+    if (key === 'changes' && ide && state) state = ide.reduce(state, { set_panel: 'changes' });
+    saveLayout();
+    renderAll();
+    if (key === 'search') searchUi()?.focus();
+  }
+
+  narrowMq.addEventListener('change', onNarrow);
+  window.addEventListener('resize', applyLayout);
+  function onNarrow(): void {
+    narrow = narrowMq.matches;
+    applyLayout();
+  }
 
   // ---- Data -----------------------------------------------------------------
   /** Fetches every page of one directory and replaces what was loaded for it. */
@@ -263,6 +423,23 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     return b !== undefined && typeof b === 'object' && 'checkpoint' in b ? `checkpoint:${b.checkpoint}` : 'work_start';
   }
 
+  function basesOf(): { value: string; label: string }[] {
+    return [{ value: 'work_start', label: 'Since work started' }, ...checkpoints.map((cp) => ({ value: `checkpoint:${cp.n}`, label: `#${cp.n} ${cp.label || 'checkpoint'}` }))];
+  }
+
+  function setBase(value: string): void {
+    if (!ide || !state) return;
+    state = ide.reduce(state, { set_base: toBase(value) });
+    void refreshChanges().then(() => alive && renderAll());
+  }
+
+  function markViewed(path: string, mark: string, on: boolean): void {
+    if (!ws) return;
+    marks = withViewed(marks, path, mark, on);
+    writeStore(viewedKey(ws.id), JSON.stringify(marks));
+    renderAll();
+  }
+
   // ---- Workspaces -----------------------------------------------------------
   async function selectWorkspace(info: IdeWorkspaceInfo): Promise<void> {
     if (!ide) return;
@@ -287,13 +464,13 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       toast(message(err), 'error');
       state = ide.initialState();
     }
-    // The agent tabs exist for agent workspaces only; a repo keeps the Changes tab.
-    if ((side === 'agent' || side === 'approvals') && cidOf(info.id) === null) side = 'changes';
+    // The agent tabs exist for agent workspaces only; a repo keeps the Run tab.
+    if ((rightTab === 'agent' || rightTab === 'approvals') && cidOf(info.id) === null) rightTab = 'run';
     if (reviewPending) {
       reviewPending = false;
       state = ide.reduce(state, 'toggle_review');
     }
-    setSide(side);
+    setRight(rightTab);
     if (cidOf(info.id) !== null) void panelFor('approvals');
     renderAll();
     try {
@@ -323,7 +500,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         const f = await ideApi.file(id, path);
         if (!alive || ws?.id !== id) return;
         const t: Tab = { buf: openBuffer(path, f.hash), state: null, version: 0 };
-        t.state = stateFor(path, f.text, { readOnly: !ws.writable, onEdit: () => onEdit(path) });
+        t.state = stateFor(path, f.text, editorOpts(path, !ws.writable));
         tabsByPath.set(path, t);
       } catch (err) {
         toast(message(err), 'error');
@@ -335,6 +512,11 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     showTab();
     if (line !== undefined) editor.reveal(line);
     renderAll();
+  }
+
+  /** The editor options of one file: read-only when the workspace is, and the edit and cursor callbacks. */
+  function editorOpts(path: string, readOnly: boolean) {
+    return { readOnly, onEdit: () => onEdit(path), onSelect: () => renderStatus() };
   }
 
   /** Makes the editor show the reducer's active tab, keeping the state of the tab it leaves. */
@@ -395,6 +577,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     saved = false;
     renderTabs();
     renderTop();
+    renderStatus();
   }
 
   // ---- Save and conflicts ---------------------------------------------------
@@ -447,7 +630,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       if (!alive || ws?.id !== id || !cur) return;
       cur.buf = applyBuffer(cur.buf, { kind: 'reload', hash: f.hash });
       if (shown === path) editor.setText(f.text);
-      else cur.state = stateFor(path, f.text, { readOnly: !ws.writable, onEdit: () => onEdit(path) });
+      else cur.state = stateFor(path, f.text, editorOpts(path, !ws.writable));
     } catch (err) {
       toast(message(err), 'error');
     }
@@ -507,29 +690,55 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     agentWorking = working;
     if (alive && ws) renderTop();
   });
+  // The plaza's held state and the live connection: the header's badge, the status bar.
+  const unheld = onPlazaHeld((v) => {
+    held = v;
+    if (alive) renderTop();
+  });
+  const unconnect = onConnection((up) => {
+    connected = up;
+    if (alive) renderStatus();
+  });
 
-  // ---- Keys -----------------------------------------------------------------
+  // ---- Keys and overlays ----------------------------------------------------
   function openQuick(): void {
     if (!ws) return;
     closeOverlay();
     overlay = quickOpen(
       screen,
       () => [...entries.values()].filter((e) => e.kind === 'file').map((e) => e.path),
-      (path) => void openTab(path),
+      (path) => {
+        closeDrawerIfNarrow();
+        void openTab(path);
+      },
       () => (overlay = null),
     );
   }
 
+  /** Ctrl/Cmd+Shift+F: the Search view, with the cursor in its field. */
   function openSearch(): void {
     if (!ws) return;
-    const id = ws.id;
     closeOverlay();
-    overlay = searchPanel(
-      screen,
-      (q, glob) => ideApi.search(id, q, glob || undefined),
-      (path, line) => void openTab(path, line),
-      () => (overlay = null),
-    );
+    showLeft('search');
+  }
+
+  /** The Search view for the open workspace (made once per workspace, so its results stay). */
+  function searchUi(): { el: HTMLElement; focus: () => void } | null {
+    if (!ws) return null;
+    if (!search || search.wsId !== ws.id) {
+      const id = ws.id;
+      search = {
+        wsId: id,
+        ui: searchView(
+          (q, glob) => ideApi.search(id, q, glob || undefined),
+          (path, line) => {
+            closeDrawerIfNarrow();
+            void openTab(path, line);
+          },
+        ),
+      };
+    }
+    return search.ui;
   }
 
   function closeOverlay(): void {
@@ -538,10 +747,22 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     close?.();
   }
 
+  /** Console: back to the screen the IDE was opened from. */
+  function leaveIde(): void {
+    closeOverlay();
+    location.hash = consoleOrigin();
+  }
+
   const onKey = (e: KeyboardEvent) => {
     if (!alive) return;
     const mod = e.metaKey || e.ctrlKey;
-    if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+    if (mod && e.altKey && !e.shiftKey && e.code === 'KeyB') {
+      e.preventDefault();
+      toggleLeft();
+    } else if (mod && e.altKey && !e.shiftKey && e.code === 'KeyJ') {
+      e.preventDefault();
+      toggleRight();
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       void save();
     } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
@@ -550,13 +771,19 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     } else if (mod && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'f') {
       e.preventDefault();
       openSearch();
-    } else if (e.key === 'Escape' && !e.defaultPrevented && fromApp && overlay === null && !document.querySelector('.modal-backdrop')) {
-      history.back();
+    } else if (e.key === '?' && !mod && !e.altKey && !inTyping(e.target)) {
+      e.preventDefault();
+      help.set(!help.isOpen());
+    } else if (e.key === 'Escape' && !e.defaultPrevented && overlay === null && !document.querySelector('.modal-backdrop') && !inField(e.target)) {
+      // A field's Escape (the editor's search, a note) is the field's. Otherwise: the help, then a narrow drawer, then the console.
+      if (help.isOpen()) help.set(false);
+      else if (narrow && layout.leftOpen) setLeft(false);
+      else leaveIde();
     }
   };
   document.addEventListener('keydown', onKey);
 
-  // ---- Side tabs and review -------------------------------------------------
+  // ---- Right panel and review -----------------------------------------------
   function resetPanels(): void {
     panels.agent?.dispose();
     panels.approvals?.dispose();
@@ -584,7 +811,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         cid,
         onCount: (n) => {
           approvalCount = n;
-          renderSideTabs();
+          renderRightTabs();
         },
         onDecided: () => scheduleRefresh(),
       });
@@ -592,12 +819,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     return panels.approvals;
   }
 
-  /** Shows a right-hand tab, and tells the reducer which panel it is (for the reducer's tabs). */
-  function setSide(next: SideTab): void {
-    side = next;
-    if (ide && state && REDUCER_PANELS.has(next)) state = ide.reduce(state, { set_panel: next as Panel });
-    if (next === 'agent' || next === 'approvals' || next === 'run') panelFor(next)?.show?.();
-    renderSide();
+  /** Shows a right-hand tab, and tells the reducer which panel it is. */
+  function setRight(next: RightTab): void {
+    rightTab = next;
+    if (ide && state) state = ide.reduce(state, { set_panel: next as Panel });
+    if (next !== 'terminal') panelFor(next)?.show?.();
+    renderRight();
   }
 
   function toggleReview(): void {
@@ -606,22 +833,24 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     renderAll();
   }
 
-  function renderSideTabs(): void {
-    const agentWs = ws !== null && cidOf(ws.id) !== null;
-    const items: { key: string; label: string }[] = [
-      { key: 'changes', label: `Changes${files.length ? ` (${files.length})` : ''}` },
-      { key: 'checkpoints', label: `Checkpoints${checkpoints.length ? ` (${checkpoints.length})` : ''}` },
-    ];
-    if (agentWs) {
-      items.push({ key: 'agent', label: 'Agent' }, { key: 'approvals', label: `Approvals${approvalCount ? ` (${approvalCount})` : ''}` });
-    }
-    items.push({ key: 'run', label: 'Run' }, { key: 'terminal', label: 'Terminal' });
-    replace(sideTabs, tabs(items, side, (k) => setSide(k as SideTab)));
+  /** From the changes list or the review: the editor shows the file, leaving review. */
+  function openFromChanges(path: string): void {
+    closeDrawerIfNarrow();
+    if (ide && state?.review) state = ide.reduce(state, 'toggle_review');
+    void openTab(path);
   }
 
-  /** The changes since the base, with the base picker and the viewed marks. The side tab and the review centre share it. */
-  function changesView(onOpen: (path: string) => void): HTMLElement {
-    const bases = [{ value: 'work_start', label: 'Since work started' }, ...checkpoints.map((cp) => ({ value: `checkpoint:${cp.n}`, label: `#${cp.n} ${cp.label || 'checkpoint'}` }))];
+  /** From the changes list: the review, scrolled to the file's diff. */
+  function focusChange(path: string): void {
+    if (!ide || !state) return;
+    if (!state.review) state = ide.reduce(state, 'toggle_review');
+    focusPath = path;
+    closeDrawerIfNarrow();
+    renderAll();
+  }
+
+  /** The review in the centre: the changes since the base, with the base picker and the viewed marks. */
+  function reviewView(): HTMLElement {
     return h(
       'div.ide-review-body',
       null,
@@ -630,22 +859,30 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         files,
         stats,
         base: baseValue(),
-        bases,
+        bases: basesOf(),
         marks,
-        onBase: (value) => {
-          if (!ide || !state) return;
-          state = ide.reduce(state, { set_base: toBase(value) });
-          void refreshChanges().then(() => alive && renderAll());
-        },
-        onOpen,
-        onMark: (path, mark, on) => {
-          if (!ws) return;
-          marks = withViewed(marks, path, mark, on);
-          writeStore(viewedKey(ws.id), JSON.stringify(marks));
-          renderAll();
-        },
+        onBase: setBase,
+        onOpen: openFromChanges,
+        onMark: markViewed,
       }),
     );
+  }
+
+  /** The side panel's Changes view: the changed files, a click on one opens its diff in the review. */
+  function changedListView(): HTMLElement {
+    return changedList({
+      files,
+      stats,
+      base: baseValue(),
+      bases: basesOf(),
+      marks,
+      active: state?.active ?? null,
+      error: changesError,
+      onBase: setBase,
+      onFocus: focusChange,
+      onOpen: openFromChanges,
+      onMark: markViewed,
+    });
   }
 
   // ---- Rendering ------------------------------------------------------------
@@ -653,21 +890,27 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (!alive) return;
     renderPicker();
     renderTop();
-    renderTree();
+    renderLeft();
     renderTabs();
     renderBanners();
     renderCentre();
-    renderSide();
+    renderRight();
+    renderStatus();
+    applyLayout();
   }
 
   function renderPicker(): void {
     const opts = wsList.map((w) => h('option', { value: w.id, selected: w.id === ws?.id }, `${w.kind === 'agent' ? 'Agent' : 'Repo'} · ${w.name || w.owner}${w.writable ? '' : ' (read-only)'}`));
     replace(picker, ws ? [] : h('option', { value: '', selected: true }, 'Choose a workspace'), opts);
+    replace(kindHost, ws ? icon(ws.kind === 'agent' ? 'agents' : 'git') : null);
+    const ref = ws ? refOf(ws) : '';
+    const vs = state?.base !== undefined && typeof state.base === 'object' && 'checkpoint' in state.base ? `vs #${state.base.checkpoint}` : 'vs work start';
+    replace(metaHost, ws ? [ref ? `${ref} · ` : '', vs] : null);
   }
 
   function renderTop(): void {
     const conflict = [...tabsByPath.values()].some((t) => t.buf.conflict !== null);
-    const label = badgeOf({ conflict, agentWorking, saved });
+    const label: string = held ? 'held' : badgeOf({ conflict, agentWorking, saved });
     replace(badgeHost, badge(label, TONE[label] ?? 'muted'));
     countEl.textContent = changes ? `${files.length} changed` : '';
     const active = state?.active ?? null;
@@ -676,6 +919,23 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const reviewing = !!state?.review;
     reviewBtn.textContent = reviewing ? 'Editor' : 'Review';
     reviewBtn.setAttribute('aria-pressed', reviewing ? 'true' : 'false');
+  }
+
+  /** The side panel: the view's title, and its body. The files tree is kept; the other views are made from the data. */
+  function renderLeft(): void {
+    const titles: Record<LeftView, string> = { files: 'Files', search: 'Search', changes: 'Changes', checkpoints: 'Checkpoints' };
+    leftTitle.textContent = titles[leftView];
+    if (leftView === 'files') {
+      renderTree();
+      replace(leftBody, filesView);
+    } else if (leftView === 'search') {
+      const s = searchUi();
+      replace(leftBody, s ? s.el : empty('search', 'Choose a workspace', 'Search runs in a workspace.'));
+    } else if (leftView === 'changes') {
+      replace(leftBody, ws ? changedListView() : empty('git', 'Choose a workspace', 'The changes are per workspace.'));
+    } else {
+      replace(leftBody, checkpointsPanel({ checkpoints, canRestore: !!ws, onRestore: confirmRestore }));
+    }
   }
 
   function renderTree(): void {
@@ -725,7 +985,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
     row.addEventListener('click', () => {
       if (isDir) void toggleDir(e.path);
-      else void openTab(e.path);
+      else {
+        closeDrawerIfNarrow();
+        void openTab(e.path);
+      }
     });
     return row;
   }
@@ -796,39 +1059,69 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     emptyHost.hidden = review || has;
     reviewHost.hidden = !review;
     if (review) {
-      // Opening a file from the review leaves review: the editor is what the owner asked for.
-      replace(reviewHost, changesView((path) => {
-        if (ide && state?.review) state = ide.reduce(state, 'toggle_review');
-        void openTab(path);
-      }));
+      replace(reviewHost, reviewView());
+      // A file picked in the changes list: its diff is opened and brought into view.
+      if (focusPath !== null) {
+        const path = focusPath;
+        focusPath = null;
+        const block = [...reviewHost.querySelectorAll<HTMLElement>('[data-path]')].find((el) => el.dataset.path === path);
+        if (block instanceof HTMLDetailsElement) block.open = true;
+        block?.scrollIntoView({ block: 'start' });
+      }
       return;
     }
     if (!has) {
       replace(
         emptyHost,
         ws
-          ? empty('file', 'No file open', 'Pick a file in the tree, or press Ctrl+P to find one by name.')
+          ? empty('file', 'No file open', 'Pick a file in the tree, or press Ctrl/Cmd+P to find one by name.')
           : empty('file', 'Choose a workspace', 'Agent workspaces and project repositories are listed above.'),
       );
     }
   }
 
-  function renderSide(): void {
-    renderSideTabs();
-    if (side === 'checkpoints') {
-      replace(sideBody, checkpointsPanel({ checkpoints, canRestore: !!ws, onRestore: confirmRestore }));
+  function renderRightTabs(): void {
+    const agentWs = ws !== null && cidOf(ws.id) !== null;
+    const items: { key: string; label: string }[] = [];
+    if (agentWs) items.push({ key: 'agent', label: 'Agent' }, { key: 'approvals', label: `Approvals${approvalCount ? ` (${approvalCount})` : ''}` });
+    items.push({ key: 'run', label: 'Run' }, { key: 'terminal', label: 'Terminal' });
+    replace(rightTabs, tabs(items, rightTab, (k) => setRight(k as RightTab)));
+  }
+
+  function renderRight(): void {
+    renderRightTabs();
+    if (rightTab === 'terminal') {
+      replace(rightBody, terminal);
       return;
     }
-    if (side === 'changes') {
-      replace(sideBody, changesView((path) => void openTab(path)));
+    if (!ws) {
+      replace(rightBody, empty('agents', 'Choose a workspace', 'The agent, approvals and runs are per workspace.'));
       return;
     }
-    if (side === 'terminal') {
-      replace(sideBody, terminal);
-      return;
+    const p = panelFor(rightTab);
+    replace(rightBody, p ? p.el : empty('file', 'Not for this workspace', 'The Agent and Approvals tabs are for agent workspaces.'));
+  }
+
+  /** The status bar: the workspace and its base, the live connection, the cursor, the language and the unsaved count. */
+  function renderStatus(): void {
+    const active = state?.active ?? null;
+    let cursor: StatusInfo['cursor'] = null;
+    if (active !== null && !state?.review) {
+      const s = editor.current();
+      const at = s.selection.main.head;
+      const line = s.doc.lineAt(at);
+      cursor = { line: line.number, col: at - line.from + 1 };
     }
-    const p = panelFor(side);
-    replace(sideBody, p ? p.el : empty('file', 'Not for this workspace', 'The Agent and Approvals tabs are for agent workspaces.'));
+    const base = state?.base;
+    const vs = base !== undefined && typeof base === 'object' && 'checkpoint' in base ? `vs checkpoint #${base.checkpoint}` : 'vs work start';
+    status.paint({
+      workspace: ws?.id ?? '',
+      base: ws ? vs : '',
+      live: connected,
+      cursor,
+      lang: active !== null ? LANG_LABEL[languageFor(active)] : '',
+      dirty: [...tabsByPath.values()].filter((t) => t.buf.dirty).length,
+    });
   }
 
   function confirmRestore(cp: IdeCheckpoint): void {
@@ -864,7 +1157,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   // ---- Start ----------------------------------------------------------------
   function fatal(text: string): void {
-    replace(screen, empty('alert', 'The IDE is not available', text));
+    replace(body, empty('alert', 'The IDE is not available', text));
   }
 
   void (async () => {
@@ -893,8 +1186,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     alive = false;
     clearTimeout(refreshTimer);
     document.removeEventListener('keydown', onKey);
+    narrowMq.removeEventListener('change', onNarrow);
+    window.removeEventListener('resize', applyLayout);
     for (const u of unsub) u();
     unwatch();
+    unheld();
+    unconnect();
     resetPanels();
     closeOverlay();
     editor.destroy();

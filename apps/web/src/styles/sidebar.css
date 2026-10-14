@@ -8,6 +8,9 @@
   transition: grid-template-columns 150ms ease;
 }
 .app.sb-dragging { transition: none; }
+/* The IDE route: its own full-window host (ide-root) replaces the shell, which is hidden while it shows. */
+.app[hidden] { display: none; }
+.ide-root { height: 100vh; height: 100dvh; overflow: hidden; }
 
 .sidebar {
   position: sticky; top: 0; height: 100vh; min-width: 0; overflow-x: hidden; overflow-y: auto;

@@ -1,7 +1,6 @@
 // The top bar's master switch: STOP ALL (cancel every agent's running work and hold the plaza)
 // and RESUME, with the plaza's held state as a banner.
 
-import '../styles/plaza-control.css';
 import { api, type PlazaState } from '../api';
 import { on, onConnection } from '../store';
 import { ago, attempt, badge, button, field, input, modal } from './components';
@@ -26,15 +25,28 @@ function notify(): void {
   }
 }
 
+const heldListeners = new Set<(held: boolean) => void>();
+
 function setState(next: PlazaState | null): void {
   state = next;
   notify();
+  for (const fn of heldListeners) fn(next?.paused ?? false);
 }
 
 /** Whether the plaza is held (STOP ALL, not yet resumed). Starts the shared state's one poll on first use. */
 export function plazaPaused(): boolean {
   start();
   return state?.paused ?? false;
+}
+
+/** Calls `fn` with whether the plaza is held now and on each change (for a screen that is not the top bar). */
+export function onPlazaHeld(fn: (held: boolean) => void): () => void {
+  start();
+  heldListeners.add(fn);
+  fn(state?.paused ?? false);
+  return () => {
+    heldListeners.delete(fn);
+  };
 }
 
 function subscribe(el: HTMLElement, paint: () => void): HTMLElement {

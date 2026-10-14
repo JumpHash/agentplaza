@@ -1,6 +1,6 @@
-// The IDE's two overlays: quick open (a file by name, over the paths the tree has loaded) and search (the hub's bounded
-// text search). Each returns its close function; Escape closes an overlay and stops there, so it does not also leave the
-// IDE.
+// The IDE's file finders: quick open (a file by name, over the paths the tree has loaded, an overlay) and search (the
+// hub's bounded text search, the Search view of the side panel). Quick open returns its close function; Escape closes
+// it and stops there, so it does not also leave the IDE.
 
 import type { IdeMatch } from '../api';
 import { rankPaths } from '../ide/model';
@@ -75,19 +75,19 @@ export function quickOpen(host: HTMLElement, paths: () => string[], onPick: (pat
   return done;
 }
 
-/** Search: a text (and an optional glob). Enter runs it; a click on a match opens the file at that line. */
-export function searchPanel(
-  host: HTMLElement,
+/**
+ * Search, the side panel's Search view: a text (and an optional glob). Enter runs it; a click on a match opens the file
+ * at that line. `focus` puts the cursor in the text field.
+ */
+export function searchView(
   run: (q: string, glob: string) => Promise<{ matches: IdeMatch[]; truncated: boolean }>,
   onPick: (path: string, line: number) => void,
-  onClose: () => void,
-): () => void {
+): { el: HTMLElement; focus: () => void } {
   const q = h('input.input', { type: 'search', placeholder: 'Search the workspace', 'aria-label': 'Search text', autocomplete: 'off', spellcheck: false });
   const glob = h('input.input', { type: 'text', placeholder: 'Only files matching, e.g. src/**/*.ts', 'aria-label': 'File glob', autocomplete: 'off', spellcheck: false });
   const status = h('p.ide-note', { 'aria-live': 'polite' }, 'Enter to search.');
   const list = h('ul.ide-hits', { role: 'listbox' });
   let seq = 0;
-  let done: () => void = () => undefined;
   const go = async () => {
     const text = q.value.trim();
     if (text === '') return;
@@ -101,10 +101,7 @@ export function searchPanel(
       list.replaceChildren(
         ...r.matches.map((m) => {
           const li = h('li', { role: 'option' }, h('span.ide-hit-where', null, `${m.path}:${m.line}`), h('span.ide-hit-text', null, m.text));
-          li.addEventListener('click', () => {
-            done();
-            onPick(m.path, m.line);
-          });
+          li.addEventListener('click', () => onPick(m.path, m.line));
           return li;
         }),
       );
@@ -124,6 +121,6 @@ export function searchPanel(
       void go();
     }
   });
-  done = frame(host, 'Search', [q, glob, status, list], onClose);
-  return done;
+  const el = h('div.ide-search', null, h('div.ide-search-fields', null, q, glob), status, list);
+  return { el, focus: () => q.focus() };
 }
