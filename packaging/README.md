@@ -47,6 +47,12 @@ Windows x64 runs agents through the Windows Hypervisor Platform backend (the opt
 Hypervisor Platform" feature must be enabled; see `docs/windows-whp.md`). Windows arm64 runs the
 hub, the desktop app and the node link.
 
+The console includes the 3D engine: `console/apz_engine_web-<hash>_bg.wasm` (with `.br`/`.gz`
+siblings, served as `application/wasm`) and its glue and layout worker. CI builds it with
+`APZ_REQUIRE_ENGINE=1`, and `stage.sh` refuses a `dist` without the engine. To run it after
+install: start the hub (`systemctl --user start agentplaza-hub` on Linux, or `apid` anywhere) and
+open `http://127.0.0.1:7700`; the desktop app starts against that same local hub.
+
 ## Where things go
 
 | | Linux (deb/rpm/pacman) | macOS (`AgentPlaza.app`) | Windows (MSI) |

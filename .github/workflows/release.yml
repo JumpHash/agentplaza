@@ -81,7 +81,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: CI image
         run: .github/ci/image.sh
+      # The console is built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
       - run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run build && npm test'
+        env:
+          APZ_REQUIRE_ENGINE: "1"
 
   publish:
     needs: [version, linux, macos, windows, raspberry-pi, web]

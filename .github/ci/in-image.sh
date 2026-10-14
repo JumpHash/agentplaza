@@ -8,7 +8,7 @@
 # unless APZ_CI_TARGET=workspace: an unchanged crate is never compiled twice, and a release
 # rebuilds only what changed.
 #
-# Passed through when set: VERSION, APZ_TEST_DATABASE_URL, APZ_ALLOW_NO_GUEST, CROSS_COMPILE,
+# Passed through when set: VERSION, APZ_TEST_DATABASE_URL, APZ_ALLOW_NO_GUEST, APZ_REQUIRE_ENGINE, CROSS_COMPILE,
 # APZ_BUSYBOX, GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA. APZ_CI_NETWORK joins a docker network
 # (the tests' Postgres).
 set -eu
@@ -30,6 +30,6 @@ exec docker run --rm \
   -v "$cache/registry:/usr/local/cargo/registry" -v "$cache/git:/usr/local/cargo/git" \
   $target_args \
   -e CARGO_TERM_COLOR=always -e CARGO_INCREMENTAL=0 -e CARGO_NET_RETRY=10 \
-  -e VERSION -e APZ_TEST_DATABASE_URL -e APZ_ALLOW_NO_GUEST -e CROSS_COMPILE -e APZ_BUSYBOX \
+  -e VERSION -e APZ_TEST_DATABASE_URL -e APZ_ALLOW_NO_GUEST -e APZ_REQUIRE_ENGINE -e CROSS_COMPILE -e APZ_BUSYBOX \
   -e GH_TOKEN -e GITHUB_REPOSITORY -e GITHUB_SHA ${GITHUB_REPOSITORY:+-e GH_REPO=$GITHUB_REPOSITORY} \
   "$CI_IMAGE" bash -euo pipefail -c "$*"

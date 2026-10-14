@@ -71,6 +71,10 @@ if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
 } else {
   console.log('engine: crates/apz-engine-web is not there yet, skipped');
 }
+// CI sets APZ_REQUIRE_ENGINE=1: a console without the engine ships with no 3D, so that build must fail.
+if (process.env.APZ_REQUIRE_ENGINE === '1' && !(engineJsName && engineWasmName && layoutWorkerName)) {
+  throw new Error('build: APZ_REQUIRE_ENGINE=1 but the wasm engine is not in dist (crates/apz-engine-web missing or not built)');
+}
 
 const result = await esbuild.build({
   // Output paths in the metafile are relative to this, so the build works from any working directory.

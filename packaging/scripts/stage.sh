@@ -43,6 +43,12 @@ for arch in x86_64 aarch64; do
   cp "$relay" "$stage/bin/mcp_relay-$arch"
 done
 
+# The console ships with its wasm engine (apps/web/build.mjs): a dist without it has no 3D, so refuse to stage it.
+for pat in 'apz_engine_web-*_bg.wasm' 'apz_engine_web-*.js' 'layout-worker-*.js'; do
+  compgen -G "$root/apps/web/dist/$pat" >/dev/null \
+    || { echo "stage.sh: apps/web/dist has no $pat: rebuild the console with the engine (apps/web/build.mjs)" >&2; exit 1; }
+done
+
 share="$stage/share/agentplaza"
 cp -R "$root/apps/web/dist" "$share/console"
 mkdir -p "$share/roles" "$share/prompts" "$share/icons"
