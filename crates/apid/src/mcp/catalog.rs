@@ -228,17 +228,11 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_valid_and_unique() {
+    fn presets_have_valid_unique_ids_known_fields_and_docs() {
         let mut seen = HashSet::new();
         for p in PRESETS {
             assert!(valid_id(p.id), "bad id {}", p.id);
             assert!(seen.insert(p.id), "duplicate id {}", p.id);
-        }
-    }
-
-    #[test]
-    fn statuses_and_transports_are_known() {
-        for p in PRESETS {
             assert!(
                 p.status == "verified" || p.status == "custom image needed",
                 "{}",
@@ -255,28 +249,25 @@ mod tests {
     }
 
     #[test]
-    fn stdio_presets_have_an_image_or_need_one() {
-        for p in PRESETS.iter().filter(|p| p.transport == "stdio") {
-            assert!(
-                p.image.is_some() || p.status == "custom image needed",
-                "{}",
-                p.id
-            );
-            if p.status == "verified" {
-                assert!(p.image.is_some(), "{} verified without image", p.id);
+    fn transport_fields_match_the_transport() {
+        for p in PRESETS {
+            if p.transport == "stdio" {
+                assert!(
+                    p.image.is_some() || p.status == "custom image needed",
+                    "{}",
+                    p.id
+                );
+                if p.status == "verified" {
+                    assert!(p.image.is_some(), "{} verified without image", p.id);
+                }
+                assert!(p.url.is_none(), "{} stdio with url", p.id);
+                assert!(p.headers.is_empty(), "{} stdio with headers", p.id);
+            } else {
+                let url = p.url.unwrap_or_else(|| panic!("{} http without url", p.id));
+                assert!(url.starts_with("https://"), "{} url {}", p.id, url);
+                assert!(p.image.is_none(), "{} http with image", p.id);
+                assert!(p.env.is_empty(), "{} http with env", p.id);
             }
-            assert!(p.url.is_none(), "{} stdio with url", p.id);
-            assert!(p.headers.is_empty(), "{} stdio with headers", p.id);
-        }
-    }
-
-    #[test]
-    fn http_presets_have_an_https_url() {
-        for p in PRESETS.iter().filter(|p| p.transport == "http") {
-            let url = p.url.unwrap_or_else(|| panic!("{} http without url", p.id));
-            assert!(url.starts_with("https://"), "{} url {}", p.id, url);
-            assert!(p.image.is_none(), "{} http with image", p.id);
-            assert!(p.env.is_empty(), "{} http with env", p.id);
         }
     }
 

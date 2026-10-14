@@ -373,10 +373,14 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_is_on_apz_mcp_at_its_fixed_address_and_on_the_uplink_for_the_host() {
+    fn the_relay_sits_at_its_fixed_address_listens_there_and_joins_the_uplink() {
         let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
         let at = args.iter().position(|a| a == "--ip").unwrap();
         assert_eq!(args[at + 1], "172.29.250.2");
+        assert!(
+            args.join(" ")
+                .contains("APZ_RELAY_LISTEN=172.29.250.2:3128")
+        );
         assert_eq!(
             connect_args().join(" "),
             "network connect apz-mcp-uplink apz-mcp-relay"
@@ -421,12 +425,6 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("secret") || a.contains("token="))
         );
-    }
-
-    #[test]
-    fn the_relay_listens_on_its_lan_address() {
-        let joined = create_args(Path::new("/state/mcp/mcp_relay"), 19128).join(" ");
-        assert!(joined.contains("APZ_RELAY_LISTEN=172.29.250.2:3128"));
     }
 
     #[test]

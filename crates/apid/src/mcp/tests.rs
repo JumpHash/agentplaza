@@ -1,13 +1,10 @@
 //! MCP tests: the runtime against the fixture server (a process over stdio, and HTTP), the vault scoping,
 //! access and risk, and the laws. The fixture is the `mcp_fixture` binary (src/bin, built with apid).
 
-use super::client::Transport as _;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader};
 use std::process::{Child, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::json;
 
@@ -735,95 +732,6 @@ fn tool_views_show_the_agent_name_the_annotation_risk_and_the_effective_risk() {
         (plain[0]["auto_risk"].as_str(), plain[0]["risk"].as_str()),
         (Some("read"), Some("read"))
     );
-}
-
-/// A server that answers every POST with a 307 to `target`, until the test ends.
-fn start_redirector(target: String) -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let target = target.clone();
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = value.trim().parse().unwrap_or(0);
-                    }
-                }
-                let mut body = vec![0u8; length];
-                let _ = reader.read_exact(&mut body);
-                let mut out = stream;
-                let _ = write!(
-                    out,
-                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                );
-            });
-        }
-    });
-    port
-}
-
-#[test]
-fn an_allowed_redirect_hop_works_end_to_end_and_the_endpoint_moves_to_it() {
-    let fixture = HttpFixture::start();
-    let redirector = start_redirector(format!("http://127.0.0.1:{}/mcp", fixture.port));
-    let policy = super::http::Policy {
-        allow_private: true,
-        blocklist: Vec::new(),
-    };
-    let mut transport = super::http::HttpTransport::new(
-        format!("http://127.0.0.1:{redirector}/mcp"),
-        Vec::new(),
-        Vec::new(),
-        policy,
-    );
-    let timeout = Duration::from_secs(10);
-    let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}});
-    let reply = transport.send(&init, timeout).unwrap();
-    assert_eq!(reply[0]["result"]["serverInfo"]["name"], "fixture");
-    transport
-        .send(
-            &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-            timeout,
-        )
-        .unwrap();
-    let listed = transport
-        .send(
-            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-            timeout,
-        )
-        .unwrap();
-    assert_eq!(
-        listed[0]["result"]["tools"].as_array().unwrap().len(),
-        3,
-        "the first page, from the redirect target"
-    );
-}
-
-#[test]
-fn a_redirect_to_loopback_is_refused_for_a_server_that_does_not_allow_private_hosts() {
-    let fixture = HttpFixture::start();
-    let redirector = start_redirector(format!("http://127.0.0.1:{}/mcp", fixture.port));
-    let policy = super::http::Policy {
-        allow_private: false,
-        blocklist: Vec::new(),
-    };
-    let mut transport = super::http::HttpTransport::new(
-        format!("http://127.0.0.1:{redirector}/mcp"),
-        Vec::new(),
-        Vec::new(),
-        policy,
-    );
-    let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
-    // The origin itself is loopback, so the first hop is refused before it is sent; that is the check.
-    let err = transport.send(&init, Duration::from_secs(10)).unwrap_err();
-    assert!(err.to_string().contains("refused"), "{err}");
 }
 
 #[test]

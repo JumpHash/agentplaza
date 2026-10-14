@@ -635,27 +635,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_missing_docker_gives_one_actionable_line() {
-        let docker = MockDocker::new(Default::default(), |_: &[String]| {
+    fn a_missing_or_unreachable_docker_gives_one_actionable_line() {
+        let missing = MockDocker::new(Default::default(), |_: &[String]| {
             Err(std::io::Error::from(std::io::ErrorKind::NotFound))
         });
-        assert_eq!(ensure_network(&docker).unwrap_err(), NO_DOCKER);
+        assert_eq!(ensure_network(&missing).unwrap_err(), NO_DOCKER);
         assert!(
             NO_DOCKER.contains("install Docker")
                 && NO_DOCKER.contains("remote (http) servers still work")
         );
-    }
-
-    #[test]
-    fn an_unreachable_daemon_says_so() {
-        let docker = MockDocker::new(Default::default(), |_: &[String]| {
+        let unreachable = MockDocker::new(Default::default(), |_: &[String]| {
             ran(
                 false,
                 "",
                 "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
             )
         });
-        assert_eq!(ensure_network(&docker).unwrap_err(), NO_DAEMON);
+        assert_eq!(ensure_network(&unreachable).unwrap_err(), NO_DAEMON);
     }
 
     #[test]

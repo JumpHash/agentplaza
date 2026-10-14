@@ -626,37 +626,6 @@ fn prompts_list_and_get_read_the_library() {
 }
 
 #[test]
-fn skill_tools_are_scoped_like_the_prompt_tools() {
-    let h = harness(true);
-    let (reader, _) = h.mint(Scope::Observe, &[], None);
-    let (operator, _) = h.mint(Scope::Operate, &[], None);
-    let reader_session = h.session(&reader);
-    let operator_session = h.session(&operator);
-    // Scope is checked before the tool runs, so these refusals never reach the skill library.
-    let args =
-        json!({ "id": "pdf-forms", "skill_md": "# PDF forms\n", "files": [], "base_version": 1 });
-    let refused = body_of(&h.call(
-        &reader,
-        Some(&reader_session),
-        tool_call("skill_propose", args),
-    ));
-    assert!(
-        refused["error"].is_object(),
-        "an observe token must not reach skill_propose"
-    );
-    let publish = json!({ "id": "pdf-forms", "version": 1 });
-    let by_operator = body_of(&h.call(
-        &operator,
-        Some(&operator_session),
-        tool_call("skill_publish", publish),
-    ));
-    assert!(
-        by_operator["error"].is_object(),
-        "an operate token must not reach skill_publish"
-    );
-}
-
-#[test]
 fn prompt_propose_is_operate_only_and_never_publishes() {
     let h = harness(true);
     seed_prompt(&h.host.plaza, "coder-system");
@@ -936,20 +905,50 @@ fn the_registry_never_offers_a_tool_that_reaches_the_never_list() {
 }
 
 #[test]
-fn an_observe_token_cannot_call_an_operate_tool() {
+fn a_token_cannot_call_a_tool_above_its_scope() {
     let h = harness(true);
-    let (token, _) = h.mint(Scope::Observe, &[], None);
-    let session = h.session(&token);
-    let body = body_of(&h.call(
-        &token,
-        Some(&session),
-        tool_call("tell_agent", json!({ "cid": 1, "text": "hi" })),
-    ));
-    assert!(
-        body.get("error").is_some() || body["result"]["isError"] == true,
-        "{body}"
-    );
-    assert!(body["result"]["structuredContent"].is_null(), "{body}");
+    let (observe, _) = h.mint(Scope::Observe, &[], None);
+    let (operate, _) = h.mint(Scope::Operate, &[], None);
+    let observe_session = h.session(&observe);
+    let operate_session = h.session(&operate);
+    // Scope is checked before a tool runs, so these refusals never reach the service behind the tool.
+    let cases = [
+        (
+            &observe,
+            &observe_session,
+            "tell_agent",
+            json!({ "cid": 1, "text": "hi" }),
+        ),
+        (
+            &observe,
+            &observe_session,
+            "skill_propose",
+            json!({ "id": "pdf-forms", "skill_md": "# PDF forms\n", "files": [], "base_version": 1 }),
+        ),
+        (
+            &operate,
+            &operate_session,
+            "request_decision",
+            json!({ "approval_id": "a1", "decision": "deny", "note": "" }),
+        ),
+        (
+            &operate,
+            &operate_session,
+            "skill_publish",
+            json!({ "id": "pdf-forms", "version": 1 }),
+        ),
+    ];
+    for (token, session, tool, args) in cases {
+        let body = body_of(&h.call(token, Some(session.as_str()), tool_call(tool, args)));
+        assert!(
+            body.get("error").is_some() || body["result"]["isError"] == true,
+            "{tool}: {body}"
+        );
+        assert!(
+            body["result"]["structuredContent"].is_null(),
+            "{tool}: {body}"
+        );
+    }
 }
 
 #[test]
@@ -1064,26 +1063,6 @@ fn request_decision_records_a_recommendation_and_never_decides() {
         ),
     ));
     assert_eq!(bad["result"]["isError"], true, "{bad}");
-}
-
-#[test]
-fn an_operate_token_cannot_call_a_govern_tool() {
-    let h = harness(true);
-    let (token, _) = h.mint(Scope::Operate, &[], None);
-    let session = h.session(&token);
-    let body = body_of(&h.call(
-        &token,
-        Some(&session),
-        tool_call(
-            "request_decision",
-            json!({ "approval_id": "a1", "decision": "deny", "note": "" }),
-        ),
-    ));
-    assert!(
-        body.get("error").is_some() || body["result"]["isError"] == true,
-        "{body}"
-    );
-    assert!(body["result"]["structuredContent"].is_null(), "{body}");
 }
 
 #[test]
