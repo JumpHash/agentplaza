@@ -27,6 +27,10 @@ interface WebEngine {
   entry_time: () => number | undefined;
   backend(): string;
   set_feed(json: string): void;
+  /** The shared board layouts the engine asked for since the last call (a JSON array of keys), for the layout worker. */
+  layout_requests(): string;
+  /** A shared board layout the layout worker computed: its key and the worker's answer, both JSON. */
+  provide_layout(key: string, answer: string): void;
   command(name: string, arg?: string | null): void;
   on_pick(cb: (kind: 'machine' | 'robot' | 'none', id: string) => void): void;
   on_labels(cb: (labels: LabelMeta[]) => void): void;
@@ -96,9 +100,87 @@ async function loadGlue(): Promise<EngineGlue> {
 /** The backend the page asks for: webgl2 with ?gl=1, else auto. */
 const backendOf = (): 'auto' | 'webgl2' => (new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto');
 
+/**
+ * The page's layout worker: the same glue in a module worker, computing the shared board layouts (apz-board's layout of a
+ * board for a roster, seconds of work) off the page's thread. The engine has no threads in the browser: it lists the
+ * layouts it wants, the pump posts each key here, and the answer goes back to the engine that asked.
+ */
+let layoutWorker: Worker | null = null;
+const layoutAsks = new Map<string, WebEngine>();
+
+/** The layout worker's file name at the dist root (build.mjs writes it next to the glue); '' without an engine. */
+declare const __APZ_LAYOUT_WORKER__: string | null;
+const layoutWorkerName = (): string => (typeof __APZ_LAYOUT_WORKER__ === 'string' ? __APZ_LAYOUT_WORKER__ : '');
+
+/** Answers a request with an error: the engine keeps its own layout for that board rather than waiting on it. */
+function failLayout(key: string, reason: string): void {
+  const engine = layoutAsks.get(key);
+  layoutAsks.delete(key);
+  try {
+    engine?.provide_layout(key, JSON.stringify({ err: reason }));
+  } catch {
+    // A destroyed engine.
+  }
+}
+
+function startLayoutWorker(): Worker | null {
+  const name = layoutWorkerName();
+  if (name === '') return null;
+  const worker = new Worker(new URL('./' + name, document.baseURI).href, { type: 'module' });
+  worker.onmessage = (e: MessageEvent<{ key: string; answer: string }>) => {
+    const engine = layoutAsks.get(e.data.key);
+    layoutAsks.delete(e.data.key);
+    try {
+      engine?.provide_layout(e.data.key, e.data.answer);
+    } catch {
+      // A destroyed engine: the next engine asks again.
+    }
+  };
+  // A worker that cannot start (or dies) answers every open request with an error, and the next request starts another.
+  worker.onerror = (e) => {
+    e.preventDefault();
+    for (const key of [...layoutAsks.keys()]) failLayout(key, `the layout worker failed: ${e.message || 'no message'}`);
+    worker.terminate();
+    if (layoutWorker === worker) layoutWorker = null;
+  };
+  return worker;
+}
+
+/** Posts an engine's layout requests to the layout worker every LAYOUT_PUMP_MS until the returned stop is called. */
+const LAYOUT_PUMP_MS = 200;
+function pumpLayouts(engine: WebEngine): () => void {
+  const timer = window.setInterval(() => {
+    let keys: unknown[];
+    try {
+      keys = JSON.parse(engine.layout_requests()) as unknown[];
+    } catch {
+      return;
+    }
+    for (const k of keys) {
+      const key = JSON.stringify(k);
+      if (layoutAsks.has(key)) continue;
+      layoutAsks.set(key, engine);
+      layoutWorker ??= startLayoutWorker();
+      if (layoutWorker) layoutWorker.postMessage(key);
+      else failLayout(key, 'this build has no layout worker');
+    }
+  }, LAYOUT_PUMP_MS);
+  return () => {
+    window.clearInterval(timer);
+    for (const [key, asker] of layoutAsks) if (asker === engine) layoutAsks.delete(key);
+  };
+}
+
 /** Loads the glue and starts an engine on the canvas: the Floor's mount and the Machines rows share it. Throws without a glue. */
 export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
-  return (await loadGlue()).start(canvas, { backend: backendOf() });
+  const engine = await (await loadGlue()).start(canvas, { backend: backendOf() });
+  const stop = pumpLayouts(engine);
+  const destroy = engine.destroy.bind(engine);
+  engine.destroy = () => {
+    stop();
+    destroy();
+  };
+  return engine;
 }
 
 /** The robot lab on the wasm engine: the route's options under the engine's APZ_ROBOT_* names. Throws without a glue. */

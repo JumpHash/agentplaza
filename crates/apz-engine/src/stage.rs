@@ -807,6 +807,47 @@ mod tests {
     }
 
     #[test]
+    fn inside_a_machine_only_its_board_draws() {
+        let mut s = Stage::default();
+        s.size = (800.0, 600.0);
+        let data: FleetResponse = serde_json::from_str(
+            r#"{"machines":[{"id":"n0","kind":"edge","status":"online","agents":[1,2,3,4]},{"id":"n1","kind":"laptop","status":"online"},
+                {"id":"n2","kind":"phone","status":"online"},{"id":"n3","kind":"workstation","status":"online"},
+                {"id":"n4","kind":"server","status":"online"}]}"#,
+        )
+        .unwrap();
+        s.apply_fleet(data);
+        let agents: Vec<AgentInfo> = (1..=4u64)
+            .map(|cid| AgentInfo { cid, name: format!("a{cid}"), role: ["builder", "reviewer", "ops", "librarian"][cid as usize - 1].into(), status: "idle".into(), tier: "worker".into(), model: String::new(), species: None })
+            .collect();
+        s.apply_agents(agents);
+        let t0 = Instant::now();
+        s.tick(t0);
+        s.open_popup(Some("n0".to_string()));
+        s.enter("n0".to_string());
+        let mut now = t0;
+        for _ in 0..3000 {
+            now += Duration::from_millis(16);
+            s.tick(now);
+        }
+        let frame = s.frame.clone();
+        let b = s.floor.board.as_ref().expect("the board").layout.bounds;
+        let reach = 0.5 * b.w.hypot(b.d) * 1.15;
+        let mut far = Vec::new();
+        let all = frame.statics.iter().chain(frame.draws.iter());
+        for d in all {
+            let p = d.model.transform_point3(glam::Vec3::ZERO);
+            if p.x.hypot(p.z) > reach && p.y < 40.0 {
+                far.push((d.material.color, p));
+            }
+        }
+        for b in frame.anim_batches.iter() {
+            let _ = b;
+        }
+        assert!(far.is_empty(), "{} draws lie far outside the board, e.g. {:?}", far.len(), &far[..far.len().min(6)]);
+    }
+
+    #[test]
     fn an_orbit_drag_is_active_while_damping_then_ambient() {
         let mut s = online_fleet_stage();
         let t0 = Instant::now();

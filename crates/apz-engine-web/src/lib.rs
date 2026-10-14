@@ -119,6 +119,21 @@ pub struct WebEngine {
     hooks: RefCell<Option<Hooks>>,
 }
 
+/// A shared board layout (`apz_board::layout::layout` for a `SharedKey` given as JSON), computed on the caller's thread:
+/// the page's web worker runs it, so the page's own thread never waits on a layout. Answers `{"ok": layout}` or
+/// `{"err": reason}`.
+#[wasm_bindgen]
+pub fn shared_layout(key_json: &str) -> String {
+    let outcome = serde_json::from_str::<apz_engine::world::board_layout::SharedKey>(key_json)
+        .map_err(|e| e.to_string())
+        .and_then(|key| apz_engine::world::board_layout::shared_layout_of(&key));
+    let answer = match outcome {
+        Ok(layout) => serde_json::json!({ "ok": layout }),
+        Err(reason) => serde_json::json!({ "err": reason }),
+    };
+    answer.to_string()
+}
+
 /// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2' }`; a missing backend is 'auto'.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
@@ -249,6 +264,26 @@ impl WebEngine {
     /// The backend the engine draws with: 'webgpu' or 'webgl2'.
     pub fn backend(&self) -> String {
         backend_name(self.shared.borrow().backend).to_string()
+    }
+
+    /// The shared board layouts the floors asked for since the last call, as a JSON array of keys: the page computes
+    /// each in its worker (`shared_layout`) and hands it back with `provide_layout`.
+    pub fn layout_requests(&self) -> String {
+        serde_json::to_string(&apz_engine::world::board_layout::take_wanted_shared()).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// A shared board layout the page's worker computed: its key and the worker's answer, as `shared_layout` gave them.
+    /// The floor adopts it on its next step.
+    pub fn provide_layout(&self, key_json: &str, answer_json: &str) -> Result<(), JsValue> {
+        let key = serde_json::from_str(key_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let answer: serde_json::Value = serde_json::from_str(answer_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let outcome = match answer.get("ok") {
+            Some(layout) => serde_json::from_value(layout.clone()).map_err(|e| e.to_string()),
+            None => Err(answer.get("err").and_then(|e| e.as_str()).unwrap_or("the worker gave no layout").to_string()),
+        };
+        apz_engine::world::board_layout::provide_shared(key, outcome);
+        self.shared.borrow_mut().engine.touch();
+        Ok(())
     }
 
     /// Hands the engine a feed: the JSON that `apz_engine::feed_from_json` reads. A parse error is thrown as text.

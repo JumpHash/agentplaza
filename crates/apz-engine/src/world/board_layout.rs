@@ -539,7 +539,7 @@ const SHARED_SCALE_CAP: f64 = 3.0;
 /// Err with the reason when the kind is unknown or no scale up to the cap seats everyone (the shared layout panics).
 /// What a shared layout is computed from: the board kind, its GPU count, and each agent's id and shared role, sorted
 /// by id, so a roster asks for the same layout whatever order it came in.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SharedKey {
     kind: String,
     gpus: u32,
@@ -586,7 +586,12 @@ pub fn shared_layout_of(key: &SharedKey) -> Result<apz_board::layout::Layout, St
 
 /// The shared layout for a key as the engine's `BoardLayout`; None (logged once) when the shared core cannot seat it.
 fn compute(key: &SharedKey) -> Option<BoardLayout> {
-    match shared_layout_of(key) {
+    adopt(key, shared_layout_of(key))
+}
+
+/// A shared layout's outcome for a key as the engine's `BoardLayout` (None, logged once, for a failure).
+fn adopt(key: &SharedKey, outcome: Result<apz_board::layout::Layout, String>) -> Option<BoardLayout> {
+    match outcome {
         Ok(shared) => {
             let mut layout = board_layout_of(&shared);
             layout.shared = Some((std::sync::Arc::new(shared), key.gpus));
@@ -601,13 +606,17 @@ fn compute(key: &SharedKey) -> Option<BoardLayout> {
 }
 
 /// The shared layouts computed or computing, by key. The first request for a key starts its computation on a thread
-/// (native); `poll` moves the finished ones into `done`, which `request` returns from. wasm32 has no threads, so
-/// nothing starts there and `request` stays None: the caller keeps the engine's own layout. A web worker that
-/// computes the layout and posts it back is the next step.
+/// (native); `poll` moves the finished ones into `done`, which `request` returns from. wasm32 has no threads: a request
+/// waits for the host, which takes the wanted keys, computes them in a web worker running the same wasm, and hands
+/// each layout back (`provide`); meanwhile the caller keeps the engine's own layout.
 #[derive(Default)]
 pub struct SharedLayouts {
     done: HashMap<SharedKey, Option<BoardLayout>>,
     running: HashMap<SharedKey, std::sync::mpsc::Receiver<Option<BoardLayout>>>,
+    /// wasm32: the keys asked for and not answered yet (a worker computes them; `provide` answers), and those not yet
+    /// handed to the host (`take_wanted`).
+    asked: HashSet<SharedKey>,
+    wanted: Vec<SharedKey>,
     #[cfg(test)]
     spawned: usize,
 }
@@ -626,7 +635,19 @@ impl SharedLayouts {
 
     /// Whether `key` is computing.
     pub fn is_pending(&self, key: &SharedKey) -> bool {
-        self.running.contains_key(key)
+        self.running.contains_key(key) || self.asked.contains(key)
+    }
+
+    /// The keys asked for since the last call, for the host to compute (wasm32's worker).
+    pub fn take_wanted(&mut self) -> Vec<SharedKey> {
+        std::mem::take(&mut self.wanted)
+    }
+
+    /// A key's layout computed elsewhere (wasm32's worker): its outcome is cached as a computed one is.
+    pub fn provide(&mut self, key: SharedKey, outcome: Result<apz_board::layout::Layout, String>) {
+        self.asked.remove(&key);
+        let layout = adopt(&key, outcome);
+        self.done.insert(key, layout);
     }
 
     /// Moves the finished computations into the cache.
@@ -646,7 +667,11 @@ impl SharedLayouts {
     }
 
     fn start(&mut self, key: SharedKey) {
+        // wasm32 has no threads: the key waits for the host's worker (take_wanted, then provide).
         if cfg!(target_arch = "wasm32") {
+            if self.asked.insert(key.clone()) {
+                self.wanted.push(key);
+            }
             return;
         }
         #[cfg(test)]
@@ -673,6 +698,18 @@ pub fn request_shared(key: &SharedKey) -> Option<BoardLayout> {
     let mut cache = shared_cache().lock().ok()?;
     cache.poll();
     cache.request(key.clone())
+}
+
+/// The keys the floors asked for since the last call (wasm32: the host computes them in a worker).
+pub fn take_wanted_shared() -> Vec<SharedKey> {
+    shared_cache().lock().map(|mut cache| cache.take_wanted()).unwrap_or_default()
+}
+
+/// A key's shared layout computed by the host (wasm32's worker), as `shared_layout_of` returns it.
+pub fn provide_shared(key: SharedKey, outcome: Result<apz_board::layout::Layout, String>) {
+    if let Ok(mut cache) = shared_cache().lock() {
+        cache.provide(key, outcome);
+    }
 }
 
 /// Whether `key`'s shared layout is computing.

@@ -319,7 +319,26 @@ impl Entry {
 
     fn finish(&mut self, p: &mut Parts) -> Phase {
         self.finished = true;
+        // Inside the machine only its board shows: the other machines and the cables leave the view (a reverse sets
+        // their visibility again frame by frame as they come back).
+        if let (Some(_), Some(fleet)) = (self.handoff.as_ref(), p.fleet.as_deref_mut()) {
+            for m in fleet.machines.values() {
+                m.root.set_visible(false);
+            }
+            let kids = fleet.group.get().children.clone();
+            for child in kids {
+                child.set_visible(false);
+            }
+            fleet.group.set_visible(false);
+        }
         self.unprepare(p);
+        for (i, c) in p.floor.root.get().children.iter().enumerate() {
+            let n = c.get();
+            if n.visible && n.children.len() > 3 {
+                let names: Vec<String> = n.children.iter().take(8).map(|k| { let kn = k.get(); format!("{}:{}:{:.0},{:.0}", kn.name, kn.visible, kn.position.x, kn.position.z) }).collect();
+                eprintln!("DBGGRP {i} kids={} {:?}", n.children.len(), names);
+            }
+        }
         // The robots are whole from here on: one that has not yet popped in gets no pop left to run.
         for bot in &p.floor.bots {
             bot.robot.group.set_visible(true).set_scalar(1.0);
@@ -424,6 +443,7 @@ impl Entry {
                 fleet.update(dt as f32, p.ambient, p.ambient_dt, data);
             }
             fleet.set_open(machine, st.open as f32);
+            fleet.group.set_visible(true);
             let roots: Vec<Obj> = fleet.machines.values().map(|m| m.root.clone()).collect();
             for (id, m) in fleet.machines.iter() {
                 let mine = id == machine;
@@ -753,12 +773,15 @@ mod tests {
         assert!(!machines.root.get().children.iter().any(|c| c == &group));
         let hub = &fleet.as_ref().expect("the fleet").machines["n0"];
         assert!(!hub.root.get().visible);
+        // Inside the machine the other machines are out of view too (the owner's report, 2026-10-14).
+        assert!(fleet.as_ref().expect("the fleet").machines.values().all(|m| !m.root.get().visible), "another machine shows inside");
+        assert!(fleet.as_ref().expect("the fleet").group.get().children.iter().all(|c| !c.get().visible), "a cable shows inside");
 
         e.back();
         assert_eq!(play_fleet(&mut e, &mut floor, &mut machines, &mut fleet, &data, Phase::Left), Phase::Left);
         assert!(machines.root.get().children.iter().any(|c| c == &group));
         assert!(!floor.root.get().children.iter().any(|c| c == &group));
-        assert!(fleet.as_ref().expect("the fleet").machines["n0"].root.get().visible);
+        assert!(fleet.as_ref().expect("the fleet").machines.values().all(|m| m.root.get().visible), "the machines are back");
         assert!(e.into_return().is_some(), "a handoff returns the Machines' orbit");
     }
 }
