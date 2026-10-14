@@ -129,6 +129,27 @@ pub enum Cmd {
         #[arg(long, default_value_t = 50)]
         limit: u32,
     },
+    /// An interactive shell in an agent's VM, over the hub's terminal socket. Ctrl+] then d detaches and
+    /// keeps the shell running; `--attach` picks it up again and `--kill` ends it. Unix terminals only.
+    Term {
+        /// The workspace: agent:<cid>. A repo has no VM, so it has no shell.
+        workspace: String,
+        /// The folder to start the shell in, relative to the workspace root.
+        #[arg(long, conflicts_with_all = ["attach", "kill"])]
+        cwd: Option<String>,
+        /// Re-attach to a running terminal (its id is printed when you detach).
+        #[arg(long, value_name = "TERM", conflicts_with = "kill")]
+        attach: Option<String>,
+        /// Where the output resumes after `--attach`, in bytes (default 0: the oldest output the guest keeps).
+        #[arg(long, requires = "attach")]
+        offset: Option<u64>,
+        /// End a running terminal instead of opening a shell.
+        #[arg(long, value_name = "TERM")]
+        kill: Option<String>,
+        /// Without a terminal on stdin: send stdin a line at a time, with no raw mode.
+        #[arg(long)]
+        no_tty: bool,
+    },
 }
 
 // ---- Paths and requests -----------------------------------------------------------------------
@@ -868,6 +889,704 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
+        Cmd::Term { workspace, cwd, attach, offset, kill, no_tty } => {
+            let code = term_command(ctx, &workspace, cwd, attach, offset, kill, no_tty)?;
+            if code != 0 {
+                let _ = std::io::stdout().flush();
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---- Terminal -----------------------------------------------------------------------------------
+
+/// `ide term` runs on Unix terminals only: its raw mode and window size are termios.
+#[cfg(unix)]
+fn term_command(
+    ctx: &Ctx,
+    workspace: &str,
+    cwd: Option<String>,
+    attach: Option<String>,
+    offset: Option<u64>,
+    kill: Option<String>,
+    no_tty: bool,
+) -> Result<i32, String> {
+    term::run(ctx, workspace, cwd, attach, offset, kill, no_tty)
+}
+
+#[cfg(not(unix))]
+fn term_command(
+    _ctx: &Ctx,
+    _workspace: &str,
+    _cwd: Option<String>,
+    _attach: Option<String>,
+    _offset: Option<u64>,
+    _kill: Option<String>,
+    _no_tty: bool,
+) -> Result<i32, String> {
+    Err("ide term needs a Unix terminal (Linux or macOS); it cannot run on Windows".into())
+}
+
+#[cfg(unix)]
+mod term {
+    use std::io::{self, BufRead, IsTerminal, Read, Write};
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{self, Receiver, TryRecvError};
+    use std::sync::{Mutex, PoisonError, TryLockError};
+    use std::time::{Duration, Instant};
+
+    use apz_http::ws::{self, Limits, Message, Socket};
+    use apz_ide::WorkspaceId;
+    use apz_ide::path::check_dir;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use serde_json::{Value, json};
+
+    use super::workspace_seg;
+    use crate::ctx::Ctx;
+
+    /// The subprotocol the terminal socket asks for.
+    const PROTOCOL: &str = "apz.ide.terminal.v1";
+    /// How long the hub has to answer an open, an attach or a kill.
+    const ANSWER: Duration = Duration::from_secs(30);
+    /// How long one socket wait lasts before the keys, signals and resizes are looked at again.
+    const TICK: Duration = Duration::from_millis(20);
+    /// A keepalive ping after this long without a frame from the client (the hub closes a silent socket
+    /// after ten minutes).
+    const KEEPALIVE: Duration = Duration::from_secs(5 * 60);
+    /// How long output is still shown after the keys end, so a piped command's output is not cut short.
+    const INPUT_GRACE: Duration = Duration::from_secs(2);
+    /// The escape key: Ctrl+].
+    const ESCAPE: u8 = 0x1d;
+    /// The size used when the terminal reports none.
+    const DEFAULT_SIZE: (u16, u16) = (80, 24);
+    /// The largest size the hub takes, in columns or rows.
+    const MAX_SIZE: u16 = 1000;
+
+    /// Set by SIGWINCH: the window was resized.
+    static WINCH: AtomicBool = AtomicBool::new(false);
+    /// Set by SIGHUP or SIGTERM: this process is asked to leave. The shell keeps running.
+    static STOP: AtomicBool = AtomicBool::new(false);
+    /// The terminal settings from before raw mode, so every exit path can put them back.
+    static SAVED: Mutex<Option<libc::termios>> = Mutex::new(None);
+
+    /// `agentplaza ide term WS`: opens a shell, re-attaches to one, or kills one. Returns the exit code.
+    pub fn run(
+        ctx: &Ctx,
+        workspace: &str,
+        cwd: Option<String>,
+        attach: Option<String>,
+        offset: Option<u64>,
+        kill: Option<String>,
+        no_tty: bool,
+    ) -> Result<i32, String> {
+        let id = WorkspaceId::from_str(workspace).map_err(|e| format!("{workspace}: {e}"))?;
+        if !matches!(id, WorkspaceId::Agent(_)) {
+            return Err(format!("{workspace}: a terminal is for agent workspaces; a repo has no VM to open a shell in"));
+        }
+        let path = format!("/v1/ide/terminal/{}", workspace_seg(workspace)?);
+        if let Some(term) = kill {
+            kill_term(ctx, &path, &term)?;
+            println!("killed {term}");
+            return Ok(0);
+        }
+        let cwd = match cwd {
+            Some(cwd) => Some(check_dir(&cwd).map_err(|e| format!("{cwd}: {e}"))?),
+            None => None,
+        };
+        check_stdin(no_tty)?;
+        let mut socket = connect(ctx, &path)?;
+        let (term, start) = match attach {
+            Some(term) => {
+                let offset = offset.unwrap_or(0);
+                send_frame(&mut socket, &attach_frame(&term, offset))?;
+                (await_opened(&mut socket)?, offset)
+            }
+            None => {
+                let (cols, rows) = current_size();
+                send_frame(&mut socket, &open_frame(cols, rows, cwd.as_deref()))?;
+                (await_opened(&mut socket)?, 0)
+            }
+        };
+        interactive(socket, workspace, &term, start, no_tty)
+    }
+
+    /// Input must come from a terminal, unless `--no-tty` asks for plain lines. Checked before the
+    /// socket opens, so a refused command never leaves a shell behind.
+    fn check_stdin(no_tty: bool) -> Result<(), String> {
+        if no_tty || io::stdin().is_terminal() {
+            return Ok(());
+        }
+        Err("stdin is not a terminal: run ide term from a terminal, or pass --no-tty for plain line mode".into())
+    }
+
+    fn connect(ctx: &Ctx, path: &str) -> Result<Socket, String> {
+        ws::connect(&ctx.client.target, path, Some(PROTOCOL), Duration::from_secs(10), Limits::default())
+            .map_err(|e| format!("{} {path}: {e}", ctx.client.base()))
+    }
+
+    // ---- Frames -------------------------------------------------------------------------------------
+
+    /// A frame the client sends. `cwd` is left out when it is empty (the workspace root).
+    fn open_frame(cols: u16, rows: u16, cwd: Option<&str>) -> Value {
+        let mut frame = json!({ "t": "open", "cols": cols, "rows": rows });
+        if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+            frame["cwd"] = json!(cwd);
+        }
+        frame
+    }
+
+    fn attach_frame(term: &str, offset: u64) -> Value {
+        json!({ "t": "attach", "term": term, "offset": offset })
+    }
+
+    fn input_frame(bytes: &[u8]) -> Value {
+        json!({ "t": "in", "data": STANDARD.encode(bytes) })
+    }
+
+    fn size_frame(cols: u16, rows: u16) -> Value {
+        json!({ "t": "resize", "cols": cols, "rows": rows })
+    }
+
+    fn kill_frame() -> Value {
+        json!({ "t": "kill" })
+    }
+
+    fn ping_frame() -> Value {
+        json!({ "t": "ping" })
+    }
+
+    /// A frame the hub sends.
+    #[derive(Debug, PartialEq, Eq)]
+    enum TermFrame {
+        Opened { term: String },
+        Out { data: Vec<u8>, offset: u64 },
+        Lost { bytes: u64 },
+        Exit { code: Option<i64> },
+        Error { message: String },
+        Pong,
+    }
+
+    fn parse_term_frame(text: &str) -> Result<TermFrame, String> {
+        let value: Value =
+            serde_json::from_str(text).map_err(|e| format!("the hub sent a frame that is not JSON: {e}"))?;
+        match value.get("t").and_then(Value::as_str).unwrap_or_default() {
+            "opened" => Ok(TermFrame::Opened { term: field_str(&value, "term")?.to_string() }),
+            "out" => Ok(TermFrame::Out {
+                data: STANDARD
+                    .decode(field_str(&value, "data")?)
+                    .map_err(|e| format!("\"data\" is not base64: {e}"))?,
+                offset: field_u64(&value, "offset")?,
+            }),
+            "lost" => Ok(TermFrame::Lost { bytes: field_u64(&value, "bytes")? }),
+            "exit" => Ok(TermFrame::Exit { code: value.get("code").and_then(Value::as_i64) }),
+            "error" => Ok(TermFrame::Error { message: field_str(&value, "message")?.to_string() }),
+            "pong" => Ok(TermFrame::Pong),
+            other => Err(format!("the hub sent no frame named {other:?}")),
+        }
+    }
+
+    fn field_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+        value.get(key).and_then(Value::as_str).ok_or_else(|| format!("\"{key}\" must be a string"))
+    }
+
+    fn field_u64(value: &Value, key: &str) -> Result<u64, String> {
+        value.get(key).and_then(Value::as_u64).ok_or_else(|| format!("\"{key}\" must be a whole number"))
+    }
+
+    fn send_frame(socket: &mut Socket, frame: &Value) -> Result<(), String> {
+        socket.send(&Message::Text(frame.to_string())).map_err(|e| e.to_string())
+    }
+
+    /// The first answer to an open or an attach: the terminal's id, or the hub's refusal.
+    fn await_opened(socket: &mut Socket) -> Result<String, String> {
+        let deadline = Instant::now() + ANSWER;
+        while Instant::now() < deadline {
+            let Some(message) = socket.recv(Duration::from_millis(500)).map_err(|e| e.to_string())? else {
+                continue;
+            };
+            if let Message::Text(text) = message {
+                match parse_term_frame(&text)? {
+                    TermFrame::Opened { term } => return Ok(term),
+                    TermFrame::Error { message } => return Err(message),
+                    _ => {}
+                }
+            }
+        }
+        Err("the hub did not answer in time".into())
+    }
+
+    /// Ends a terminal: attaches to it, sends `kill`, and waits for the hub to close the socket.
+    fn kill_term(ctx: &Ctx, path: &str, term: &str) -> Result<(), String> {
+        let mut socket = connect(ctx, path)?;
+        send_frame(&mut socket, &attach_frame(term, 0))?;
+        await_opened(&mut socket)?;
+        send_frame(&mut socket, &kill_frame())?;
+        let deadline = Instant::now() + ANSWER;
+        while Instant::now() < deadline {
+            match socket.recv(Duration::from_millis(500)) {
+                Ok(Some(Message::Text(text))) => {
+                    if let Ok(TermFrame::Error { message }) = parse_term_frame(&text) {
+                        return Err(message);
+                    }
+                }
+                Ok(_) => {}
+                // The hub closes the socket once the terminal is killed.
+                Err(err) if err.kind() == io::ErrorKind::ConnectionAborted => return Ok(()),
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        Err("the hub did not confirm the kill".into())
+    }
+
+    // ---- Keys -----------------------------------------------------------------------------------------
+
+    /// Ctrl+] then `d` detaches. Ctrl+] then Ctrl+] sends one Ctrl+]; Ctrl+] then any other key sends both.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct Escape {
+        pending: bool,
+    }
+
+    /// What one read of keys came to: the bytes for the shell, and whether the detach key came (the keys
+    /// after it are dropped).
+    #[derive(Debug, PartialEq, Eq)]
+    struct Keys {
+        send: Vec<u8>,
+        detach: bool,
+    }
+
+    impl Escape {
+        fn feed(&mut self, input: &[u8]) -> Keys {
+            let mut send = Vec::with_capacity(input.len() + 1);
+            for &byte in input {
+                if std::mem::take(&mut self.pending) {
+                    match byte {
+                        b'd' => return Keys { send, detach: true },
+                        ESCAPE => send.push(ESCAPE),
+                        other => {
+                            send.push(ESCAPE);
+                            send.push(other);
+                        }
+                    }
+                } else if byte == ESCAPE {
+                    self.pending = true;
+                } else {
+                    send.push(byte);
+                }
+            }
+            Keys { send, detach: false }
+        }
+    }
+
+    /// Reads the keys on a thread, since a blocking read cannot share the loop with the socket. Each
+    /// read's bytes go down the channel: a chunk of keys, or with `lines` one line at a time.
+    fn spawn_keys(lines: bool) -> Receiver<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stdin = io::stdin().lock();
+            loop {
+                let mut chunk = Vec::new();
+                let read = if lines {
+                    stdin.read_until(b'\n', &mut chunk)
+                } else {
+                    let mut buf = [0u8; 4096];
+                    let read = stdin.read(&mut buf);
+                    if let Ok(n) = &read {
+                        chunk.extend_from_slice(&buf[..*n]);
+                    }
+                    read
+                };
+                match read {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(chunk).is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+        });
+        rx
+    }
+
+    // ---- Terminal settings and size -------------------------------------------------------------------
+
+    /// The size the hub takes: a size of zero (a terminal that reports none) becomes the default, and
+    /// anything over the hub's cap is cut to it.
+    fn fit_size(cols: u16, rows: u16) -> (u16, u16) {
+        let fit = |n: u16, default: u16| if n == 0 { default } else { n.min(MAX_SIZE) };
+        (fit(cols, DEFAULT_SIZE.0), fit(rows, DEFAULT_SIZE.1))
+    }
+
+    fn window_size(fd: libc::c_int) -> Option<(u16, u16)> {
+        let mut size = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+        // SAFETY: TIOCGWINSZ writes one winsize into the struct it is given.
+        let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size as *mut libc::winsize) } == 0;
+        ok.then_some((size.ws_col, size.ws_row))
+    }
+
+    /// The size of the local terminal (its output, else its input), as the hub takes it.
+    fn current_size() -> (u16, u16) {
+        let (cols, rows) = [libc::STDOUT_FILENO, libc::STDIN_FILENO]
+            .into_iter()
+            .find_map(window_size)
+            .unwrap_or((0, 0));
+        fit_size(cols, rows)
+    }
+
+    /// Puts stdin's terminal into raw mode (no echo, no line editing, no signals from keys, no output
+    /// processing) and keeps the settings it had.
+    fn enter_raw() -> Result<(), String> {
+        // SAFETY: an all-zero termios is plain integers; tcgetattr fills it in on success.
+        let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: tcgetattr writes the settings of stdin into `original`.
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
+            return Err(format!("stdin: {}", io::Error::last_os_error()));
+        }
+        let mut raw = original;
+        raw.c_iflag &=
+            !(libc::IGNBRK | libc::BRKINT | libc::PARMRK | libc::ISTRIP | libc::INLCR | libc::IGNCR | libc::ICRNL | libc::IXON);
+        raw.c_oflag &= !libc::OPOST;
+        raw.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG | libc::IEXTEN);
+        raw.c_cflag &= !(libc::CSIZE | libc::PARENB);
+        raw.c_cflag |= libc::CS8;
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        // SAFETY: applies the settings read from this terminal, with only the raw flags changed.
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
+            return Err(format!("stdin: {}", io::Error::last_os_error()));
+        }
+        *SAVED.lock().unwrap_or_else(PoisonError::into_inner) = Some(original);
+        // A panic must not leave the user's terminal raw: the hook restores it, then reports as before.
+        let before = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_tty();
+            before(info);
+        }));
+        Ok(())
+    }
+
+    /// Puts the settings from before raw mode back, if raw mode was entered. Safe to call twice.
+    fn restore_tty() {
+        let saved = match SAVED.try_lock() {
+            Ok(mut guard) => guard.take(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(original) = saved {
+            // SAFETY: restores the settings that were read before raw mode.
+            let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+        }
+    }
+
+    extern "C" fn on_winch(_signal: libc::c_int) {
+        WINCH.store(true, Ordering::SeqCst);
+    }
+
+    extern "C" fn on_stop(_signal: libc::c_int) {
+        STOP.store(true, Ordering::SeqCst);
+    }
+
+    /// SIGWINCH sends the new size; SIGHUP and SIGTERM end this command, leaving the shell running.
+    fn catch_session_signals() {
+        // SAFETY: the handlers only store to an atomic, which a signal handler may do.
+        unsafe {
+            libc::signal(libc::SIGWINCH, on_winch as libc::sighandler_t);
+            libc::signal(libc::SIGHUP, on_stop as libc::sighandler_t);
+            libc::signal(libc::SIGTERM, on_stop as libc::sighandler_t);
+        }
+    }
+
+    // ---- The session ----------------------------------------------------------------------------------
+
+    /// How an attached session ended.
+    #[derive(Debug, PartialEq, Eq)]
+    enum End {
+        /// The shell ended with this code (None when the guest gave none).
+        Exited(Option<i64>),
+        /// The client left (detach key, input ended, or a signal): the shell keeps running.
+        Detached,
+        /// The socket ended or broke before the shell did; the shell may still be running.
+        Lost(String),
+    }
+
+    /// One attached terminal: the socket, the keys, and where the output stands.
+    struct Bridge {
+        socket: Socket,
+        input: Receiver<Vec<u8>>,
+        escape: Escape,
+        /// One past the last output byte shown: where a re-attach resumes.
+        next_offset: u64,
+        last_sent: Instant,
+        /// Raw mode is on: notices end with a CR LF, and window size changes are sent.
+        raw: bool,
+        /// The size is sent once at the start of the session.
+        resize_due: bool,
+        /// When the keys ended (input closed), if they have.
+        input_done: Option<Instant>,
+        eol: &'static str,
+    }
+
+    impl Bridge {
+        /// One pass of the loop: signals, keys, keepalive, then one socket frame or the wait for one.
+        /// `Ok(Some(_))` ends the session.
+        fn step(&mut self) -> Result<Option<End>, String> {
+            if STOP.load(Ordering::SeqCst) {
+                return Ok(Some(End::Detached));
+            }
+            // Both are read: the first resize is due at the start, later ones on SIGWINCH.
+            let due = std::mem::take(&mut self.resize_due) | WINCH.swap(false, Ordering::SeqCst);
+            if due && self.raw {
+                let (cols, rows) = current_size();
+                self.send(&size_frame(cols, rows))?;
+            }
+            if let Some(end) = self.keys()? {
+                return Ok(Some(end));
+            }
+            if self.input_done.is_some_and(|at| at.elapsed() >= INPUT_GRACE) {
+                return Ok(Some(End::Detached));
+            }
+            if self.last_sent.elapsed() >= KEEPALIVE {
+                self.send(&ping_frame())?;
+            }
+            let message = match self.socket.recv(TICK) {
+                Ok(Some(message)) => message,
+                Ok(None) => return Ok(None),
+                Err(err) => return Ok(Some(End::Lost(err.to_string()))),
+            };
+            let Message::Text(text) = message else {
+                return Ok(None);
+            };
+            match parse_term_frame(&text) {
+                Ok(TermFrame::Out { data, offset }) => {
+                    show(&data)?;
+                    self.next_offset = offset + data.len() as u64;
+                    Ok(None)
+                }
+                Ok(TermFrame::Lost { bytes }) => {
+                    self.notice(&format!("{bytes} bytes of output were lost"));
+                    Ok(None)
+                }
+                Ok(TermFrame::Exit { code }) => Ok(Some(End::Exited(code))),
+                Ok(TermFrame::Error { message }) => {
+                    self.notice(&message);
+                    Ok(None)
+                }
+                Ok(TermFrame::Opened { .. } | TermFrame::Pong) => Ok(None),
+                Err(message) => {
+                    self.notice(&message);
+                    Ok(None)
+                }
+            }
+        }
+
+        /// The keys waiting from the terminal, sent as one input frame per read. The detach key ends it.
+        fn keys(&mut self) -> Result<Option<End>, String> {
+            loop {
+                match self.input.try_recv() {
+                    Ok(bytes) => {
+                        let keys = self.escape.feed(&bytes);
+                        if !keys.send.is_empty() {
+                            self.send(&input_frame(&keys.send))?;
+                        }
+                        if keys.detach {
+                            return Ok(Some(End::Detached));
+                        }
+                    }
+                    Err(TryRecvError::Empty) => return Ok(None),
+                    Err(TryRecvError::Disconnected) => {
+                        self.input_done.get_or_insert_with(Instant::now);
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        fn send(&mut self, frame: &Value) -> Result<(), String> {
+            send_frame(&mut self.socket, frame)?;
+            self.last_sent = Instant::now();
+            Ok(())
+        }
+
+        /// A dim line on stderr (the terminal is raw here, so it ends with a CR LF).
+        fn notice(&self, text: &str) {
+            let mut err = io::stderr();
+            let _ = write!(err, "\x1b[2m{text}\x1b[0m{}", self.eol);
+            let _ = err.flush();
+        }
+    }
+
+    fn show(data: &[u8]) -> Result<(), String> {
+        let mut out = io::stdout().lock();
+        out.write_all(data).map_err(|e| format!("writing the terminal: {e}"))?;
+        out.flush().map_err(|e| format!("writing the terminal: {e}"))
+    }
+
+    /// Runs the attached session until it ends, then puts the terminal back and reports how it ended.
+    fn interactive(socket: Socket, workspace: &str, term: &str, offset: u64, no_tty: bool) -> Result<i32, String> {
+        let raw = !no_tty;
+        if raw {
+            enter_raw()?;
+        }
+        catch_session_signals();
+        let mut bridge = Bridge {
+            socket,
+            input: spawn_keys(no_tty),
+            escape: Escape::default(),
+            next_offset: offset,
+            last_sent: Instant::now(),
+            raw,
+            resize_due: raw,
+            input_done: None,
+            eol: if raw { "\r\n" } else { "\n" },
+        };
+        let end = loop {
+            match bridge.step() {
+                Ok(Some(end)) => break end,
+                Ok(None) => {}
+                Err(message) => break End::Lost(message),
+            }
+        };
+        restore_tty();
+        match end {
+            End::Exited(code) => Ok(exit_status(code)),
+            End::Detached => {
+                bridge.socket.close(1000, "detached");
+                eprintln!("detached: {term} keeps running");
+                eprintln!("{}", detach_hints(workspace, term, bridge.next_offset));
+                Ok(0)
+            }
+            End::Lost(message) => {
+                bridge.socket.close(1000, "lost");
+                eprintln!("the terminal socket ended: {message}; if the shell is still running:");
+                eprintln!("{}", detach_hints(workspace, term, bridge.next_offset));
+                Ok(1)
+            }
+        }
+    }
+
+    /// How to come back to a shell that is still running: re-attach at the offset, or end it.
+    fn detach_hints(workspace: &str, term: &str, offset: u64) -> String {
+        format!(
+            "re-attach: agentplaza ide term {workspace} --attach {term} --offset {offset}\nend it: agentplaza ide term {workspace} --kill {term}"
+        )
+    }
+
+    /// The process exit code for a shell's code: a signal's negative code becomes 128 plus the signal.
+    fn exit_status(code: Option<i64>) -> i32 {
+        match code {
+            Some(code) if code < 0 => (128 - code).clamp(0, 255) as i32,
+            Some(code) => code.clamp(0, 255) as i32,
+            None => 1,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_client_frames_have_the_documented_shape() {
+            assert_eq!(open_frame(80, 24, None), json!({"t": "open", "cols": 80, "rows": 24}));
+            assert_eq!(open_frame(80, 24, Some("src")), json!({"t": "open", "cols": 80, "rows": 24, "cwd": "src"}));
+            assert_eq!(open_frame(80, 24, Some("")), json!({"t": "open", "cols": 80, "rows": 24}), "an empty cwd is the root");
+            assert_eq!(attach_frame("term-1", 5), json!({"t": "attach", "term": "term-1", "offset": 5}));
+            assert_eq!(input_frame(b"ls\r"), json!({"t": "in", "data": "bHMN"}));
+            assert_eq!(kill_frame(), json!({"t": "kill"}));
+            assert_eq!(ping_frame(), json!({"t": "ping"}));
+        }
+
+        #[test]
+        fn keys_survive_the_base64_round_trip() {
+            let bytes: Vec<u8> = (0u8..=255).collect();
+            let frame = input_frame(&bytes);
+            let back = STANDARD.decode(frame["data"].as_str().unwrap_or_default()).unwrap_or_default();
+            assert_eq!(back, bytes);
+        }
+
+        #[test]
+        fn the_hubs_frames_parse() {
+            assert_eq!(
+                parse_term_frame(r#"{"t":"opened","term":"term-1"}"#),
+                Ok(TermFrame::Opened { term: "term-1".into() })
+            );
+            assert_eq!(
+                parse_term_frame(r#"{"t":"out","data":"aGk=","offset":7}"#),
+                Ok(TermFrame::Out { data: b"hi".to_vec(), offset: 7 })
+            );
+            assert_eq!(parse_term_frame(r#"{"t":"lost","bytes":12}"#), Ok(TermFrame::Lost { bytes: 12 }));
+            assert_eq!(parse_term_frame(r#"{"t":"exit","code":3}"#), Ok(TermFrame::Exit { code: Some(3) }));
+            assert_eq!(parse_term_frame(r#"{"t":"exit","code":null}"#), Ok(TermFrame::Exit { code: None }));
+            assert_eq!(
+                parse_term_frame(r#"{"t":"error","message":"no agent 9"}"#),
+                Ok(TermFrame::Error { message: "no agent 9".into() })
+            );
+            assert_eq!(parse_term_frame(r#"{"t":"pong"}"#), Ok(TermFrame::Pong));
+        }
+
+        #[test]
+        fn a_bad_hub_frame_is_an_error_not_a_guess() {
+            assert!(parse_term_frame("not json").is_err());
+            assert!(parse_term_frame(r#"{"t":"nope"}"#).is_err());
+            assert!(parse_term_frame(r#"{"t":"out","data":"!!","offset":0}"#).is_err(), "data is base64");
+            assert!(parse_term_frame(r#"{"t":"out","data":"aGk="}"#).is_err(), "an out needs its offset");
+            assert!(parse_term_frame(r#"{"t":"lost"}"#).is_err());
+        }
+
+        #[test]
+        fn ctrl_bracket_then_d_detaches_and_keeps_the_keys_before_it() {
+            let mut escape = Escape::default();
+            assert_eq!(escape.feed(b"ls"), Keys { send: b"ls".to_vec(), detach: false });
+            assert_eq!(escape.feed(&[ESCAPE, b'd']), Keys { send: vec![], detach: true });
+            let mut escape = Escape::default();
+            assert_eq!(escape.feed(b"a\x1dd"), Keys { send: b"a".to_vec(), detach: true });
+        }
+
+        #[test]
+        fn the_detach_sequence_can_be_split_across_reads() {
+            let mut escape = Escape::default();
+            assert_eq!(escape.feed(&[ESCAPE]), Keys { send: vec![], detach: false });
+            assert_eq!(escape.feed(b"d"), Keys { send: vec![], detach: true });
+        }
+
+        #[test]
+        fn a_plain_d_is_only_a_key_and_ctrl_bracket_otherwise_sends_both() {
+            let mut escape = Escape::default();
+            assert_eq!(escape.feed(b"d"), Keys { send: b"d".to_vec(), detach: false });
+            assert_eq!(escape.feed(&[ESCAPE, b'x']), Keys { send: vec![ESCAPE, b'x'], detach: false });
+            assert_eq!(escape.feed(&[ESCAPE, ESCAPE]), Keys { send: vec![ESCAPE], detach: false });
+            assert_eq!(escape.feed(b"d"), Keys { send: b"d".to_vec(), detach: false }, "the escape is over");
+            assert_eq!(escape.feed(&[ESCAPE, ESCAPE, b'd']), Keys { send: vec![ESCAPE, b'd'], detach: false });
+        }
+
+        #[test]
+        fn the_size_message_carries_a_size_the_hub_takes() {
+            assert_eq!(fit_size(120, 40), (120, 40));
+            assert_eq!(fit_size(0, 0), DEFAULT_SIZE, "a terminal that reports no size gets 80 by 24");
+            assert_eq!(fit_size(5000, 50), (MAX_SIZE, 50));
+            let (cols, rows) = fit_size(120, 40);
+            assert_eq!(size_frame(cols, rows), json!({"t": "resize", "cols": 120, "rows": 40}));
+        }
+
+        #[test]
+        fn a_shell_exit_code_is_the_process_exit_code() {
+            assert_eq!(exit_status(Some(0)), 0);
+            assert_eq!(exit_status(Some(3)), 3);
+            assert_eq!(exit_status(Some(-9)), 137, "a signal is 128 plus its number");
+            assert_eq!(exit_status(None), 1, "no code from the guest is a failure");
+        }
+
+        #[test]
+        fn the_hints_name_the_terminal_and_the_offset_to_resume_at() {
+            let hints = detach_hints("agent:12", "term-1", 42);
+            assert!(hints.contains("--attach term-1 --offset 42"), "{hints}");
+            assert!(hints.contains("--kill term-1"), "{hints}");
+        }
     }
 }
 
@@ -1038,5 +1757,17 @@ mod tests {
         assert!(parse(&["run", "agent:1", "--timeout", "5", "--", "ls"]).is_ok());
         assert!(parse(&["run", "agent:1"]).is_err(), "a run needs its command after --");
         assert!(parse(&["audit", "--workspace", "agent:1", "--limit", "10"]).is_ok());
+    }
+
+    #[test]
+    fn the_term_command_parses_its_forms() {
+        assert!(parse(&["term", "agent:1"]).is_ok());
+        assert!(parse(&["term", "agent:1", "--cwd", "src", "--no-tty"]).is_ok());
+        assert!(parse(&["term", "agent:1", "--attach", "term-1", "--offset", "4"]).is_ok());
+        assert!(parse(&["term", "agent:1", "--kill", "term-1"]).is_ok());
+        assert!(parse(&["term"]).is_err(), "a workspace is required");
+        assert!(parse(&["term", "agent:1", "--offset", "4"]).is_err(), "an offset needs --attach");
+        assert!(parse(&["term", "agent:1", "--kill", "t", "--attach", "t"]).is_err(), "kill and attach conflict");
+        assert!(parse(&["term", "agent:1", "--kill", "t", "--cwd", "src"]).is_err(), "kill takes no folder");
     }
 }
