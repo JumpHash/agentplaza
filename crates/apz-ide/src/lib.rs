@@ -6,7 +6,8 @@
 //! * [`workspace`] — `agent:<cid>` and `repo:<name>@<ref>` identities.
 //! * [`tree`] — entries, one page of a directory listing, child order.
 //! * [`buffer`] — an open file's text against the hash it was read at.
-//! * [`diff`] — `git diff` and `diff -u` output into a [`diff::ChangeSet`].
+//! * [`diff`] — `git diff` and `diff -u` output into a [`diff::ChangeSet`], and the reverse: two texts
+//!   written as a git unified diff.
 //! * [`path`] — relative-path rules and the secret deny list.
 //! * [`state`] — the tab, panel and base reducer.
 //!
@@ -23,7 +24,8 @@ pub mod workspace;
 
 pub use buffer::Buffer;
 pub use diff::{
-    ChangeSet, DiffError, FileChange, Hunk, Line, LineKind, Stats, Status, parse_unified,
+    ChangeSet, DiffError, FileChange, Hunk, Line, LineKind, Stats, Status, parse_unified, write_binary,
+    write_unified,
 };
 pub use path::{PathError, check_dir, check_path, check_read, check_write, is_secret};
 pub use state::{Action, Base, IdeState, Panel, reduce};

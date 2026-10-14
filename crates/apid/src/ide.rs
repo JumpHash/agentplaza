@@ -22,7 +22,7 @@
 //! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | contents API, 500 per page |
 //! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | contents API, text only, 1 MiB |
 //! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | commit `owner edit: <path>` on the branch |
-//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | compare `<base>...<head>` as a diff |
+//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | compare `<base>...<head>`: its file list, then each file at both refs, diffed here |
 //! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | the branch's recent commits |
 //! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (use git revert) |
 //! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 501 |
@@ -39,7 +39,7 @@
 use std::collections::BTreeSet;
 
 use apz_http::{Request, Response, Router};
-use apz_ide::diff::parse_unified;
+use apz_ide::diff::{parse_unified, write_binary, write_unified};
 use apz_ide::path::{PathError, check_dir, check_read, check_write};
 use apz_ide::tree::PAGE_SIZE;
 use apz_ide::workspace::WorkspaceId;
@@ -63,6 +63,12 @@ const MAX_TEXT: u64 = 1024 * 1024;
 const MAX_DIFF: usize = 8 * 1024 * 1024;
 /// The newest commits a repo workspace lists as checkpoints.
 const CHECKPOINT_LIMIT: usize = 50;
+/// The most changed files a repo changes call diffs. The rest are left out, and the answer says `truncated`.
+const MAX_CHANGED_FILES: usize = 300;
+/// The context lines around each change in a repo changes diff: git's default.
+const CHANGE_CONTEXT: usize = 3;
+/// The bytes of a file looked at for a NUL, the way git decides a file is binary.
+const BINARY_PROBE: usize = 8 * 1024;
 /// Repo names the IDE never offers: the platform's own source repository, under the names it has.
 const PLATFORM_REPOS: &[&str] = &["agentplaza", "agentplaza-mvp"];
 
@@ -734,10 +740,63 @@ fn default_branch(host: &dyn Host, name: &str) -> Result<String, Response> {
         .ok_or_else(|| Response::error(502, "the git host sent no default branch"))
 }
 
-/// `GET .../changes?base=` of a repo, as a unified diff from the base to the branch's head, parsed like the agent
-/// kind's. The base is `branch:<name>` (a compare of `<name>...<head>`). With no base, the default branch
-/// compares its last commit with that commit's parent, and any other branch compares with the default branch.
-/// The checkpoint is the head commit's sha.
+/// One side of a repo file at a ref. `Absent` is a file that is not there; `Binary` is one the IDE does not
+/// show as lines (a NUL in its first 8 KiB, not UTF-8, over 1 MiB, or not a regular file), with its blob hash.
+enum Side {
+    Absent,
+    Text(String),
+    Binary(String),
+}
+
+/// A repo file at `reference` (a branch, a tag or a commit), through the contents API. 404 is `Absent`.
+fn repo_side(host: &dyn Host, ws: &RepoWs, path: &str, reference: &str) -> Result<Side, Response> {
+    let (status, answer) = forge_raw(host, "GET", &git::contents_path(&ws.name, path, Some(reference)), None)?;
+    match status {
+        404 => return Ok(Side::Absent),
+        200..=299 => {}
+        _ => return Err(Response::error(status, message_of(&answer))),
+    }
+    let hash = answer["sha"].as_str().unwrap_or_default().to_string();
+    let regular = !answer.is_array() && answer["type"].as_str().is_none_or(|kind| kind == "file");
+    let size = answer["size"].as_u64().unwrap_or(0);
+    if !regular || size > MAX_TEXT {
+        return Ok(Side::Binary(hash));
+    }
+    let content = answer["content"]
+        .as_str()
+        .ok_or_else(|| Response::error(502, &format!("the git host sent no content for {path}")))?;
+    let bytes = git::base64_decode(content).map_err(|err| Response::error(502, &err))?;
+    if bytes[..bytes.len().min(BINARY_PROBE)].contains(&0) {
+        return Ok(Side::Binary(hash));
+    }
+    Ok(match String::from_utf8(bytes) {
+        Ok(text) => Side::Text(text),
+        Err(_) => Side::Binary(hash),
+    })
+}
+
+/// The diff text of one changed file between its two sides. Two text sides are diffed line by line; anything else
+/// is a `Binary files ... differ` entry, and a binary file whose blob hash is the same on both sides is no change.
+fn file_diff(old_path: Option<&str>, new_path: Option<&str>, old: &Side, new: &Side) -> String {
+    match (old, new) {
+        (Side::Binary(a), Side::Binary(b)) if a == b && old_path == new_path => String::new(),
+        (Side::Binary(_), _) | (_, Side::Binary(_)) => write_binary(old_path, new_path),
+        _ => {
+            let text = |side: &Side| match side {
+                Side::Text(t) => t.clone(),
+                _ => String::new(),
+            };
+            write_unified(old_path, new_path, &text(old), &text(new), CHANGE_CONTEXT)
+        }
+    }
+}
+
+/// `GET .../changes?base=` of a repo, as a unified diff from the base to the branch's head. The git host's compare
+/// JSON gives the changed files; each is read at both refs and diffed here, since Forgejo has no compare diff
+/// in its API. A renamed file is read at its old name on the base side. At most `MAX_CHANGED_FILES` files are
+/// diffed, and `truncated` says whether more changed. The base is `branch:<name>` (a compare of `<name>...<head>`).
+/// With no base, the default branch compares its last commit with that commit's parent, and any other branch
+/// compares with the default branch. The checkpoint is the head commit's sha.
 pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
     let commits = forge_call(
         host,
@@ -772,22 +831,42 @@ pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
             }
         }
     };
-    let compare = format!(
-        "/api/v1/repos/{ORG}/{}/compare/{}...{}.diff",
-        git::seg(&ws.name),
-        git::pct(&base_ref, true),
-        git::pct(&head_sha, true)
-    );
-    let diff = match forge_call(host, "GET", &compare, None)? {
-        Value::String(text) => text,
-        Value::Null => String::new(),
-        _ => return Err(Response::error(502, "the git host answered the compare with JSON, not a diff")),
-    };
-    if diff.len() > MAX_DIFF {
-        return Err(Response::error(413, "the diff is over 8 MiB; compare smaller ranges"));
+    let compare = forge_call(
+        host,
+        "GET",
+        &format!(
+            "/api/v1/repos/{ORG}/{}/compare/{}...{}",
+            git::seg(&ws.name),
+            git::pct(&base_ref, true),
+            git::pct(&head_sha, true)
+        ),
+        None,
+    )?;
+    let listed = compare["files"]
+        .as_array()
+        .ok_or_else(|| Response::error(502, "the git host sent no file list for the compare"))?;
+    let truncated = listed.len() > MAX_CHANGED_FILES;
+    let mut diff = String::new();
+    for item in listed.iter().take(MAX_CHANGED_FILES) {
+        let name = item["filename"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Response::error(502, "the git host sent a changed file with no name"))?;
+        let from = match (item["status"].as_str(), item["previous_filename"].as_str()) {
+            (Some("renamed"), Some(previous)) if !previous.is_empty() => previous,
+            _ => name,
+        };
+        let old = repo_side(host, ws, from, &base_ref)?;
+        let new = repo_side(host, ws, name, &head_sha)?;
+        let old_path = (!matches!(old, Side::Absent)).then_some(from);
+        let new_path = (!matches!(new, Side::Absent)).then_some(name);
+        diff.push_str(&file_diff(old_path, new_path, &old, &new));
+        if diff.len() > MAX_DIFF {
+            return Err(Response::error(413, "the diff is over 8 MiB; compare smaller ranges"));
+        }
     }
     let set = parse_unified(&diff)
-        .map_err(|err| Response::error(502, &format!("the git host's diff does not parse: {err}")))?;
+        .map_err(|err| Response::error(502, &format!("the diff built from the git host's files does not parse: {err}")))?;
     let stats = set.stats();
     Ok(json!({
         "base": label,
@@ -795,6 +874,7 @@ pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
         "diff": diff,
         "files": set.files,
         "stats": stats,
+        "truncated": truncated,
     }))
 }
 
@@ -1416,6 +1496,30 @@ mod tests {
         assert!(fake.forge_paths().is_empty());
     }
 
+    /// The sample repo's files at two refs: (path, ref, text). A path absent at a ref is not listed.
+    const DEFAULT_SIDES: &[(&str, &str, &str)] = &[
+        ("a.txt", "par0", "keep\nold\n"),
+        ("a.txt", "head1", "keep\nnew\n"),
+        ("b.txt", "head1", "hello\n"),
+    ];
+
+    /// The contents API's answer for `path` (a `/contents/<path>?ref=<ref>` call) from `files`.
+    fn contents(files: &'static [(&'static str, &'static str, &'static str)], path: &str) -> Result<(u16, Value), String> {
+        let Some((name, reference)) = path
+            .strip_prefix("/api/v1/repos/agentplaza/p1-plaza/contents/")
+            .and_then(|rest| rest.split_once("?ref="))
+        else {
+            return forge_ok(404, json!({"message": format!("unexpected {path}")}));
+        };
+        match files.iter().find(|(n, r, _)| *n == name && *r == reference) {
+            Some((_, _, text)) => forge_ok(
+                200,
+                json!({"type": "file", "size": text.len(), "sha": format!("blob-{name}-{reference}"), "content": git::base64(text.as_bytes())}),
+            ),
+            None => forge_ok(404, json!({"message": "file does not exist"})),
+        }
+    }
+
     #[test]
     fn changes_on_the_default_branch_are_its_last_commit_against_the_parent() {
         let fake = Fake::new("rlast", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
@@ -1423,38 +1527,59 @@ mod tests {
                 forge_ok(200, json!([{"sha": "head1", "parents": [{"sha": "par0"}], "commit": {"message": "x"}}]))
             }
             "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/par0...head1.diff" => Ok((200, Value::String(SAMPLE_DIFF.into()))),
-            _ => forge_ok(404, json!({"message": format!("unexpected {path}")})),
+            "/api/v1/repos/agentplaza/p1-plaza/compare/par0...head1" => forge_ok(
+                200,
+                json!({"files": [{"filename": "a.txt", "status": "changed"}, {"filename": "b.txt", "status": "added"}]}),
+            ),
+            p => contents(DEFAULT_SIDES, p),
         });
         let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
         assert_eq!(reply["base"], json!("commit:par0"));
         assert_eq!(reply["checkpoint"], json!("head1"));
-        assert_eq!(reply["diff"], json!(SAMPLE_DIFF));
+        assert_eq!(
+            reply["diff"],
+            json!(
+                "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n\
+                 diff --git a/b.txt b/b.txt\nnew file mode 100644\n--- /dev/null\n+++ b/b.txt\n@@ -0,0 +1 @@\n+hello\n"
+            )
+        );
         assert_eq!(reply["files"].as_array().unwrap().len(), 2);
+        assert_eq!(reply["files"][0]["status"], json!("modified"));
         assert_eq!(reply["files"][1]["status"], json!("added"));
         assert_eq!(reply["stats"]["additions"], json!(2));
         assert_eq!(reply["stats"]["deletions"], json!(1));
+        assert_eq!(reply["truncated"], json!(false));
+        assert!(fake.forge_paths().contains(&"GET /api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=par0".to_string()));
+        assert!(fake.forge_paths().contains(&"GET /api/v1/repos/agentplaza/p1-plaza/contents/b.txt?ref=head1".to_string()));
     }
 
     #[test]
     fn changes_on_another_branch_compare_with_the_default_branch_and_a_named_base_is_used() {
+        const SIDES: &[(&str, &str, &str)] = &[
+            ("a.txt", "main", "keep\nold\n"),
+            ("a.txt", "head2", "keep\nnew\n"),
+            ("b.txt", "head2", "hello\n"),
+        ];
         let fake = Fake::new("rbranch", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
             p if p.contains("commits?sha=feature%2Fx") => forge_ok(200, json!([{"sha": "head2", "parents": [], "commit": {}}])),
             "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/main...head2.diff" => Ok((200, Value::String(SAMPLE_DIFF.into()))),
-            _ => forge_ok(404, json!({"message": format!("unexpected {path}")})),
+            "/api/v1/repos/agentplaza/p1-plaza/compare/main...head2" => forge_ok(
+                200,
+                json!({"files": [{"filename": "a.txt", "status": "changed"}, {"filename": "b.txt", "status": "added"}]}),
+            ),
+            p => contents(SIDES, p),
         });
         let reply = repo_changes(&fake, &repo("p1-plaza", "feature/x"), None).unwrap();
         assert_eq!(reply["base"], json!("branch:main"));
         assert_eq!(reply["files"].as_array().unwrap().len(), 2);
-        assert!(fake.forge_paths().iter().any(|p| p.ends_with("compare/main...head2.diff")));
+        assert!(fake.forge_paths().iter().any(|p| p.ends_with("compare/main...head2")));
     }
 
     #[test]
-    fn changes_refuse_a_base_that_is_not_a_branch_and_an_empty_diff_has_no_files() {
+    fn changes_refuse_a_base_that_is_not_a_branch_and_an_empty_compare_has_no_files() {
         let fake = Fake::new("rbase", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
             p if p.contains("commits?sha=") => forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}])),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/main...h.diff" => Ok((200, Value::Null)),
+            "/api/v1/repos/agentplaza/p1-plaza/compare/main...h" => forge_ok(200, json!({"files": []})),
             _ => forge_ok(200, json!({"default_branch": "main"})),
         });
         let ws = repo("p1-plaza", "main");
@@ -1463,6 +1588,73 @@ mod tests {
         let empty = repo_changes(&fake, &ws, Some("branch:main")).unwrap();
         assert_eq!(empty["files"], json!([]));
         assert_eq!(empty["stats"]["files"], json!(0));
+        assert_eq!(empty["diff"], json!(""));
+    }
+
+    #[test]
+    fn changes_follow_renames_and_list_binary_files_without_lines() {
+        const SIDES: &[(&str, &str, &str)] = &[
+            ("old.txt", "par9", "line\n"),
+            ("moved.txt", "head3", "line\n"),
+            ("bin.dat", "par9", "\0\u{1}"),
+            ("bin.dat", "head3", "\0\u{2}"),
+        ];
+        let fake = Fake::new("rren", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
+            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => {
+                forge_ok(200, json!([{"sha": "head3", "parents": [{"sha": "par9"}], "commit": {}}]))
+            }
+            "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
+            "/api/v1/repos/agentplaza/p1-plaza/compare/par9...head3" => forge_ok(
+                200,
+                json!({"files": [
+                    {"filename": "moved.txt", "status": "renamed", "previous_filename": "old.txt"},
+                    {"filename": "bin.dat", "status": "changed"},
+                ]}),
+            ),
+            p => contents(SIDES, p),
+        });
+        let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
+        assert_eq!(
+            reply["diff"],
+            json!(
+                "diff --git a/old.txt b/moved.txt\nrename from old.txt\nrename to moved.txt\n\
+                 diff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n"
+            )
+        );
+        let files = reply["files"].as_array().unwrap();
+        assert_eq!((files[0]["status"].clone(), files[0]["old_path"].clone()), (json!("renamed"), json!("old.txt")));
+        assert_eq!(files[0]["hunks"], json!([]));
+        assert_eq!((files[1]["path"].clone(), files[1]["binary"].clone()), (json!("bin.dat"), json!(true)));
+    }
+
+    #[test]
+    fn changes_list_at_most_300_files_and_say_so_when_there_are_more() {
+        let listed: Vec<Value> = (0..301).map(|i| json!({"filename": format!("f{i}.txt"), "status": "changed"})).collect();
+        let listing = json!({"files": listed});
+        let fake = Fake::new("rmany", |_, _| ok(json!({}))).with_forge(move |_, path, _| match path {
+            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => {
+                forge_ok(200, json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]))
+            }
+            "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
+            "/api/v1/repos/agentplaza/p1-plaza/compare/p...h" => forge_ok(200, listing.clone()),
+            // The same text at both refs: each file is read, and none differs.
+            _ => forge_ok(200, json!({"type": "file", "size": 2, "sha": "s", "content": git::base64(b"x\n")})),
+        });
+        let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
+        assert_eq!(reply["truncated"], json!(true));
+        assert_eq!(reply["files"], json!([]));
+        let reads = fake.forge_paths().iter().filter(|p| p.contains("/contents/")).count();
+        assert_eq!(reads, 2 * MAX_CHANGED_FILES);
+    }
+
+    #[test]
+    fn a_compare_without_a_file_list_is_the_git_hosts_fault() {
+        let fake = Fake::new("rnolist", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
+            p if p.contains("commits?sha=") => forge_ok(200, json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}])),
+            p if p.contains("/compare/") => forge_ok(200, json!({"total_commits": 1})),
+            _ => forge_ok(200, json!({"default_branch": "main"})),
+        });
+        assert_eq!(status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)), 502);
     }
 
     #[test]
