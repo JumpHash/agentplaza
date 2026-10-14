@@ -7,7 +7,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::{button, column, container, pick_list, row, stack, text, text_editor, text_input, Space};
-use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
+use iced::{font, keyboard, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -107,15 +107,29 @@ pub struct PullFile {
     deletions: u64,
 }
 
+/// One comment in a pull request's discussion (an issue comment on it).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Comment {
+    author: String,
+    body: String,
+    at: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullDetail {
+    /// The row: `comments` is the discussion's count; the comments themselves are `discussion`.
     #[serde(flatten)]
     pull: Pull,
     body: String,
     diff: String,
     reviews: Vec<Review>,
+    #[serde(default)]
+    discussion: Vec<Comment>,
     files: Vec<PullFile>,
 }
+
+/// How many pull requests one page of the list asks for (the hub's limit maximum).
+const PULL_PAGE: u64 = 50;
 
 /// What the screen shows, as the last load fetched it.
 #[derive(Debug, Clone, Default)]
@@ -130,6 +144,8 @@ pub struct Data {
     readme: Option<FileView>,
     file: Option<FileView>,
     pulls: Vec<Pull>,
+    /// True when the list has a further page (the last one loaded was full).
+    pulls_more: bool,
     pull: Option<PullDetail>,
 }
 
@@ -141,6 +157,7 @@ impl Data {
         self.readme = None;
         self.file = None;
         self.pulls.clear();
+        self.pulls_more = false;
         self.pull = None;
     }
 
@@ -210,6 +227,7 @@ pub enum Modal {
     #[default]
     None,
     NewRepo,
+    NewPull,
     Review(ReviewEvent),
     Merge,
 }
@@ -252,6 +270,8 @@ pub struct Query {
     git_ref: String,
     path: String,
     file: String,
+    /// How many pages of the pull request list are loaded (each page is fetched again on a poll).
+    pages: u64,
 }
 
 #[derive(Debug, Default)]
@@ -263,6 +283,8 @@ pub struct State {
     pub repo: String,
     pub tab: Tab,
     pub pulls: PullState,
+    /// The pages of the pull request list the screen has asked for (0 counts as 1).
+    pub pull_pages: u64,
     /// The open pull request's number.
     pub pr: Option<u64>,
     pub git_ref: String,
@@ -270,8 +292,14 @@ pub struct State {
     pub file_path: String,
     pub modal: Modal,
     pub new_name: String,
-    /// The text of the open modal (a description or a review).
+    /// The text of the open modal (a description or a review), and a new pull request's body.
     pub body: text_editor::Content,
+    /// The new pull request's title, head branch and base branch.
+    pub pr_title: String,
+    pub pr_head: Option<String>,
+    pub pr_base: Option<String>,
+    /// The discussion's comment box.
+    pub comment: text_editor::Content,
     pub merge_style: MergeStyle,
 }
 
@@ -295,6 +323,17 @@ pub enum Msg {
     MergeStyle(MergeStyle),
     CreateRepo,
     Created(Result<String, String>),
+    PrTitle(String),
+    PrHead(String),
+    PrBase(String),
+    CreatePull,
+    PullCreated(Result<Pull, String>),
+    MorePulls,
+    Comment(text_editor::Action),
+    SendComment,
+    Commented(Result<String, String>),
+    /// Closes ("closed") or reopens ("open") the open pull request.
+    SetState(&'static str),
     SendReview(ReviewEvent),
     Merge,
     Acted(Result<String, String>),
@@ -317,6 +356,7 @@ fn query(state: &State) -> Query {
         git_ref: state.git_ref.clone(),
         path: state.path.clone(),
         file: state.file_path.clone(),
+        pages: state.pull_pages.max(1),
     }
 }
 
@@ -358,7 +398,18 @@ fn fetch(client: &Client, q: &Query) -> Result<Data, String> {
         Tab::Commits => d.commits = client.get(&format!("{base}/commits?ref={}&limit=30", enc(&q.git_ref)))?,
         Tab::Pulls => match q.pr {
             Some(n) => d.pull = Some(client.get(&format!("{base}/pulls/{n}"))?),
-            None => d.pulls = client.get(&format!("{base}/pulls?state={}", q.pulls.key()))?,
+            None => {
+                // Every page loaded so far, in order: a poll keeps the list as the reader paged it.
+                for page in 1..=q.pages {
+                    let rows: Vec<Pull> = client.get(&format!("{base}/pulls?state={}&page={page}&limit={PULL_PAGE}", q.pulls.key()))?;
+                    let full = rows.len() as u64 == PULL_PAGE;
+                    d.pulls.extend(rows);
+                    d.pulls_more = full;
+                    if !full {
+                        break;
+                    }
+                }
+            }
         },
         _ => {}
     }
@@ -403,6 +454,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.repo = name;
             state.tab = Tab::Code;
             state.pr = None;
+            state.pull_pages = 1;
             state.git_ref.clear();
             state.path.clear();
             state.file_path.clear();
@@ -414,6 +466,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.repo.clear();
             state.tab = Tab::Code;
             state.pr = None;
+            state.pull_pages = 1;
             state.data.clear_repo();
             refresh(state, ctx)
         }
@@ -425,7 +478,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Pulls(filter) => {
             state.pulls = filter;
+            state.pull_pages = 1;
             state.data.pulls.clear();
+            refresh(state, ctx)
+        }
+        Msg::MorePulls => {
+            state.pull_pages = state.pull_pages.max(1) + 1;
             refresh(state, ctx)
         }
         Msg::OpenPull(n) => {
@@ -464,10 +522,99 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if modal == Modal::NewRepo {
                 state.new_name.clear();
             }
+            if modal == Modal::NewPull {
+                // The base starts on the repository's default branch; the head is the reader's pick.
+                state.pr_title.clear();
+                state.pr_head = None;
+                state.pr_base = state.data.repos.iter().find(|r| r.name == state.repo).map(|r| r.default_branch.clone());
+            }
             if modal == Modal::Merge {
                 state.merge_style = MergeStyle::Merge;
             }
             Task::none()
+        }
+        Msg::PrTitle(title) => {
+            state.pr_title = title;
+            Task::none()
+        }
+        Msg::PrHead(name) => {
+            state.pr_head = Some(name);
+            Task::none()
+        }
+        Msg::PrBase(name) => {
+            state.pr_base = Some(name);
+            Task::none()
+        }
+        Msg::CreatePull => {
+            let title = state.pr_title.trim().to_string();
+            if title.is_empty() {
+                state.error = Some("Give the pull request a title".into());
+                return Task::none();
+            }
+            let (Some(head), Some(base)) = (state.pr_head.clone(), state.pr_base.clone()) else {
+                state.error = Some("Pick the branch to merge from and the branch to merge into".into());
+                return Task::none();
+            };
+            if head == base {
+                state.error = Some("Pick two different branches".into());
+                return Task::none();
+            }
+            let payload = json!({ "title": title, "head": head, "base": base, "body": state.body.text().trim() });
+            let path = format!("/v1/git/repos/{}/pulls", state.repo);
+            let client = ctx.client.clone();
+            client::task(move || client.post::<Pull>(&path, &payload), Msg::PullCreated)
+        }
+        Msg::PullCreated(res) => match res {
+            Ok(pull) => {
+                state.modal = Modal::None;
+                state.notice = Some(format!("#{} opened", pull.number));
+                state.tab = Tab::Pulls;
+                state.pr = Some(pull.number);
+                state.data.clear_tab();
+                refresh(state, ctx)
+            }
+            Err(e) => {
+                state.error = Some(e);
+                Task::none()
+            }
+        },
+        Msg::Comment(action) => {
+            state.comment.perform(action);
+            Task::none()
+        }
+        Msg::SendComment => {
+            let body = state.comment.text().trim().to_string();
+            let Some(n) = state.pr else {
+                return Task::none();
+            };
+            if body.is_empty() {
+                return Task::none();
+            }
+            let path = format!("/v1/git/repos/{}/pulls/{n}/comments", state.repo);
+            let payload = json!({ "body": body });
+            let client = ctx.client.clone();
+            client::task(move || client.post::<Value>(&path, &payload).map(|_| "Comment posted".to_string()), Msg::Commented)
+        }
+        Msg::Commented(res) => match res {
+            Ok(notice) => {
+                state.comment = text_editor::Content::new();
+                state.notice = Some(notice);
+                refresh(state, ctx)
+            }
+            Err(e) => {
+                state.error = Some(e);
+                Task::none()
+            }
+        },
+        Msg::SetState(to) => {
+            let Some(n) = state.pr else {
+                return Task::none();
+            };
+            let path = format!("/v1/git/repos/{}/pulls/{n}/state", state.repo);
+            let payload = json!({ "state": to });
+            let client = ctx.client.clone();
+            let done = if to == "closed" { "closed" } else { "reopened" };
+            client::task(move || client.post::<Value>(&path, &payload).map(|_| format!("#{n} {done}")), Msg::Acted)
         }
         Msg::NewName(name) => {
             state.new_name = name;
@@ -498,6 +645,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.notice = Some("Repository created".into());
                 state.tab = Tab::Code;
                 state.pr = None;
+                state.pull_pages = 1;
                 state.git_ref.clear();
                 state.path.clear();
                 state.file_path.clear();
@@ -888,7 +1036,13 @@ fn pulls_view<'a>(state: &'a State) -> Element<'a, Msg> {
     } else {
         list(state.data.pulls.iter().map(pull_row).collect())
     };
-    column![row(filters).spacing(6), body].spacing(12).into()
+    let new_pr = ui::btn("New pull request", None, Kind::Primary, Some(Msg::Modal(Modal::NewPull)));
+    let head = row![row(filters).spacing(6), Space::new().width(Length::Fill), new_pr].align_y(Alignment::Center);
+    let mut items: Vec<Element<'a, Msg>> = vec![head.into(), body];
+    if state.data.pulls_more {
+        items.push(ui::btn("Load more", None, Kind::Ghost, Some(Msg::MorePulls)));
+    }
+    column(items).spacing(12).into()
 }
 
 fn pull_row<'a>(p: &Pull) -> Element<'a, Msg> {
@@ -940,11 +1094,17 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(12)
     .align_y(Alignment::Center);
+    let toggle = if open {
+        ui::btn("Close", None, Kind::Ghost, Some(Msg::SetState("closed")))
+    } else {
+        ui::btn("Reopen", None, Kind::Ghost, Some(Msg::SetState("open")))
+    };
     let buttons = row![
         ui::btn("Approve", None, Kind::Primary, Some(Msg::Modal(Modal::Review(ReviewEvent::Approve)))),
         ui::btn("Request changes", None, Kind::Danger, Some(Msg::Modal(Modal::Review(ReviewEvent::RequestChanges)))),
         ui::btn("Comment", None, Kind::Ghost, Some(Msg::Modal(Modal::Review(ReviewEvent::Comment)))),
         ui::btn("Merge", None, Kind::Primary, mergeable.then_some(Msg::Modal(Modal::Merge))),
+        toggle,
     ]
     .spacing(8);
     // The web explains a disabled Merge in its tooltip; the desktop says it under the buttons.
@@ -975,10 +1135,42 @@ fn pull_page<'a>(state: &'a State) -> Element<'a, Msg> {
         ui::card(&format!("Files changed ({})", d.files.len()), files),
         ui::card("Diff", diff_view(&d.diff)),
         ui::card(&format!("Reviews ({})", d.reviews.len()), reviews),
+        ui::card(&format!("Discussion ({})", d.discussion.len()), discussion_view(state, d)),
     ]
     .spacing(16);
     let head = column![container(trail).padding(Padding { top: 24.0, right: 0.0, bottom: 0.0, left: 0.0 }), ui::view_head(&p.title, vec![])];
     sheet(state, head.into(), body.into())
+}
+
+/// The discussion: its comments in order, then the comment box. Ctrl/Cmd+Enter posts the comment.
+fn discussion_view<'a>(state: &'a State, d: &'a PullDetail) -> Element<'a, Msg> {
+    let comments: Element<'a, Msg> = if d.discussion.is_empty() {
+        ui::faint("No comments yet.").into()
+    } else {
+        column(d.discussion.iter().map(comment_row).collect::<Vec<Element<'a, Msg>>>()).spacing(12).into()
+    };
+    let editor = text_editor(&state.comment)
+        .placeholder("Write a comment (Ctrl+Enter posts)")
+        .height(Length::Fixed(96.0))
+        .on_action(Msg::Comment)
+        .key_binding(|kp| {
+            if kp.key == keyboard::Key::Named(keyboard::key::Named::Enter) && kp.modifiers.command() {
+                Some(text_editor::Binding::Custom(Msg::SendComment))
+            } else {
+                text_editor::Binding::from_key_press(kp)
+            }
+        });
+    let can_send = state.pr.is_some() && !state.comment.text().trim().is_empty();
+    let send = ui::btn("Post comment", None, Kind::Primary, can_send.then_some(Msg::SendComment));
+    column![comments, editor, row![Space::new().width(Length::Fill), send]].spacing(12).into()
+}
+
+/// One comment: its author and age, then its text.
+fn comment_row<'a>(c: &Comment) -> Element<'a, Msg> {
+    let head = row![text(c.author.clone()).font(SERIF_BOLD).size(14.0).color(INK), ui::faint(ago(&c.at))]
+        .spacing(10)
+        .align_y(Alignment::Center);
+    column![head, ui::prose(c.body.clone()).size(14.0)].spacing(6).into()
 }
 
 fn file_row<'a>(f: &PullFile) -> Element<'a, Msg> {
@@ -1067,6 +1259,7 @@ fn modal_layer<'a>(state: &'a State, modal: Modal) -> Element<'a, Msg> {
     let (title, body): (String, Element<'a, Msg>) = match modal {
         Modal::None => (String::new(), column![].into()),
         Modal::NewRepo => ("New repository".to_string(), new_repo_form(state)),
+        Modal::NewPull => ("New pull request".to_string(), new_pull_form(state)),
         Modal::Review(event) => (format!("{} on #{n}", event.label()), review_form(state, event)),
         Modal::Merge => (format!("Merge #{n}"), merge_form(state)),
     };
@@ -1095,6 +1288,37 @@ fn new_repo_form<'a>(state: &'a State) -> Element<'a, Msg> {
                 .into(),
         ),
         form_actions(Msg::CreateRepo, "Create", Kind::Primary),
+    ]
+    .spacing(14)
+    .into()
+}
+
+/// The new pull request's form: title, the head and base branches (base starts on the repository's
+/// default), and an optional description.
+fn new_pull_form<'a>(state: &'a State) -> Element<'a, Msg> {
+    let names: Vec<String> = state.data.branches.iter().map(|b| b.name.clone()).collect();
+    let head = pick_list(names.clone(), state.pr_head.clone(), Msg::PrHead);
+    let base = pick_list(names, state.pr_base.clone(), Msg::PrBase);
+    column![
+        field(
+            "Title",
+            text_input("What this change does", &state.pr_title)
+                .on_input(Msg::PrTitle)
+                .on_submit(Msg::CreatePull)
+                .style(theme::input)
+                .into(),
+        ),
+        field("From (head branch)", head.into()),
+        field("Into (base branch)", base.into()),
+        field(
+            "Description",
+            text_editor(&state.body)
+                .placeholder("Optional")
+                .on_action(Msg::Body)
+                .height(Length::Fixed(120.0))
+                .into(),
+        ),
+        form_actions(Msg::CreatePull, "Open pull request", Kind::Primary),
     ]
     .spacing(14)
     .into()
@@ -1280,6 +1504,43 @@ mod tests {
         assert_eq!(log[0].short, "9f2c1ab");
         assert_eq!(first_line(&log[0].message), "hub: fix");
         assert_eq!((log[0].additions, log[0].deletions), (12, 3));
+    }
+
+    #[test]
+    fn git_pull_detail_keeps_the_comment_count_and_parses_the_discussion() {
+        // The hub's detail: the row's `comments` is a count; the comments are under `discussion`.
+        let json = r#"{
+            "number": 7, "title": "Add the tab", "state": "open", "author": "agent-5",
+            "head": "feature", "base": "main", "updated_at": "2026-10-02T09:30:00Z",
+            "comments": 2, "review": "pending", "mergeable": true,
+            "body": "Adds it.", "diff": "+x\n",
+            "reviews": [{"author": "agent-3", "state": "APPROVED", "body": "", "at": "2026-10-02T09:10:00Z"}],
+            "discussion": [
+                {"author": "agent-5", "body": "first", "at": "2026-10-02T09:00:00Z"},
+                {"author": "agent-3", "body": "second", "at": "2026-10-02T09:30:00Z"}
+            ],
+            "files": [{"path": "a.rs", "additions": 1, "deletions": 0}]
+        }"#;
+        let detail: PullDetail = serde_json::from_str(json).expect("detail parses");
+        assert_eq!(detail.pull.number, 7);
+        assert_eq!(detail.pull.comments, 2, "comments is the count");
+        assert_eq!(detail.discussion.len(), 2);
+        assert_eq!(detail.discussion[0].author, "agent-5");
+        assert_eq!(detail.discussion[1].body, "second");
+        assert_eq!(detail.reviews.len(), 1);
+        assert_eq!(detail.files[0].path, "a.rs");
+    }
+
+    #[test]
+    fn git_pull_detail_without_a_discussion_is_empty() {
+        let json = r#"{
+            "number": 8, "title": "t", "state": "closed", "author": "a", "head": "h", "base": "main",
+            "updated_at": "", "comments": 0, "review": "pending", "mergeable": false,
+            "body": "", "diff": "", "reviews": [], "files": []
+        }"#;
+        let detail: PullDetail = serde_json::from_str(json).expect("detail parses");
+        assert_eq!(detail.pull.comments, 0);
+        assert!(detail.discussion.is_empty());
     }
 
     #[test]
