@@ -38,6 +38,7 @@ use serde_json::Value;
 
 use super::Infraction;
 use crate::stations::recordings::{Event, Recording};
+use crate::stations::sync::Row;
 
 /// The size at which a file rotates to its first generation.
 pub const ROTATE_BYTES: u64 = 32 * 1024 * 1024;
@@ -457,6 +458,38 @@ impl Files {
         Ok(rows)
     }
 
+    /// The work-folder sync rows of one workstation: `<dir>/station-sync/<station>.json`, a whole file rewritten on each
+    /// save (the rows are few, and a path's row is replaced, so no line log is needed).
+    pub fn station_sync_rows(&self, station: &str) -> Result<Vec<Row>, String> {
+        let _guard = self.lock();
+        read_sync_rows(&self.sync_path(station)?).map_err(text)
+    }
+
+    /// Replaces the sync rows named in `rows`, keeping the others of the workstation.
+    pub fn save_station_sync_rows(&self, station: &str, rows: &[Row]) -> Result<(), String> {
+        let _guard = self.lock();
+        let path = self.sync_path(station)?;
+        let mut all: BTreeMap<String, Row> = read_sync_rows(&path).map_err(text)?.into_iter().map(|r| (r.path.clone(), r)).collect();
+        for row in rows {
+            all.insert(row.path.clone(), row.clone());
+        }
+        let list: Vec<&Row> = all.values().collect();
+        let bytes = serde_json::to_vec_pretty(&list).map_err(text)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(text)?;
+        }
+        crate::providers::write_atomic(&path, &bytes, 0o600).map_err(text)
+    }
+
+    /// The file of one workstation's sync rows. The id must be plain, since it names the file.
+    fn sync_path(&self, station: &str) -> Result<PathBuf, String> {
+        let plain = !station.is_empty() && station.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
+        if !plain {
+            return Err(format!("{station:?} is not a workstation id"));
+        }
+        Ok(self.dir.join("station-sync").join(format!("{station}.json")))
+    }
+
     /// Fsyncs the files written since the last call (the periodic saver runs it).
     pub fn sync(&self) -> Result<(), String> {
         let mut open = self.lock();
@@ -551,6 +584,15 @@ impl Files {
         file.write_all(line)?;
         *slot = Some(file);
         Ok(())
+    }
+}
+
+/// One workstation's sync rows from its file; a missing file holds none.
+fn read_sync_rows(path: &Path) -> io::Result<Vec<Row>> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
     }
 }
 

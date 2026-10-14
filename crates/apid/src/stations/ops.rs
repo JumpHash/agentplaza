@@ -416,6 +416,8 @@ impl Hooks for Live<'_> {
                 let _ = link.request(Op::Freeze { on: true }, RPC_TIMEOUT);
             }
             grant_next(&app, &id);
+            // The work folder: a station that was away may have changed files, and the hub may have written some.
+            super::sync::kick(&app, &id);
         });
         Ok(())
     }
@@ -452,7 +454,9 @@ impl Hooks for Live<'_> {
                 app.bus.publish("lease_owner_input", &lease);
             }
             Event::Log { level, message } => eprintln!("apid: workstation {id}: {level:?}: {message}"),
-            Event::Frame { .. } | Event::SyncChanged { .. } => {}
+            // The station's manifest is asked for by the pass, so a change is only a reason to run one.
+            Event::SyncChanged { .. } => super::sync::kick(app, id),
+            Event::Frame { .. } => {}
         }
     }
 }

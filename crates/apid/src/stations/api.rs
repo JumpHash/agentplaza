@@ -25,6 +25,12 @@
 //!   PUT    /v1/stations/{id}/settings         StationSettings (a partial object takes the defaults) → {settings, pushed, push_error}
 //!   POST   /v1/stations/{id}/leases           {agent, task?, kind: "shared"|"pixel"} → 201 LeaseView
 //!   GET    /v1/stations/{id}/leases           → [LeaseView] (queued leases carry their position)
+//!   GET    /v1/stations/{id}/sync             → the work-folder sync's state: files, bytes, last_sync_ms, linked, conflicts
+//!   GET    /v1/stations/{id}/files?prefix=    → [FileView] of the mirrored work folder (sync.rs)
+//!   GET    /v1/stations/{id}/files/{path}     → the file's content (its last version the hub holds)
+//!   PUT    /v1/stations/{id}/files/{path}     raw bytes → 201 FileView (the next pass pushes it to the station)
+//!   DELETE /v1/stations/{id}/files/{path}     → FileView, deleted (the next pass removes it on the station)
+//!   POST   /v1/stations/{id}/files/{path}/deliver  {title?, description?, task?} → 201, the file into the Library
 //!   DELETE /v1/stations/{id}/leases/{lease}   → the released lease
 //!   POST   /internal/v1/agents/{cid}/stations/{id}/leases           {task?, kind} → 201 LeaseView (the agent's own)
 //!   DELETE /internal/v1/agents/{cid}/stations/{id}/leases/{lease}   → the lease, when it is that agent's
@@ -45,6 +51,8 @@ use super::act;
 use super::leases::Kind;
 use super::ops::{self, Failure};
 use super::recordings;
+use super::sync;
+use crate::deliverables::guess_type;
 use crate::settings::RecordingDefaults;
 use crate::state::App;
 
@@ -76,6 +84,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/stations/{id}/leases", |app, req, p| open_lease_route(app, req, p.get("id"), None, OWNER))
         .get("/v1/stations/{id}/leases", |app, _, p| leases_route(app, p.get("id")))
         .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| release_route(app, p.get("id"), p.get("lease"), None, OWNER))
+        .get("/v1/stations/{id}/sync", |app, _, p| sync_state_route(app, p.get("id")))
+        .get("/v1/stations/{id}/files", |app, req, p| sync_files_route(app, req, p.get("id")))
+        .get("/v1/stations/{id}/files/{path..}", |app, _, p| sync_read_route(app, p.get("id"), p.get("path")))
+        .route("PUT", "/v1/stations/{id}/files/{path..}", |app, req, p| sync_put_route(app, req, p.get("id"), p.get("path")))
+        .delete("/v1/stations/{id}/files/{path..}", |app, _, p| sync_delete_route(app, p.get("id"), p.get("path")))
+        .post("/v1/stations/{id}/files/{path..}", |app, req, p| sync_post_route(app, req, p.get("id"), p.get("path")))
         .post("/internal/v1/agents/{cid}/stations/{id}/leases", |app, req, p| {
             crate::internal::authorized(app, req, p.get("cid"), |cid| Ok(agent_open_lease_route(app, req, p.get("id"), cid)))
         })
@@ -84,6 +98,64 @@ pub fn routes(router: Router<App>) -> Router<App> {
         });
     // The live views and the takeover socket (screen.rs, control.rs).
     super::control::routes(super::screen::routes(router))
+}
+
+#[derive(Default, Deserialize)]
+struct DeliverBody {
+    title: Option<String>,
+    description: Option<String>,
+    task: Option<String>,
+}
+
+fn sync_state_route(app: &App, id: &str) -> Response {
+    match sync::state(app, id) {
+        Ok(state) => Response::json(200, &state),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn sync_files_route(app: &App, req: &Request, id: &str) -> Response {
+    let prefix = req.query_param("prefix").unwrap_or("");
+    match sync::list(app, id, prefix) {
+        Ok(files) => Response::json(200, &files),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn sync_read_route(app: &App, id: &str, path: &str) -> Response {
+    match sync::read(app, id, path) {
+        Ok((bytes, _)) => Response::new(200, guess_type(path), bytes).with_header("x-content-type-options", "nosniff"),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn sync_put_route(app: &App, req: &Request, id: &str, path: &str) -> Response {
+    match sync::put(app, id, path, &req.body, OWNER) {
+        Ok(file) => Response::json(201, &file),
+        Err(failure) => fail(failure),
+    }
+}
+
+fn sync_delete_route(app: &App, id: &str, path: &str) -> Response {
+    match sync::remove(app, id, path, OWNER) {
+        Ok(file) => Response::json(200, &file),
+        Err(failure) => fail(failure),
+    }
+}
+
+/// `POST .../files/{path}/deliver` (the router's wildcard takes the path, so the suffix is checked here).
+fn sync_post_route(app: &App, req: &Request, id: &str, path: &str) -> Response {
+    let Some(file) = path.strip_suffix("/deliver") else {
+        return Response::error(404, "POST a file's path ending in /deliver to put it in the Library");
+    };
+    let body: DeliverBody = match parse_or_default(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    match sync::deliver(app, id, file, body.title, body.description, body.task, OWNER) {
+        Ok(item) => Response::json(201, &json!({"id": item.id, "name": item.name, "size": item.size, "kind": item.kind, "audience": item.audience})),
+        Err(failure) => fail(failure),
+    }
 }
 
 /// An agent opens its own lease through the choke point (`act::lease_open`): the laws and the station's rules apply.

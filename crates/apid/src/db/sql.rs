@@ -39,6 +39,10 @@ pub const STATION_RECORDING_DELETE: &str = include_str!("../../sql/queries/stati
 pub const STATION_RECORDING_EVENT_APPEND: &str = include_str!("../../sql/queries/station_recording_event_append.sql");
 pub const STATION_RECORDING_EVENTS_PAGE: &str = include_str!("../../sql/queries/station_recording_events_page.sql");
 
+// The work-folder sync's mirror (`station_sync_files`, migration 0011; stations/sync.rs).
+pub const STATION_SYNC_ROWS: &str = include_str!("../../sql/queries/station_sync_rows.sql");
+pub const STATION_SYNC_SAVE: &str = include_str!("../../sql/queries/station_sync_save.sql");
+
 // The migration runner's bookkeeping (`schema_migrations`, the advisory lock).
 pub const MIGRATION_TABLE_ENSURE: &str = include_str!("../../sql/queries/migration_table_ensure.sql");
 pub const MIGRATION_APPLIED: &str = include_str!("../../sql/queries/migration_applied.sql");

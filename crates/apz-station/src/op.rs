@@ -18,7 +18,9 @@
 //! - `apps` list: an array of `{"id", "name", "path", "scripting"}`.
 //! - `script`: `{"exit_code", "output", "timed_out"}`; `exit_code` is null when a signal ended it.
 //! - `sync` status: `{"files", "pending"}`; manifest: `{"entries": [{"path", "hash", "size"}]}`;
-//!   pull: `{"path", "hash", "data_b64"}`; push: `{"path", "hash"}` (or a conflict error).
+//!   pull: `{"path", "hash", "size", "offset", "data_b64", "eof"}`, one chunk of at most `SYNC_CHUNK` bytes;
+//!   push: `{"path", "received"}` while the file is incomplete, `{"path", "received", "hash"}` once it is in place
+//!   (or a conflict error); delete: `null`. The reply types are in `sync`.
 
 use serde::{Deserialize, Serialize};
 
@@ -215,19 +217,33 @@ pub enum AppsOp {
 pub enum SyncOp {
     Status,
     Manifest,
-    /// Fetches the content of `path` whose hash is `hash`.
+    /// Fetches the content of `path` whose hash is `hash`, one chunk at `offset` (0 when absent).
     Pull {
         path: String,
         hash: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
     },
     /// Writes `data_b64` as `path`, whose content hash is `hash`. `base_hash` is the version the writer
     /// last saw (null for a new file); when the machine's copy has moved on, the push is a conflict.
+    /// A file larger than one chunk comes in pieces: each piece is `data_b64` at `offset`, of a file `total`
+    /// bytes long. The first piece checks the base; the last one checks the hash and puts the file in place.
+    /// Absent `offset` and `total` mean the whole file is in `data_b64`.
     Push {
         path: String,
         hash: String,
         data_b64: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
+    /// Removes `path`, when its content is still `base_hash`; otherwise a conflict.
+    Delete {
+        path: String,
+        base_hash: String,
     },
     /// Settles a conflict: keep the hub's copy, the station's copy, or both (the other kept as a conflict copy).
     Resolve {
@@ -519,8 +535,17 @@ mod tests {
                 Op::Sync(SyncOp::Pull {
                     path: "out/render.png".into(),
                     hash: "9f86d0".into(),
+                    offset: None,
                 }),
                 r#"{"op":"sync","cmd":"pull","path":"out/render.png","hash":"9f86d0"}"#,
+            ),
+            (
+                Op::Sync(SyncOp::Pull {
+                    path: "out/render.png".into(),
+                    hash: "9f86d0".into(),
+                    offset: Some(8388608),
+                }),
+                r#"{"op":"sync","cmd":"pull","path":"out/render.png","hash":"9f86d0","offset":8388608}"#,
             ),
             (
                 Op::Sync(SyncOp::Push {
@@ -528,8 +553,28 @@ mod tests {
                     hash: "aa".into(),
                     data_b64: "Zm9v".into(),
                     base_hash: Some("bb".into()),
+                    offset: None,
+                    total: None,
                 }),
                 r#"{"op":"sync","cmd":"push","path":"out/render.png","hash":"aa","data_b64":"Zm9v","base_hash":"bb"}"#,
+            ),
+            (
+                Op::Sync(SyncOp::Push {
+                    path: "big.bin".into(),
+                    hash: "aa".into(),
+                    data_b64: "Zm9v".into(),
+                    base_hash: None,
+                    offset: Some(8388608),
+                    total: Some(8388611),
+                }),
+                r#"{"op":"sync","cmd":"push","path":"big.bin","hash":"aa","data_b64":"Zm9v","offset":8388608,"total":8388611}"#,
+            ),
+            (
+                Op::Sync(SyncOp::Delete {
+                    path: "old.txt".into(),
+                    base_hash: "cc".into(),
+                }),
+                r#"{"op":"sync","cmd":"delete","path":"old.txt","base_hash":"cc"}"#,
             ),
             (
                 Op::Sync(SyncOp::Resolve {
@@ -560,6 +605,8 @@ mod tests {
                 hash: "cc".into(),
                 data_b64: "eA==".into(),
                 base_hash: None,
+                offset: None,
+                total: None,
             }),
             r#"{"op":"sync","cmd":"push","path":"new.txt","hash":"cc","data_b64":"eA=="}"#,
         );

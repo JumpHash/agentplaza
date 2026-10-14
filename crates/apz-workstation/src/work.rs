@@ -68,7 +68,7 @@ fn handle(shared: &Shared, op: Op) -> Result<Option<Value>, String> {
         } => script::run(shared, bridge, app.as_deref(), &code, timeout_s).map(Some),
         Op::Settings(settings) => apply_settings(shared, settings).map(|()| None),
         Op::Facts => to_value(&(shared.gather)(shared.apps.load(Ordering::SeqCst))).map(Some),
-        Op::Sync(_) => Err("work-folder sync is not built in this version".to_string()),
+        Op::Sync(op) => crate::sync::serve(shared, op),
         _ => Err("not a worker operation".to_string()),
     }
 }

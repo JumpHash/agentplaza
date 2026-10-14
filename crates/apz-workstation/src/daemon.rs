@@ -77,6 +77,8 @@ pub struct Shared {
     pub apps: AtomicU32,
     pub gather: Gather,
     pub backend: Backend,
+    /// The mirror of the work folder the sync keeps (sync.rs).
+    pub sync: crate::sync::Mirror,
 }
 
 impl Shared {
@@ -127,12 +129,14 @@ impl Daemon {
             apps: AtomicU32::new(0),
             gather: config.gather,
             backend: config.backend,
+            sync: crate::sync::Mirror::default(),
         });
 
         let (desk, desk_rx) = channel();
         let (work, work_rx) = channel();
         let mut threads = vec![crate::desk::spawn(desktop, shared.clone(), desk_rx)];
         threads.extend(crate::work::spawn(work_rx, shared.clone(), WORKERS));
+        threads.push(crate::sync::spawn(shared.clone()));
         Ok(Daemon {
             shared,
             desk,

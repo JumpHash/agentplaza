@@ -13,6 +13,8 @@
 //! - `takeover`: the takeover policies (agent waits, release the lease, keep working with the pointer paused).
 //! - `act`: the choke point every workstation action passes (the checks, the laws, the audit), and `hooks` after it.
 //! - `tools`: the workstation tools agents and the owner's MCP client are offered, parsed into operations for `act`.
+//! - `sync`: the work folder's two-way sync: the hub's mirror (rows in `station_sync_files`, content in the object
+//!   store), the reconcile pass with a station's manifest, conflicts (kept on both sides), and the owner's file routes.
 //!
 //! The containment rule holds: a station is never the hub's own machine (refused at join and at every hello), and
 //! agents reach a station only through the hub.
@@ -27,6 +29,7 @@ mod ops;
 pub mod recordings;
 mod registry;
 mod screen;
+pub mod sync;
 mod takeover;
 pub mod tools;
 

@@ -46,6 +46,7 @@ pub mod migrate;
 pub mod recordings;
 pub mod roster;
 pub mod sql;
+pub mod sync;
 
 const MINUTE: Duration = Duration::from_secs(60);
 
