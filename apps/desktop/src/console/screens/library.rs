@@ -3,6 +3,7 @@
 //! filter, a preview by type, Save and Delete; and the agent-built tools, waiting for the owner's
 //! review (Publish, Reject with a note), with their files and Remove.
 
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 use iced::widget::{column, container, image, row, text, text_input, Space};
@@ -11,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::Id;
-use crate::console::{client, ui, Ctx};
+use crate::console::{client, events, ui, Ctx};
 use crate::theme;
 
 /// Serif semibold: a card's title (the web's `.prov-title h3`).
@@ -167,6 +168,8 @@ pub enum Preview {
     Markdown(String),
     /// A video: no inline player in iced, so a Play action hands it to the system's player.
     Video,
+    /// A PDF: no inline viewer in iced, so an Open action hands it to the system's viewer.
+    Pdf,
     Note(String),
 }
 
@@ -253,9 +256,11 @@ pub enum Msg {
     OpenSelected,
     /// An arrow key pressed: true for down, false for up. Moves the pick; opens nothing.
     Step(bool),
-    /// Play a video: save it and hand it to the system's player.
+    /// Play a video or open a PDF: save it and hand it to the system's app.
     Play(String),
     Played(Result<String, String>),
+    /// A hub event: a file was handed in, shared or removed, so the list reloads.
+    Event(events::Event),
 }
 
 /// The navigation this message asks for, if any.
@@ -336,6 +341,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Play(id) => play(state, &id, ctx),
+        Msg::Event(event) => {
+            if event.kind == "file" {
+                load(state, ctx)
+            } else {
+                Task::none()
+            }
+        }
         Msg::Played(Ok(path)) => {
             state.notice = Some(format!("Opened {path}"));
             Task::none()
@@ -442,9 +454,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 /// Enter opens the picked file (else the selected one), and the arrows move the pick, but only when no
 /// widget captured the key. iced's text input captures Enter only with a submit handler and never the
 /// arrows, so the arrows still reach here while the search field has focus; they do not edit its text.
-pub fn subscription(_ctx: &Ctx) -> iced::Subscription<Msg> {
+/// The hub's `file` events reload the list, as the web's Library does.
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
     use iced::keyboard::key::Named;
-    iced::event::listen_with(|event, status, _window| match (event, status) {
+    let keys = iced::event::listen_with(|event, status, _window| match (event, status) {
         (
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                 key: iced::keyboard::Key::Named(Named::Enter),
@@ -460,7 +473,8 @@ pub fn subscription(_ctx: &Ctx) -> iced::Subscription<Msg> {
             iced::event::Status::Ignored,
         ) => Some(Msg::Step(key == Named::ArrowDown)),
         _ => None,
-    })
+    });
+    iced::Subscription::batch([keys, events::subscription(&ctx.client).map(Msg::Event)])
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
@@ -485,11 +499,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 fn open(state: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
     state.selected = Some(id.clone());
     let video = state.files.iter().any(|d| d.id == id && Group::of(&d.content_type) == Group::Video);
-    if video {
+    let pdf = state.files.iter().any(|d| d.id == id && is_pdf(&d.content_type));
+    if video || pdf {
         state.open = Some(id);
         state.notice = None;
         state.confirm_delete = false;
-        state.preview = Preview::Video;
+        state.preview = if video { Preview::Video } else { Preview::Pdf };
         return Task::none();
     }
     let (how, size) = match state.files.iter().find(|d| d.id == id) {
@@ -555,7 +570,8 @@ fn save(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Plays a video: saves it to Downloads (as Download does) and hands the file to the system's player.
+/// Plays a video or opens a PDF: saves it to Downloads (as Download does) and hands the file to the
+/// system's app for it.
 fn play(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
     let Some(name) = state.files.iter().find(|d| d.id == id).map(|d| d.name.clone()) else {
         return Task::none();
@@ -722,6 +738,12 @@ fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
         Preview::Video => column![
             container(ui::mono("▶", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
             ui::btn("Play", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
+        ]
+        .spacing(12)
+        .into(),
+        Preview::Pdf => column![
+            container(ui::mono("PDF", 40.0, crate::theme::palette().ink_2)).padding(24).width(Fill),
+            ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Play(d.id.clone()))),
         ]
         .spacing(12)
         .into(),
@@ -936,6 +958,10 @@ fn clamp(cur: Option<usize>, len: usize) -> Option<usize> {
     cur.map(|i| i.min(last))
 }
 
+fn is_pdf(content_type: &str) -> bool {
+    content_type.eq_ignore_ascii_case("application/pdf")
+}
+
 fn textual(content_type: &str) -> bool {
     let t = content_type.to_lowercase();
     t.starts_with("text/") || t.contains("json") || t.contains("xml")
@@ -1052,7 +1078,9 @@ fn fetch_bytes(client: &client::Client, path: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Writes a download to ~/Downloads under the file's own name (never a path from the name).
+/// Writes a download to ~/Downloads under the file's own name (never a path from the name). A download
+/// never overwrites: when the name is taken, the first free one of `name (1).ext`, `name (2).ext`, …
+/// is used.
 fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
     let dir = apz_os::dirs::home().ok_or_else(|| "the home directory is not set".to_string())?.join("Downloads");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1061,14 +1089,49 @@ fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .unwrap_or("deliverable");
-    let target = dir.join(file);
-    std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
-    Ok(target.display().to_string())
+    let mut n = 0;
+    loop {
+        let target = dir.join(numbered(file, n));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(mut out) => {
+                if let Err(e) = out.write_all(bytes) {
+                    // Do not leave a part-written file under the name the next download wants.
+                    let _ = std::fs::remove_file(&target);
+                    return Err(e.to_string());
+                }
+                return Ok(target.display().to_string());
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// The name a download is tried under: the file's own name first (n = 0), then `name (n).ext`.
+fn numbered(file: &str, n: u32) -> String {
+    if n == 0 {
+        return file.to_string();
+    }
+    let path = Path::new(file);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(file);
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{stem} ({n}).{ext}"),
+        None => format!("{stem} ({n})"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp, step};
+    use super::{clamp, numbered, step};
+
+    #[test]
+    fn a_taken_download_name_gets_a_number_before_the_extension() {
+        assert_eq!(numbered("report.pdf", 0), "report.pdf");
+        assert_eq!(numbered("report.pdf", 1), "report (1).pdf");
+        assert_eq!(numbered("report.pdf", 2), "report (2).pdf");
+        assert_eq!(numbered("notes", 1), "notes (1)");
+        assert_eq!(numbered("archive.tar.gz", 1), "archive.tar (1).gz");
+    }
 
     #[test]
     fn step_picks_the_first_row_then_moves_and_holds_at_the_ends() {

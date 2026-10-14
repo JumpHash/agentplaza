@@ -216,6 +216,12 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
+/// The screen as it opens one task in full (the Projects screen's task links open it this way); the
+/// load that follows reads that task and its timeline.
+pub fn opened(id: String) -> State {
+    State { selected: Some(id), ..Default::default() }
+}
+
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     fetch(ctx, state.selected.clone())
@@ -465,8 +471,9 @@ fn snapshot(hub: &client::Client, selected: Option<String>) -> Result<Snapshot, 
     Ok(Snapshot { tasks, agents, activity, detail: None })
 }
 
+/// The newest entries of an agent's transcript, oldest first (the hub's `last`).
 fn transcript(hub: &client::Client, cid: u64) -> Vec<EntryRecord> {
-    hub.get(&format!("/v1/agents/{cid}/transcript?after=0&limit=1000")).unwrap_or_default()
+    hub.get(&format!("/v1/agents/{cid}/transcript?last=1000")).unwrap_or_default()
 }
 
 /// The lane for a state: open, in progress, done, or failed or withdrawn; unknown non-final

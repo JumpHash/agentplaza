@@ -127,8 +127,8 @@ pub enum Msg {
     CancelForm,
     /// A hub event: the screen reloads when a project or task changed.
     Event(events::Event),
-    /// Open a document's file in the system viewer: the file id and the document's title.
-    OpenFile(String, String),
+    /// Open a document's file in the system viewer, by its hub file id.
+    OpenFile(String),
     Opened(Result<(), String>),
 }
 
@@ -185,9 +185,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.loading = true;
             load(state, ctx)
         }
-        Msg::OpenFile(id, name) => {
+        Msg::OpenFile(id) => {
             let client = ctx.client.clone();
-            client::task(move || open_file(&client, &id, &name), Msg::Opened)
+            client::task(move || open_file(&client, &id), Msg::Opened)
         }
         Msg::Opened(res) => {
             if let Err(e) = res {
@@ -576,7 +576,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         ui::card("Tasks", tasks_body(p)),
     ];
     if let Some(repo) = &p.repo {
-        sections.push(ui::card("Repository", link(repo, Msg::Go(Id::Git))));
+        sections.push(ui::card("Repository", link(repo, Msg::Go(Id::Repo(repo.clone())))));
     }
     sections.push(ui::card("History", history_body(p)));
     body.push(column(sections).spacing(16).into());
@@ -615,7 +615,7 @@ fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
         col = col.push(ui::markdown(&d.summary));
     }
     if let Some(id) = &d.file {
-        col = col.push(link("Open", Msg::OpenFile(id.clone(), d.title.clone())));
+        col = col.push(link("Open", Msg::OpenFile(id.clone())));
     }
     if let Some(path) = &d.repo_path {
         let commit = d.commit.as_deref().map(|c| format!(" @ {}", c.get(..7).unwrap_or(c))).unwrap_or_default();
@@ -656,7 +656,7 @@ fn tasks_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.tasks.is_empty() {
         return ui::faint("No tasks yet.").into();
     }
-    column(p.tasks.iter().map(|t| link(t, Msg::Go(Id::Tasks)))).spacing(8).into()
+    column(p.tasks.iter().map(|t| link(t, Msg::Go(Id::Task(t.clone()))))).spacing(8).into()
 }
 
 fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
@@ -698,11 +698,18 @@ fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// The part of a file's record this screen needs: its name, which gives the extension and the temp name.
+#[derive(Debug, Deserialize)]
+struct FileMeta {
+    name: String,
+}
+
 /// Saves one document's file under the temp directory and opens it in the system's viewer, as the
-/// web opens the file in a new tab. A file of another type, or one whose name has no such
-/// extension, is refused.
-fn open_file(client: &client::Client, id: &str, name: &str) -> Result<(), String> {
-    let file = std::path::Path::new(name)
+/// web opens the file in a new tab. The file's record (`GET /v1/files/{id}`) names it; a file of
+/// another type, or one whose name has no such extension, is refused.
+fn open_file(client: &client::Client, id: &str) -> Result<(), String> {
+    let meta: FileMeta = client.get(&format!("/v1/files/{id}"))?;
+    let file = std::path::Path::new(&meta.name)
         .file_name()
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())

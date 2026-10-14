@@ -78,6 +78,10 @@ pub enum Id {
     Machines,
     Nodes,
     Setup,
+    /// One task in full, on the Tasks screen, by its id.
+    Task(String),
+    /// One repository's page, on the Git screen, by its name.
+    Repo(String),
     /// One agent's page.
     Agent(u64),
     /// The Lab: its overview (the section strip's first tab).
@@ -252,6 +256,8 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     match &id {
         Id::LabJobDetail(job) => screens.lab_job_detail = lab_job_detail::State { job: job.clone(), ..Default::default() },
         Id::LabModelDetail(model) => screens.lab_model_detail = lab_model_detail::State { model: model.clone(), ..Default::default() },
+        Id::Task(task) => screens.tasks = tasks::opened(task.clone()),
+        Id::Repo(repo) => screens.git = git::State { repo: repo.clone(), tab: git::Tab::Code, ..Default::default() },
         _ => {}
     }
     refresh(screens, &id, ctx)
@@ -265,8 +271,8 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Projects => projects::load(&mut screens.projects, ctx).map(Msg::Projects),
         Id::Prompts => prompts::load(&mut screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::load(&mut screens.skills, ctx).map(Msg::Skills),
-        Id::Tasks => tasks::load(&mut screens.tasks, ctx).map(Msg::Tasks),
-        Id::Git => git::load(&mut screens.git, ctx).map(Msg::Git),
+        Id::Tasks | Id::Task(_) => tasks::load(&mut screens.tasks, ctx).map(Msg::Tasks),
+        Id::Git | Id::Repo(_) => git::load(&mut screens.git, ctx).map(Msg::Git),
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::load(&mut screens.floor, ctx).map(Msg::Floor),
@@ -354,7 +360,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Rules => rules::subscription(ctx).map(Msg::Rules),
         Id::Projects => projects::subscription(ctx).map(Msg::Projects),
         Id::Library => library::subscription(ctx).map(Msg::Library),
-        Id::Tasks => tasks::subscription(ctx).map(Msg::Tasks),
+        Id::Tasks | Id::Task(_) => tasks::subscription(ctx).map(Msg::Tasks),
         Id::Approvals => approvals::subscription(ctx).map(Msg::Approvals),
         Id::Conversations => conversations::subscription(ctx).map(Msg::Conversations),
         Id::Board => board::subscription(ctx).map(Msg::Board),
@@ -373,8 +379,8 @@ pub fn view<'a>(screens: &'a Screens, id: &Id, ctx: &'a Ctx) -> Element<'a, Msg>
         Id::Projects => projects::view(&screens.projects, ctx).map(Msg::Projects),
         Id::Prompts => prompts::view(&screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::view(&screens.skills, ctx).map(Msg::Skills),
-        Id::Tasks => tasks::view(&screens.tasks, ctx).map(Msg::Tasks),
-        Id::Git => git::view(&screens.git, ctx).map(Msg::Git),
+        Id::Tasks | Id::Task(_) => tasks::view(&screens.tasks, ctx).map(Msg::Tasks),
+        Id::Git | Id::Repo(_) => git::view(&screens.git, ctx).map(Msg::Git),
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::view(&screens.floor, ctx).map(Msg::Floor),
