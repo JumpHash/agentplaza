@@ -1,19 +1,26 @@
 //! The Workstations screen (parity with the web console's `workstations` view): the machines agents
 //! operate through the hub. The list enrolls new ones with a join code (its token shown once, with the
-//! command to run on the machine) and shows each one's state. A workstation's page shows its facts, its
-//! leases (release), its settings (the takeover policy, recording, the work folder), its rename, drain,
-//! revoke and audit. The live view and the recordings come in a later pass. Reloads on the screen's
-//! poll and on the `station` and `lease_*` bus frames.
+//! command to run on the machine), shows each one's state and a thumbnail of its screen, and holds the hub's
+//! recording defaults. A workstation's page shows its live view and the owner's takeover of it
+//! (`workstations_live.rs`), its facts, leases, work folder (`workstations_files.rs`), recordings with
+//! playback (`workstations_rec.rs`), its settings (the takeover policy, recording, the work folder, the hourly
+//! rate), its rename, drain, revoke and audit. Reloads on the screen's poll and on the `station`, `lease_*`,
+//! `station_takeover`, `station_give_back`, `station_sync_conflict` and `station_sync_paused` bus frames.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
-use iced::widget::{Space, checkbox, column, container, pick_list, row, text_input};
-use iced::{Alignment, Border, Element, Length, Subscription, Task, Theme};
+use apz_http::client::request;
+use iced::widget::{Space, checkbox, column, container, image, pick_list, row, text_input};
+use iced::{Alignment, Border, ContentFit, Element, Length, Subscription, Task, Theme};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Id;
 use super::lab_common::{ago, now_ms};
+use super::workstations_files as files;
+use super::workstations_live as live;
+use super::workstations_rec as rec;
 use crate::console::{Ctx, client, events, ui};
 use crate::theme;
 
@@ -23,7 +30,14 @@ const MAX_NAME_CHARS: usize = 64;
 const TTL_CHOICES: [u64; 3] = [15, 30, 60];
 /// The bounds the settings form checks before it sends (the hub stores any whole number in them).
 const RETENTION_DAYS: (u64, u64) = (1, 3650);
-const RECORD_FPS: (u64, u64) = (1, 30);
+/// Frames a recording keeps a second: 0 keeps the actions only; the sampler keeps at most five.
+const RECORD_FPS: (u64, u64) = (0, 5);
+/// The hourly rate's bound, in plaza credits (1 credit is $0.001): $1000 an hour.
+const RATE_MAX: u64 = 1_000_000;
+/// How often the list's thumbnails are taken again, while the list is shown.
+const THUMB_EVERY: Duration = Duration::from_secs(10);
+const THUMB_W: f32 = 96.0;
+const THUMB_H: f32 = 54.0;
 const WORK_FOLDER_MAX: usize = 512;
 /// The audit rows a page asks for.
 const AUDIT_ROWS: u64 = 50;
@@ -88,6 +102,8 @@ pub struct Settings {
     pub record_takeovers: bool,
     pub work_folder: String,
     pub snapshot_reset: bool,
+    /// Plaza credits an hour of a lease here costs its task; 0 is free (1 credit is $0.001).
+    pub rate_per_hour: u64,
 }
 
 /// What the daemon reports about its machine.
@@ -161,6 +177,8 @@ pub struct Lease {
     pub started_ms: u64,
     pub state: String,
     pub position: Option<u64>,
+    /// The pixel session the daemon opened for a pixel lease, once it is active.
+    pub session: Option<u64>,
 }
 
 /// A join code (`GET /v1/stations/codes`); its token is never listed.
@@ -220,7 +238,7 @@ pub enum Load<T> {
 }
 
 /// Takes a reply into a list. A failed refresh keeps what the screen shows; a first failure shows as one.
-fn settle_into<T>(slot: &mut Load<T>, result: Result<T, String>) {
+pub(super) fn settle_into<T>(slot: &mut Load<T>, result: Result<T, String>) {
     match result {
         Ok(value) => *slot = Load::Ready(value),
         Err(_) if matches!(slot, Load::Pending) => *slot = Load::Failed,
@@ -238,6 +256,7 @@ pub struct SettingsForm {
     record_takeovers: bool,
     work_folder: String,
     snapshot_reset: bool,
+    rate_per_hour: String,
 }
 
 impl From<&Settings> for SettingsForm {
@@ -250,6 +269,7 @@ impl From<&Settings> for SettingsForm {
             record_takeovers: s.record_takeovers,
             work_folder: s.work_folder.clone(),
             snapshot_reset: s.snapshot_reset,
+            rate_per_hour: s.rate_per_hour.to_string(),
         }
     }
 }
@@ -264,6 +284,7 @@ pub enum FormEdit {
     RecordTakeovers(bool),
     WorkFolder(String),
     SnapshotReset(bool),
+    Rate(String),
 }
 
 /// The dialog that is open, drawn as a card above the lists.
@@ -297,6 +318,14 @@ pub struct State {
     pub codes: Load<Vec<Code>>,
     /// The agents' names by CID.
     names: HashMap<u64, String>,
+    /// The list's thumbnails of each station's screen, by station id; a station with none has no entry.
+    thumbs: HashMap<String, image::Handle>,
+    /// When the thumbnails were last taken.
+    thumbs_at: Option<std::time::Instant>,
+    /// The open workstation's live view and takeover, its recordings, and its work folder.
+    live: live::State,
+    rec: rec::State,
+    files: files::State,
     /// The open workstation's audit, for the station it was asked for.
     audit: Load<Vec<AuditRow>>,
     /// The workstation whose page is open; None is the list.
@@ -349,6 +378,13 @@ pub enum Msg {
     /// The settings were saved for the workstation named (the page may have moved on).
     SettingsSaved(String, Result<SettingsAnswer, String>),
     CloseDialog,
+    Live(live::Msg),
+    Rec(rec::Msg),
+    Files(files::Msg),
+    /// The thumbnails taken: each station's picture, or none when it has no session to show.
+    Thumbs(Vec<(String, Option<Vec<u8>>)>),
+    /// The thumbnails' clock.
+    Tick,
 }
 
 /// The navigation this message asks for, if any.
@@ -357,6 +393,12 @@ pub fn go(msg: &Msg) -> Option<Id> {
         Msg::Go(id) => Some(id.clone()),
         _ => None,
     }
+}
+
+/// Called when the screen is left: a takeover ends with the screen (its socket closes, so the hub gives the
+/// session back), and the live view starts over when the screen is opened again.
+pub fn leave(state: &mut State) {
+    state.live.leave();
 }
 
 /// Loads the screen's data (on open, on every poll tick, and on a bus frame): the workstations, the join
@@ -377,15 +419,63 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             Msg::AgentsLoaded,
         ),
     ];
-    if let Some(id) = state.selected.clone() {
-        let audit = ctx.client.clone();
-        let path = format!("/v1/stations/audit?station={id}&limit={AUDIT_ROWS}");
-        tasks.push(client::task(
-            move || audit.get::<Vec<AuditRow>>(&path),
-            move |r| Msg::AuditLoaded(id.clone(), r),
-        ));
+    match state.selected.clone() {
+        Some(id) => {
+            let audit = ctx.client.clone();
+            let path = format!("/v1/stations/audit?station={id}&limit={AUDIT_ROWS}");
+            let for_audit = id.clone();
+            tasks.push(client::task(
+                move || audit.get::<Vec<AuditRow>>(&path),
+                move |r| Msg::AuditLoaded(for_audit.clone(), r),
+            ));
+            tasks.push(rec::load(&mut state.rec, ctx, &id).map(Msg::Rec));
+            tasks.push(files::load(&mut state.files, ctx, &id).map(Msg::Files));
+        }
+        None => {
+            tasks.push(rec::load_defaults(ctx).map(Msg::Rec));
+            if thumbs_due(state) {
+                tasks.push(thumbs_task(state, ctx));
+            }
+        }
     }
     Task::batch(tasks)
+}
+
+/// Whether the list's thumbnails are due: at most one round every [`THUMB_EVERY`], however often the screen reloads.
+fn thumbs_due(state: &mut State) -> bool {
+    if state.thumbs_at.is_some_and(|at| at.elapsed() < THUMB_EVERY) {
+        return false;
+    }
+    state.thumbs_at = Some(std::time::Instant::now());
+    true
+}
+
+/// Takes each station's thumbnail: the picture of its active session, one JPEG each, from the hub.
+fn thumbs_task(state: &State, ctx: &Ctx) -> Task<Msg> {
+    let ids: Vec<String> = match &state.stations {
+        Load::Ready(list) => list.iter().filter(|s| !s.revoked).map(|s| s.id.clone()).collect(),
+        _ => return Task::none(),
+    };
+    if ids.is_empty() {
+        return Task::none();
+    }
+    let client = ctx.client.clone();
+    client::task(
+        move || {
+            Ok(ids
+                .into_iter()
+                .map(|id| {
+                    let path = format!("/v1/stations/{id}/thumbnail");
+                    let picture = request(&client.target, "GET", &path, None, client.timeout)
+                        .ok()
+                        .filter(|reply| (200..300).contains(&reply.status))
+                        .map(|reply| reply.body);
+                    (id, picture)
+                })
+                .collect::<Vec<_>>())
+        },
+        |r| Msg::Thumbs(r.unwrap_or_default()),
+    )
 }
 
 /// The workstation whose page is open, once loaded.
@@ -428,6 +518,7 @@ fn apply_edit(form: &mut SettingsForm, edit: FormEdit) {
         FormEdit::RecordTakeovers(on) => form.record_takeovers = on,
         FormEdit::WorkFolder(text) => form.work_folder = text,
         FormEdit::SnapshotReset(on) => form.snapshot_reset = on,
+        FormEdit::Rate(text) => form.rate_per_hour = text,
     }
 }
 
@@ -438,8 +529,28 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             settle_into(&mut state.stations, result);
             if let Some(station) = current(state).cloned() {
                 sync_form(state, &station);
+                state.live.sync(&station);
             }
             Task::none()
+        }
+        Msg::Live(msg) => live::update(&mut state.live, msg).map(Msg::Live),
+        Msg::Rec(msg) => rec::update(&mut state.rec, msg, ctx).map(Msg::Rec),
+        Msg::Files(msg) => files::update(&mut state.files, msg, ctx).map(Msg::Files),
+        Msg::Thumbs(list) => {
+            for (id, picture) in list {
+                match picture {
+                    Some(bytes) => state.thumbs.insert(id, image::Handle::from_bytes(bytes)),
+                    None => state.thumbs.remove(&id),
+                };
+            }
+            Task::none()
+        }
+        Msg::Tick => {
+            if state.selected.is_none() && thumbs_due(state) {
+                thumbs_task(state, ctx)
+            } else {
+                Task::none()
+            }
         }
         Msg::CodesLoaded(result) => {
             settle_into(&mut state.codes, result);
@@ -464,14 +575,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Select(id) => {
+            state.live = live::State::new(&id);
+            state.rec = rec::State::default();
+            state.files = files::State::default();
             state.selected = Some(id);
             reset_page(state);
             load(state, ctx)
         }
         Msg::Deselect => {
             state.selected = None;
+            state.live = live::State::default();
+            state.rec = rec::State::default();
+            state.files = files::State::default();
             reset_page(state);
-            Task::none()
+            load(state, ctx)
         }
         Msg::OpenAdd => {
             state.dialog = Some(Dialog::Add {
@@ -728,14 +845,31 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-/// The bus frames the screen reloads on: a workstation changed, or one of its leases did.
+/// The bus frames the screen reloads on: a workstation changed, one of its leases did, or its takeover or work folder did.
 pub fn station_event(kind: &str) -> bool {
-    kind == "station" || kind.starts_with("lease_")
+    kind == "station"
+        || kind.starts_with("lease_")
+        || matches!(
+            kind,
+            "station_takeover" | "station_give_back" | "station_sync_conflict" | "station_sync_paused"
+        )
 }
 
-/// The screen's bus subscription: the hub's events, which `update` filters.
-pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
-    events::subscription(&ctx.client).map(Msg::Event)
+/// The screen's subscriptions: the hub's events (which `update` filters), the live view while a workstation's page
+/// is open and not revoked, the playback clock while a recording plays, and the list's thumbnail clock.
+pub fn subscription(state: &State, ctx: &Ctx) -> Subscription<Msg> {
+    let on_page = current(state).is_some_and(|s| !s.revoked);
+    let thumbs = if state.selected.is_none() {
+        iced::time::every(THUMB_EVERY).map(|_| Msg::Tick)
+    } else {
+        Subscription::none()
+    };
+    Subscription::batch([
+        events::subscription(&ctx.client).map(Msg::Event),
+        live::subscription(&state.live, &ctx.client.target, on_page).map(Msg::Live),
+        rec::subscription(&state.rec).map(Msg::Rec),
+        thumbs,
+    ])
 }
 
 pub fn view(state: &State) -> Element<'_, Msg> {
@@ -778,6 +912,10 @@ fn list_page<'a>(state: &'a State, mut parts: Vec<Element<'a, Msg>>) -> Element<
     );
     parts.push(ui::card("Workstations", stations_view(state)));
     parts.push(ui::card("Join codes", codes_view(state)));
+    parts.push(ui::card(
+        "Recording defaults",
+        rec::defaults_view(&state.rec).map(Msg::Rec),
+    ));
     ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
 }
 
@@ -801,13 +939,16 @@ fn stations_view(state: &State) -> Element<'_, Msg> {
                     (2, "Leases"),
                     (2, "Last seen"),
                 ],
-                sorted.into_iter().map(station_row).collect(),
+                sorted
+                    .into_iter()
+                    .map(|s| station_row(s, state.thumbs.get(&s.id)))
+                    .collect(),
             )
         }
     }
 }
 
-fn station_row(s: &Station) -> Element<'_, Msg> {
+fn station_row<'a>(s: &'a Station, thumb: Option<&'a image::Handle>) -> Element<'a, Msg> {
     let (status, tone) = status_chip(&s.status);
     let (holding, waiting) = lease_counts(&s.leases);
     let mut badges: Vec<Element<'_, Msg>> = vec![ui::badge(&status, tone)];
@@ -827,14 +968,29 @@ fn station_row(s: &Station) -> Element<'_, Msg> {
         .spacing(4)
         .into()
     };
+    let picture: Element<'a, Msg> = match thumb {
+        Some(handle) => image(handle.clone())
+            .content_fit(ContentFit::Cover)
+            .width(Length::Fixed(THUMB_W))
+            .height(Length::Fixed(THUMB_H))
+            .into(),
+        None => container(Space::new().width(Length::Fixed(THUMB_W)).height(Length::Fixed(THUMB_H)))
+            .style(ui::frame(Some(theme::SUBSTRATE), theme::RULE))
+            .into(),
+    };
     cells(vec![
         (
             3,
-            column![
-                ui::link(&s.name, Msg::Select(s.id.clone()), false),
-                ui::faint(station_summary(&s.facts))
+            row![
+                picture,
+                column![
+                    ui::link(&s.name, Msg::Select(s.id.clone()), false),
+                    ui::faint(station_summary(&s.facts))
+                ]
+                .spacing(2)
             ]
-            .spacing(2)
+            .spacing(12)
+            .align_y(Alignment::Center)
             .into(),
         ),
         (3, gpus),
@@ -933,8 +1089,11 @@ fn station_page<'a>(
     }
     parts.insert(0, ui::link("All workstations", Msg::Deselect, false));
     parts.push(ui::chip_row(chips));
+    parts.push(ui::card("Live view", live::view(&state.live, s).map(Msg::Live)));
     parts.push(ui::card("Facts", facts_view(s)));
     parts.push(ui::card("Leases", leases_view(state, s)));
+    parts.push(ui::card("Work folder", files::view(&state.files).map(Msg::Files)));
+    parts.push(ui::card("Recordings", rec::station_view(&state.rec, &state.names).map(Msg::Rec)));
     parts.push(ui::card("Settings", settings_view(state, s)));
     parts.push(ui::card("Audit", audit_view(state)));
     ui::sheet(head, column(parts).spacing(16).width(Length::Fill).into())
@@ -1122,6 +1281,19 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
         folder = folder.on_input(|t| Msg::Form(FormEdit::WorkFolder(t)));
     }
 
+    let mut rate = text_input("0", &f.rate_per_hour)
+        .font(theme::MONO)
+        .style(theme::input)
+        .padding(8.0)
+        .width(Length::Fixed(120.0));
+    if live {
+        rate = rate.on_input(|t| Msg::Form(FormEdit::Rate(t)));
+    }
+    let rate_hint = match whole_in(&f.rate_per_hour, (0, RATE_MAX)) {
+        Some(credits) => rate_text(credits),
+        None => format!("Credits an hour, from 0 to {RATE_MAX}. 1 credit is $0.001."),
+    };
+
     let save = ui::btn(
         if state.saving {
             "Saving…"
@@ -1163,6 +1335,7 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
             folder.into(),
             "Under the agent's OS account. It syncs with the hub both ways.",
         ),
+        field("Hourly rate", rate.into(), &rate_hint),
         snapshot.into(),
         row![save].into(),
     ];
@@ -1368,7 +1541,7 @@ fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
 }
 
 /// A labelled field: its label, its control, and a hint under it.
-fn field<'a>(label: &str, control: Element<'a, Msg>, hint: &str) -> Element<'a, Msg> {
+pub(super) fn field<'a, M: 'a>(label: &str, control: Element<'a, M>, hint: &str) -> Element<'a, M> {
     column![ui::label(label), control, ui::faint(hint.to_string())]
         .spacing(4)
         .into()
@@ -1385,18 +1558,18 @@ fn fact<'a>(name: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
     .into()
 }
 
-/// A mono value in ink, for facts and cells.
-fn mono_text<'a>(value: impl Into<String>) -> Element<'a, Msg> {
+/// A mono value in ink, for facts and cells. Generic over the message: the sibling pages use it too.
+pub(super) fn mono_text<'a, M: 'a>(value: impl Into<String>) -> Element<'a, M> {
     ui::mono(value.into(), 12.0, theme::palette().ink).into()
 }
 
 /// A table: a mono header row, then the rows, each under a hairline. Columns are proportional.
-fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let heads: Vec<(u16, Element<'a, Msg>)> = head
+pub(super) fn table<'a, M: 'a>(head: &[(u16, &str)], rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let heads: Vec<(u16, Element<'a, M>)> = head
         .iter()
         .map(|(p, l)| (*p, ui::label(l).into()))
         .collect();
-    let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), ui::hairline()];
+    let mut lines: Vec<Element<'a, M>> = vec![cells(heads), ui::hairline()];
     for r in rows {
         lines.push(r);
         lines.push(ui::hairline());
@@ -1405,8 +1578,8 @@ fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, M
 }
 
 /// One table row: its cells in proportional columns.
-fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
-    let laid: Vec<Element<'a, Msg>> = parts
+pub(super) fn cells<'a, M: 'a>(parts: Vec<(u16, Element<'a, M>)>) -> Element<'a, M> {
+    let laid: Vec<Element<'a, M>> = parts
         .into_iter()
         .map(|(portion, cell)| container(cell).width(Length::FillPortion(portion)).into())
         .collect();
@@ -1649,6 +1822,9 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
             "The work folder is a path of up to {WORK_FOLDER_MAX} characters."
         ));
     }
+    let rate = whole_in(&f.rate_per_hour, (0, RATE_MAX)).ok_or_else(|| {
+        format!("Charge whole credits an hour, from 0 to {RATE_MAX}.")
+    })?;
     Ok(Settings {
         takeover: f.takeover,
         record: f.record,
@@ -1657,7 +1833,20 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
         record_takeovers: f.record_takeovers,
         work_folder: folder.to_string(),
         snapshot_reset: f.snapshot_reset,
+        rate_per_hour: rate,
     })
+}
+
+/// An hourly rate in words: free at 0, else its credits and its dollars (1 credit is $0.001).
+pub fn rate_text(credits: u64) -> String {
+    if credits == 0 {
+        "Free: a lease here costs its task nothing.".to_string()
+    } else {
+        format!(
+            "{credits} credits an hour: ${:.3} an hour, charged to the task while it holds the machine.",
+            credits as f64 * 0.001
+        )
+    }
 }
 
 /// A whole number from `text` within `(lo, hi)`, or None.
@@ -1719,365 +1908,5 @@ fn yes_no(on: bool) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn sample_settings() -> Settings {
-        Settings {
-            takeover: Takeover::KeepWorkingPointerPaused,
-            record: true,
-            retention_days: 30,
-            record_fps: 5,
-            record_takeovers: false,
-            work_folder: "~/AgentPlaza".to_string(),
-            snapshot_reset: true,
-        }
-    }
-
-    fn sample_form() -> SettingsForm {
-        SettingsForm::from(&sample_settings())
-    }
-
-    #[test]
-    fn status_chip_names_each_state_and_keeps_an_unknown_one() {
-        assert_eq!(status_chip("online"), ("online".to_string(), ui::Tone::Ok));
-        assert_eq!(
-            status_chip("offline"),
-            ("offline".to_string(), ui::Tone::Muted)
-        );
-        assert_eq!(
-            status_chip("draining"),
-            ("draining".to_string(), ui::Tone::Warn)
-        );
-        assert_eq!(
-            status_chip("revoked"),
-            ("revoked".to_string(), ui::Tone::Danger)
-        );
-        assert_eq!(
-            status_chip("mystery"),
-            ("mystery".to_string(), ui::Tone::Muted)
-        );
-    }
-
-    #[test]
-    fn account_badge_flags_only_the_owner_account() {
-        let owner = Account {
-            mode: "owner".to_string(),
-            name: "irfan".to_string(),
-        };
-        let agent = Account {
-            mode: "agent_user".to_string(),
-            name: "apz-agent".to_string(),
-        };
-        assert_eq!(
-            account_badge(&owner).as_deref(),
-            Some("agents act as irfan")
-        );
-        assert_eq!(account_badge(&agent), None);
-        assert!(account_text(&owner).contains("agents act as the owner"));
-        assert!(account_text(&agent).contains("a separate agent account (apz-agent)"));
-    }
-
-    #[test]
-    fn settings_serialize_with_the_hub_keys_and_policy_names() {
-        let value = serde_json::to_value(sample_settings()).expect("settings serialize");
-        assert_eq!(
-            value,
-            json!({
-                "takeover": "keep_working_pointer_paused",
-                "record": true,
-                "retention_days": 30,
-                "record_fps": 5,
-                "record_takeovers": false,
-                "work_folder": "~/AgentPlaza",
-                "snapshot_reset": true,
-            })
-        );
-        assert_eq!(
-            serde_json::to_value(Takeover::AgentWaits).unwrap(),
-            json!("agent_waits")
-        );
-        assert_eq!(
-            serde_json::to_value(Takeover::ReleaseLease).unwrap(),
-            json!("release_lease")
-        );
-    }
-
-    #[test]
-    fn the_form_round_trips_through_the_settings() {
-        let form = sample_form();
-        assert_eq!(form.retention_days, "30");
-        assert_eq!(form.record_fps, "5");
-        assert_eq!(settings_of(&form), Ok(sample_settings()));
-    }
-
-    #[test]
-    fn settings_of_trims_the_folder_and_checks_each_bound() {
-        let mut form = sample_form();
-        form.work_folder = "  ~/Work  ".to_string();
-        form.retention_days = " 1 ".to_string();
-        form.record_fps = "30".to_string();
-        let settings = settings_of(&form).expect("in bounds");
-        assert_eq!(settings.work_folder, "~/Work");
-        assert_eq!((settings.retention_days, settings.record_fps), (1, 30));
-
-        form.retention_days = "3650".to_string();
-        assert!(settings_of(&form).is_ok());
-        for bad in ["0", "3651", "abc", "", "-3", "2.5", "+4"] {
-            form.retention_days = bad.to_string();
-            assert!(
-                settings_of(&form)
-                    .unwrap_err()
-                    .starts_with("Keep recordings for whole days"),
-                "accepted {bad:?}"
-            );
-        }
-        form.retention_days = "30".to_string();
-        for bad in ["0", "31", "x"] {
-            form.record_fps = bad.to_string();
-            assert!(
-                settings_of(&form)
-                    .unwrap_err()
-                    .starts_with("Record whole frames"),
-                "accepted fps {bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn settings_of_refuses_an_empty_long_or_control_folder() {
-        let mut form = sample_form();
-        form.work_folder = "   ".to_string();
-        assert_eq!(
-            settings_of(&form),
-            Err("The work folder cannot be empty.".to_string())
-        );
-        form.work_folder = "a".repeat(WORK_FOLDER_MAX + 1);
-        assert!(
-            settings_of(&form)
-                .unwrap_err()
-                .starts_with("The work folder is a path")
-        );
-        form.work_folder = "a".repeat(WORK_FOLDER_MAX);
-        assert!(settings_of(&form).is_ok());
-        form.work_folder = "~/A\u{7}".to_string();
-        assert!(
-            settings_of(&form)
-                .unwrap_err()
-                .starts_with("The work folder is a path")
-        );
-    }
-
-    #[test]
-    fn name_problem_checks_empty_length_and_control_characters() {
-        assert_eq!(
-            name_problem("  "),
-            Some("Give the workstation a name.".to_string())
-        );
-        assert_eq!(
-            name_problem(&"n".repeat(MAX_NAME_CHARS + 1)),
-            Some(format!("The name is up to {MAX_NAME_CHARS} characters."))
-        );
-        assert_eq!(
-            name_problem("studio\tmac"),
-            Some("The name has no control characters.".to_string())
-        );
-        assert_eq!(name_problem("  studio-mac  "), None);
-    }
-
-    #[test]
-    fn join_command_and_countdown_format() {
-        assert_eq!(
-            join_command("apzw1.abc"),
-            "agentplaza workstation join apzw1.abc"
-        );
-        assert_eq!(countdown(0), "00:00");
-        assert_eq!(countdown(-5_000), "00:00");
-        assert_eq!(countdown(65_999), "01:05");
-        assert_eq!(countdown(30 * 60 * 1000), "30:00");
-    }
-
-    #[test]
-    fn summary_reads_os_form_memory_and_gpus() {
-        let facts = Facts {
-            os: "linux".to_string(),
-            os_version: "Arch 2026".to_string(),
-            form: "desktop".to_string(),
-            ram_mb: 65_536,
-            gpus: vec![Gpu {
-                name: "RTX 4090".to_string(),
-                vram_mb: 24_576,
-            }],
-            ..Facts::default()
-        };
-        assert_eq!(
-            station_summary(&facts),
-            "Linux Arch 2026 · Desktop · 64 GB RAM · RTX 4090"
-        );
-        let bare = Facts {
-            os: "windows".to_string(),
-            ..Facts::default()
-        };
-        assert_eq!(station_summary(&bare), "Windows · no GPU");
-    }
-
-    #[test]
-    fn gpu_line_shows_vram_or_shared_memory() {
-        assert_eq!(
-            gpu_line(&Gpu {
-                name: "RTX 4090".to_string(),
-                vram_mb: 24_576
-            }),
-            "RTX 4090 · 24 GB"
-        );
-        assert_eq!(
-            gpu_line(&Gpu {
-                name: "Apple M3".to_string(),
-                vram_mb: 0
-            }),
-            "Apple M3 · shared memory"
-        );
-        assert_eq!(
-            gpu_line(&Gpu {
-                name: "Old card".to_string(),
-                vram_mb: 512
-            }),
-            "Old card · 512 MB"
-        );
-        assert_eq!(
-            displays_text(&[Display { w: 2560, h: 1440 }, Display { w: 1920, h: 1080 }]),
-            "2560×1440, 1920×1080"
-        );
-        assert_eq!(displays_text(&[]), "none");
-    }
-
-    #[test]
-    fn lease_chip_names_the_place_in_the_queue() {
-        let queued = Lease {
-            state: "queued".to_string(),
-            position: Some(2),
-            ..Lease::default()
-        };
-        assert_eq!(
-            lease_chip(&queued),
-            ("queued #2".to_string(), ui::Tone::Warn)
-        );
-        let waiting = Lease {
-            state: "queued".to_string(),
-            ..Lease::default()
-        };
-        assert_eq!(lease_chip(&waiting), ("queued".to_string(), ui::Tone::Warn));
-        let opening = Lease {
-            state: "opening".to_string(),
-            ..Lease::default()
-        };
-        assert_eq!(
-            lease_chip(&opening),
-            ("opening".to_string(), ui::Tone::Info)
-        );
-        let active = Lease {
-            state: "active".to_string(),
-            ..Lease::default()
-        };
-        assert_eq!(lease_chip(&active), ("active".to_string(), ui::Tone::Ok));
-        assert_eq!(lease_counts(&[queued, active, waiting]), (1, 2));
-        assert_eq!(lease_kind_label("pixel"), "Pixel session");
-        assert_eq!(lease_kind_label("shared"), "Shared");
-    }
-
-    #[test]
-    fn code_chip_and_audit_labels_name_the_states_and_events() {
-        assert_eq!(code_chip("active"), ("Active".to_string(), ui::Tone::Ok));
-        assert_eq!(code_chip("used"), ("Used".to_string(), ui::Tone::Info));
-        assert_eq!(
-            code_chip("expired"),
-            ("Expired".to_string(), ui::Tone::Muted)
-        );
-        assert_eq!(
-            code_chip("revoked"),
-            ("Revoked".to_string(), ui::Tone::Danger)
-        );
-        assert_eq!(audit_label("join_refused"), "Join refused");
-        assert_eq!(audit_label("lease_released"), "Lease released");
-        assert_eq!(audit_label("some_new_event"), "some new event");
-    }
-
-    #[test]
-    fn takeover_text_is_the_policy_explanation() {
-        assert!(takeover_text(Takeover::ReleaseLease).contains("goes back to the queue"));
-        assert!(
-            takeover_text(Takeover::AgentWaits).contains("resumes when you give the session back")
-        );
-        assert_eq!(TAKEOVERS.len(), 3);
-    }
-
-    #[test]
-    fn station_json_parses_a_hub_reply_and_tolerates_a_partial_one() {
-        let full = r#"{
-            "id": "st_1", "name": "studio-mac", "status": "draining", "online": true, "draining": true, "revoked": false,
-            "version": "0.0.9", "code": "studio-mac", "joined_ms": 1700000000000, "last_seen_ms": 1700000100000,
-            "address": "10.0.0.7",
-            "facts": {"os": "macos", "os_version": "15.1", "arch": "arm64", "hostname": "studio", "form": "mini",
-                      "cpus": 10, "ram_mb": 32768, "gpus": [{"vendor": "apple", "name": "M3 Max", "vram_mb": 0}],
-                      "displays": [{"id": 1, "w": 3024, "h": 1964, "scale": 2.0}],
-                      "account": {"mode": "owner", "name": "irfan"}, "apps": 42, "virtual_displays": true, "ui_tree": true},
-            "settings": {"takeover": "release_lease", "record": false, "retention_days": 7, "record_fps": 2,
-                         "record_takeovers": true, "work_folder": "~/AgentPlaza", "snapshot_reset": false},
-            "leases": [{"id": "l1", "station": "st_1", "agent": 3, "task": "render", "kind": "pixel", "session": 9,
-                        "started_ms": 1700000050000, "state": "queued", "position": 1}]
-        }"#;
-        let s: Station = serde_json::from_str(full).expect("station parses");
-        assert_eq!(s.status, "draining");
-        assert!(s.draining && !s.revoked);
-        assert_eq!(s.facts.gpus[0].name, "M3 Max");
-        assert_eq!(s.facts.displays[0].h, 1964);
-        assert_eq!(
-            account_badge(&s.facts.account).as_deref(),
-            Some("agents act as irfan")
-        );
-        assert_eq!(s.settings.takeover, Takeover::ReleaseLease);
-        assert_eq!(s.leases[0].position, Some(1));
-        assert_eq!(s.leases[0].task.as_deref(), Some("render"));
-
-        let partial: Station = serde_json::from_str(r#"{"id": "st_2", "name": "bare"}"#)
-            .expect("partial station parses");
-        assert_eq!(partial.name, "bare");
-        assert!(partial.leases.is_empty() && partial.facts.gpus.is_empty());
-        assert_eq!(partial.settings, Settings::default());
-    }
-
-    #[test]
-    fn a_settings_answer_parses_with_and_without_a_push_error() {
-        let pushed: SettingsAnswer = serde_json::from_value(
-            json!({"settings": sample_settings(), "pushed": true, "push_error": null}),
-        )
-        .expect("answer parses");
-        assert!(pushed.pushed && pushed.push_error.is_none());
-        let held: SettingsAnswer = serde_json::from_value(
-            json!({"settings": sample_settings(), "pushed": false, "push_error": "offline"}),
-        )
-        .expect("answer parses");
-        assert_eq!(held.push_error.as_deref(), Some("offline"));
-    }
-
-    #[test]
-    fn station_events_are_the_station_and_lease_frames() {
-        assert!(station_event("station"));
-        assert!(station_event("lease_granted"));
-        assert!(station_event("lease_released"));
-        assert!(station_event("lease_owner_input"));
-        assert!(!station_event("agent"));
-        assert!(!station_event("stationary"));
-    }
-
-    #[test]
-    fn a_failed_refresh_keeps_what_the_list_shows() {
-        let mut slot: Load<Vec<Code>> = Load::Pending;
-        settle_into(&mut slot, Err("down".to_string()));
-        assert!(matches!(slot, Load::Failed));
-        settle_into(&mut slot, Ok(vec![Code::default()]));
-        settle_into(&mut slot, Err("down".to_string()));
-        assert!(matches!(&slot, Load::Ready(list) if list.len() == 1));
-    }
-}
+#[path = "workstations_tests.rs"]
+mod tests;

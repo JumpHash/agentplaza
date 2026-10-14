@@ -33,6 +33,9 @@ pub mod mcp_wizard;
 pub mod vault;
 pub mod machines;
 pub mod workstations;
+pub mod workstations_live;
+pub mod workstations_rec;
+pub mod workstations_files;
 pub mod nodes;
 pub mod setup;
 pub mod agent;
@@ -270,6 +273,10 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     if let Id::Agent(cid) = id {
         screens.agent = agent::State { cid, ..Default::default() };
     }
+    // A takeover ends when the owner leaves the Workstations screen: its socket closes, and the hub gives the screen back.
+    if !matches!(id, Id::Workstations) {
+        workstations::leave(&mut screens.workstations);
+    }
     match &id {
         Id::LabJobDetail(job) => screens.lab_job_detail = lab_job_detail::State { job: job.clone(), ..Default::default() },
         Id::LabModelDetail(model) => screens.lab_model_detail = lab_model_detail::State { model: model.clone(), ..Default::default() },
@@ -376,7 +383,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Floor => iced::Subscription::batch([floor::subscription(&screens.floor), floor::events(ctx)]).map(Msg::Floor),
         Id::RobotLab | Id::RoomLab | Id::HardwareLab => engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab),
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
-        Id::Workstations => workstations::subscription(ctx).map(Msg::Workstations),
+        Id::Workstations => workstations::subscription(&screens.workstations, ctx).map(Msg::Workstations),
         Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury, ctx).map(Msg::Treasury),
