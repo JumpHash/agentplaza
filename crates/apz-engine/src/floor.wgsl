@@ -368,10 +368,12 @@ fn fs_shadow_catcher(v: Varyings) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_outline(v: Varyings) -> @location(0) vec4<f32> {
-    return vec4<f32>(encode(fogged(g.ink.rgb, v.view_depth)), 1.0);
+    // three's ink hull was a ShaderMaterial with no colour-space output: its linear ink reached the screen as it was.
+    return vec4<f32>(raw(fogged(g.ink.rgb, v.view_depth)), 1.0);
 }
 
-// The painted sky: hard-edged bands near the horizon.
+// The painted sky: hard-edged bands near the horizon. three's sky was a ShaderMaterial with no colour-space output, so
+// its linear colours reached the screen as they were (a darker night than the hexes): `raw` writes them the same way.
 @fragment
 fn fs_sky(v: Varyings) -> @location(0) vec4<f32> {
     let h = normalize(v.normal).y;
@@ -379,5 +381,16 @@ fn fs_sky(v: Varyings) -> @location(0) vec4<f32> {
     t = floor(t * 6.0 + 0.5) / 6.0;
     var c = mix(g.sky_horizon.rgb, g.sky_top.rgb, t);
     c = mix(g.sky_ground.rgb, c, smoothstep(-0.05, 0.02, h));
-    return vec4<f32>(encode(c), 1.0);
+    return vec4<f32>(raw(c), 1.0);
+}
+
+// A colour written to the screen as its stored values, with no colour-space encoding (three's ShaderMaterial without
+// colorspace_fragment): on an sRGB target the hardware's encoding is undone first.
+fn raw(c: vec3<f32>) -> vec3<f32> {
+    if g.params.w >= 0.5 {
+        return c;
+    }
+    let lo = c / 12.92;
+    let hi = pow((max(c, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
 }

@@ -158,7 +158,17 @@ fn fs_emissive(i: Out) -> @location(0) vec4<f32> {
 // The ink hull (floor.wgsl's fs_outline).
 @fragment
 fn fs_outline(i: Out) -> @location(0) vec4<f32> {
-    return vec4<f32>(encode(fogged(g.ink.rgb, i.view_depth)), 1.0);
+    return vec4<f32>(raw(fogged(g.ink.rgb, i.view_depth)), 1.0);
+}
+
+// floor.wgsl's raw: the colour as stored, with no colour-space encoding (three's ShaderMaterial).
+fn raw(c: vec3<f32>) -> vec3<f32> {
+    if g.params.w >= 0.5 {
+        return c;
+    }
+    let lo = c / 12.92;
+    let hi = pow((max(c, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
 }
 
 // `v` turned by `angle` about the unit axis `k` (Rodrigues; right-handed, as Quat::from_axis_angle).
