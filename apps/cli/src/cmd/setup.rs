@@ -720,41 +720,37 @@ mod tests {
         assert!(select(&checks[..1], None).unwrap().is_empty());
     }
 
-    #[test]
-    fn the_flags_parse_and_conflict() {
-        let parsed =
-            crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "docker-running"]).unwrap();
-        match parsed.command {
-            crate::Command::Setup(args) => assert_eq!(args.fix, Some(Need::DockerRunning)),
+    /// The `setup` arguments after the subcommand name, parsed the way the binary parses them.
+    fn parse(argv: &[&str]) -> Result<Args, clap::Error> {
+        let mut full = vec!["agentplaza", "setup"];
+        full.extend_from_slice(argv);
+        crate::Cli::try_parse_from(full).map(|cli| match cli.command {
+            crate::Command::Setup(args) => args,
             other => panic!("not setup: {other:?}"),
-        }
-        let parsed = crate::Cli::try_parse_from(["agentplaza", "setup", "--fix-all"]).unwrap();
-        match parsed.command {
-            crate::Command::Setup(args) => assert!(args.fix_all && args.fix.is_none()),
-            other => panic!("not setup: {other:?}"),
-        }
-        assert!(crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "nope"]).is_err());
-        assert!(
-            crate::Cli::try_parse_from(["agentplaza", "setup", "--fix", "garage", "--fix-all"])
-                .is_err()
-        );
+        })
     }
 
     #[test]
-    fn the_hub_flag_checks_the_hub_and_takes_no_fix() {
-        let parsed = crate::Cli::try_parse_from(["agentplaza", "setup", "--hub"]).unwrap();
-        match parsed.command {
-            crate::Command::Setup(args) => {
-                assert!(args.hub.as_deref() == Some("") && args.fix.is_none() && !args.fix_all)
-            }
-            other => panic!("not setup: {other:?}"),
+    fn the_setup_flags_parse_as_written_and_the_conflicting_ones_are_refused() {
+        let fix = parse(&["--fix", "docker-running"]).unwrap();
+        assert_eq!(fix.fix, Some(Need::DockerRunning));
+        assert!(!fix.fix_all && fix.hub.is_none());
+        let all = parse(&["--fix-all"]).unwrap();
+        assert!(all.fix_all && all.fix.is_none());
+        // `--hub` alone checks the hub (empty name); `--hub NAME` names one; neither takes a fix.
+        let hub = parse(&["--hub"]).unwrap();
+        assert!(hub.hub.as_deref() == Some("") && hub.fix.is_none() && !hub.fix_all);
+        assert_eq!(
+            parse(&["--hub", "work"]).unwrap().hub.as_deref(),
+            Some("work")
+        );
+        for refused in [
+            &["--fix", "nope"][..],
+            &["--fix", "garage", "--fix-all"],
+            &["--hub", "--fix-all"],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?} is refused");
         }
-        let named = crate::Cli::try_parse_from(["agentplaza", "setup", "--hub", "work"]).unwrap();
-        match named.command {
-            crate::Command::Setup(args) => assert_eq!(args.hub.as_deref(), Some("work")),
-            other => panic!("not setup: {other:?}"),
-        }
-        assert!(crate::Cli::try_parse_from(["agentplaza", "setup", "--hub", "--fix-all"]).is_err());
     }
 
     #[test]

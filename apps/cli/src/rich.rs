@@ -354,14 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_mode_prints_the_raw_text_unchanged() {
-        let (text, ctx) = vector("github_pull");
-        assert_eq!(render(&text, &ctx, &plain()), text);
-        let (text, ctx) = vector("path_exact");
-        assert_eq!(render(&text, &ctx, &plain()), text);
-    }
-
-    #[test]
     fn a_github_pull_is_a_short_label_with_gh_and_no_escapes_when_plain_styling_is_off() {
         let (text, ctx) = vector("github_pull");
         assert_eq!(
@@ -534,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pipe_prints_every_kind_of_reference_as_written() {
+    fn a_pipe_or_plain_prints_every_kind_of_reference_as_written() {
         let pipe = Mode::decide(&term(false), None);
         for name in [
             "github_pull",
@@ -554,6 +546,7 @@ mod tests {
         ] {
             let (text, ctx) = vector(name);
             assert_eq!(render(&text, &ctx, &pipe), text, "{name}");
+            assert_eq!(render(&text, &ctx, &plain()), text, "{name} (--plain)");
         }
     }
 
