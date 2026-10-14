@@ -85,10 +85,10 @@ fn suspended_cids(register: &Value) -> BTreeSet<u64> {
         .collect()
 }
 
-/// The suspended agents now. The register is read whole (its newest 10000 records) so an old suspension is not
-/// missed; a register that cannot be read is said so, and no one is marked.
+/// The suspended agents now. The hub answers the suspensions in force on their own (`active=1`), so an old
+/// suspension is not missed; a register that cannot be read is said so, and no one is marked.
 fn suspended_now(ctx: &Ctx) -> BTreeSet<u64> {
-    match ctx.client.get("/v1/sanctions?limit=10000") {
+    match ctx.client.get("/v1/sanctions?active=1") {
         Ok(register) => suspended_cids(&register),
         Err(e) => {
             eprintln!("warning: the sanctions register could not be read ({e}), so no agent is marked suspended");

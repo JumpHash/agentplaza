@@ -309,7 +309,7 @@ export function mount(root: HTMLElement): Cleanup {
     }
     // One read of the sanctions register per refresh marks every node; a failed read keeps the last set.
     try {
-      const register = await api.sanctions();
+      const register = await api.sanctions({ active: true });
       suspended = new Set(register.suspensions.filter((s) => s.active).map((s) => s.cid));
     } catch {
       // Keep the last set; the next poll tries again.

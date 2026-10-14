@@ -244,6 +244,18 @@ pub struct SuspensionView {
     pub active: bool,
 }
 
+/// A stored suspension as the API shows it, at `now_ms`.
+fn view(s: &Suspension, now_ms: u64) -> SuspensionView {
+    SuspensionView {
+        id: s.id,
+        cid: s.cid,
+        tool: s.tool.clone(),
+        law: s.law.clone(),
+        until_ms: s.until_ms,
+        active: !s.lifted && s.until_ms > now_ms,
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct State {
@@ -481,16 +493,23 @@ impl Ledger {
             .rev()
             .filter(|s| cid.is_none_or(|c| s.cid == c) && law.is_none_or(|l| s.law == l))
             .take(limit)
-            .map(|s| SuspensionView {
-                id: s.id,
-                cid: s.cid,
-                tool: s.tool.clone(),
-                law: s.law.clone(),
-                until_ms: s.until_ms,
-                active: !s.lifted && s.until_ms > now_ms,
-            })
+            .map(|s| view(s, now_ms))
             .collect();
         (sanctions, suspensions)
+    }
+
+    /// The suspensions in force for a query, newest first. No limit: there are few of them, and a
+    /// client that needs the suspended agents must not miss an old one behind newer records.
+    pub fn active(&self, cid: Option<u64>, law: Option<&str>, now_ms: u64) -> Vec<SuspensionView> {
+        let state = self.lock();
+        state
+            .suspensions
+            .iter()
+            .rev()
+            .filter(|s| !s.lifted && s.until_ms > now_ms)
+            .filter(|s| cid.is_none_or(|c| s.cid == c) && law.is_none_or(|l| s.law == l))
+            .map(|s| view(s, now_ms))
+            .collect()
     }
 
     /// Lifts the tool suspension recorded as `id`, while it is in force.
@@ -685,7 +704,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/sanctions/{id}/lift", lift_route)
 }
 
-/// `GET /v1/sanctions?cid=&law=&limit=`: the sanctions and the suspensions, newest first.
+/// `GET /v1/sanctions?cid=&law=&limit=&active=1`: the sanctions and the suspensions, newest first.
+/// `active=1` answers only the suspensions in force (no limit), with no sanctions.
 fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     let cid = match req.query_param("cid").filter(|v| !v.is_empty()) {
         Some(value) => match value.parse::<u64>() {
@@ -695,8 +715,13 @@ fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         None => None,
     };
     let law = req.query_param("law").filter(|v| !v.is_empty());
+    let now_ms = apz_plaza::now_ms();
+    if matches!(req.query_param("active"), Some("1" | "true")) {
+        let suspensions = ledger(app).active(cid, law, now_ms);
+        return Response::json(200, &json!({ "sanctions": [], "suspensions": suspensions }));
+    }
     let limit = req.query_param("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
-    let (sanctions, suspensions) = ledger(app).list(cid, law, limit, apz_plaza::now_ms());
+    let (sanctions, suspensions) = ledger(app).list(cid, law, limit, now_ms);
     Response::json(200, &json!({ "sanctions": sanctions, "suspensions": suspensions }))
 }
 
@@ -979,6 +1004,27 @@ mod tests {
         assert!(suspensions[0].active);
         let (_, later) = w.ledger.list(None, None, 100, NOW + 3 * DAY_MS);
         assert!(!later[0].active, "active flips at until_ms");
+    }
+
+    #[test]
+    fn the_active_list_keeps_an_old_suspension_past_the_limit() {
+        // Oldest first in the file: one old suspension in force, 120 more in force, 150 lifted, one run out.
+        let mut suspensions = vec![json!({ "cid": 1, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS })];
+        suspensions.extend((0..120).map(|_| json!({ "cid": 4, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS })));
+        suspensions.extend((0..150).map(|_| json!({ "cid": 2, "tool": "bash", "law": "T-010", "until_ms": NOW + DAY_MS, "lifted": true })));
+        suspensions.push(json!({ "cid": 3, "tool": "bash", "law": "T-010", "until_ms": NOW - 1 }));
+        let ledger = Ledger::new(None);
+        ledger.restore(&json!({ "applied": [], "suspensions": suspensions }).to_string()).expect("the snapshot restores");
+        let (_, newest) = ledger.list(None, None, DEFAULT_LIMIT, NOW);
+        assert!(newest.iter().all(|s| s.cid != 1), "the newest 100 miss the old suspension");
+        let active = ledger.active(None, None, NOW);
+        assert_eq!(active.len(), 121, "every suspension in force, with no limit");
+        assert_eq!(active.last().map(|s| s.cid), Some(1), "newest first: the old one comes last");
+        assert!(active.iter().all(|s| s.active));
+        assert_eq!(ledger.active(Some(1), Some("T-010"), NOW).len(), 1);
+        assert!(ledger.active(Some(2), None, NOW).is_empty(), "lifted is not in force");
+        assert!(ledger.active(Some(3), None, NOW).is_empty(), "run out is not in force");
+        assert!(ledger.active(None, Some("T-999"), NOW).is_empty());
     }
 
     #[test]

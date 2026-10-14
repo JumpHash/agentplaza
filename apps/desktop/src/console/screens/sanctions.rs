@@ -28,6 +28,17 @@ pub struct Sanction {
     pub fine: u64,
     #[serde(default)]
     pub lifted: Option<Lifted>,
+    /// The owner's latest decision on the record: acknowledged, or retired.
+    #[serde(default)]
+    pub owner_action: Option<OwnerAction>,
+}
+
+/// The owner's decision on a sanction record, and when it was made.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OwnerAction {
+    pub action: String,
+    #[serde(default)]
+    pub at_ms: u64,
 }
 
 /// The owner's lift of a sanction: when, and the reason on the record.
@@ -85,6 +96,11 @@ pub fn list(client: &client::Client, cid: Option<u64>, law: Option<&str>, limit:
     client.get(&list_path(cid, law, limit))
 }
 
+/// The suspensions in force, every one (`active=1`: no sanctions, no limit), so none is missed behind newer records.
+pub fn active(client: &client::Client) -> Result<Register, String> {
+    client.get("/v1/sanctions?active=1")
+}
+
 /// Lifts an active suspension with the owner's reason; answers with the updated sanction.
 pub fn lift(client: &client::Client, id: u64, reason: &str) -> Result<Sanction, String> {
     client.post(&format!("/v1/sanctions/{id}/lift"), &json!({ "reason": reason }))
@@ -99,6 +115,21 @@ mod tests {
         assert_eq!(list_path(None, None, None), "/v1/sanctions");
         assert_eq!(list_path(Some(7), None, Some(50)), "/v1/sanctions?cid=7&limit=50");
         assert_eq!(list_path(None, Some("a b"), None), "/v1/sanctions?law=a%20b");
+    }
+
+    #[test]
+    fn a_sanction_parses_the_owner_action_when_there_is_one() {
+        let with: Sanction = serde_json::from_value(json!({
+            "id": 4, "sanction": "owner-review",
+            "owner_action": { "action": "retire", "at_ms": 1_800_000_000_000u64 }
+        }))
+        .unwrap();
+        let action = with.owner_action.expect("the owner's action");
+        assert_eq!((action.action.as_str(), action.at_ms), ("retire", 1_800_000_000_000));
+        let without: Sanction = serde_json::from_value(json!({ "id": 5, "owner_action": null })).unwrap();
+        assert!(without.owner_action.is_none());
+        let old: Sanction = serde_json::from_value(json!({ "id": 6 })).unwrap();
+        assert!(old.owner_action.is_none(), "a record from before the field still parses");
     }
 
     #[test]

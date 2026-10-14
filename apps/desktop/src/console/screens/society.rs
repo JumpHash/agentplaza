@@ -205,7 +205,7 @@ pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let sanctions_client = ctx.client.clone();
     Task::batch([
         client::task(move || client.get::<Society>("/v1/society"), Msg::Loaded),
-        client::task(move || sanctions::list(&sanctions_client, None, None, None), Msg::Sanctions),
+        client::task(move || sanctions::active(&sanctions_client), Msg::Sanctions),
     ])
 }
 

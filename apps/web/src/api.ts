@@ -551,8 +551,9 @@ export const api = {
   approvals: () => get<Approval[]>('/v1/approvals'),
   /** `action` picks what a sanction escalation does; left out, approve and deny act as they always have. */
   decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(`/v1/approvals/${id}`, { approve, reason, action }),
-  /** The sanctions register, newest first. `cid`, `law` and `limit` (default 100) narrow it. */
-  sanctions: (q: { cid?: number; law?: string; limit?: number } = {}) => get<SanctionsView>(`/v1/sanctions${query({ ...q })}`),
+  /** The sanctions register, newest first. `cid`, `law` and `limit` (default 100) narrow it. `active` answers only the suspensions in force (no sanctions, no limit). */
+  sanctions: (q: { cid?: number; law?: string; limit?: number; active?: boolean } = {}) =>
+    get<SanctionsView>(`/v1/sanctions${query({ cid: q.cid, law: q.law, limit: q.limit, active: q.active ? 1 : undefined })}`),
   /** Lifts an active suspension. 404 for an unknown id, 409 when it is not an active suspension. */
   liftSanction: (id: number, reason: string) => post<Sanction>(`/v1/sanctions/${id}/lift`, { reason }),
   permissions: (cid: number) => get<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`),

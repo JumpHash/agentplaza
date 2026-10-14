@@ -809,6 +809,10 @@ fn sanction_row<'a>(s: &'a sanctions::Sanction) -> Element<'a, Msg> {
     if let Some(lifted) = &s.lifted {
         line = line.push(ui::faint(format!("lifted by owner: {}", lifted.why)));
     }
+    if let Some(action) = &s.owner_action {
+        let word = if action.action == "retire" { "Retired" } else { "Acknowledged" };
+        line = line.push(ui::faint(format!("{word} by the owner, {}", ago(action.at_ms))));
+    }
     line.into()
 }
 
