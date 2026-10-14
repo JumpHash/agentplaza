@@ -242,6 +242,9 @@ pub struct Texture {
     /// Nearest filtering (pixel art, ramps) or linear with mipmaps.
     pub nearest: bool,
     pub srgb: bool,
+    /// three's `flipY`: a canvas texture's first row is its top (v = 1), as three's CanvasTexture uploads it; a data
+    /// texture's first row is v = 0. The mesh draws read v as 1 - v for it (render.rs rows_of).
+    pub flip_y: bool,
 }
 
 pub type Tex = Arc<Texture>;
@@ -249,7 +252,7 @@ pub type Tex = Arc<Texture>;
 impl Texture {
     /// A clamped, linearly filtered sRGB texture.
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Texture {
-        Texture { id: next_id(), width, height, rgba: Arc::new(rgba), repeat: [1.0, 1.0], offset: [0.0, 0.0], wrap: false, nearest: false, srgb: true }
+        Texture { id: next_id(), width, height, rgba: Arc::new(rgba), repeat: [1.0, 1.0], offset: [0.0, 0.0], wrap: false, nearest: false, srgb: true, flip_y: false }
     }
 
     /// The same pixels with another repeat (a new id: three would clone the texture).

@@ -1720,7 +1720,14 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
         flags += 16.0;
     }
     let emissive = m.emissive.scale(m.emissive_intensity);
-    let uv = m.map.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |t| [t.repeat[0], t.repeat[1], t.offset[0], t.offset[1]]);
+    // uv' = uv * repeat + offset; a flipY texture (a canvas's) reads v as 1 - v first, as three uploads it.
+    let uv = m.map.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |t| {
+        if t.flip_y {
+            [t.repeat[0], -t.repeat[1], t.offset[0], t.offset[1] + t.repeat[1]]
+        } else {
+            [t.repeat[0], t.repeat[1], t.offset[0], t.offset[1]]
+        }
+    });
     let row = |model: Mat4, color: [f32; 3], uv: [f32; 4]| Row {
         model: model.to_cols_array_2d(),
         color: [color[0], color[1], color[2], alpha],

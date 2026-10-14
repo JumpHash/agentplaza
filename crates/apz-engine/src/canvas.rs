@@ -426,7 +426,8 @@ impl Canvas {
 
     /// A clamped, linear, sRGB texture of the pixels (three's `CanvasTexture` defaults as the floor sets them).
     pub fn to_texture(&self) -> Tex {
-        std::sync::Arc::new(Texture::new(self.width, self.height, self.rgba()))
+        // A canvas texture, as three's CanvasTexture: its top row is v = 1 on a mesh (flipY).
+        std::sync::Arc::new(Texture { flip_y: true, ..Texture::new(self.width, self.height, self.rgba()) })
     }
 
     // ---- Internals
