@@ -78,6 +78,80 @@ export function panelEdge(side: 'left' | 'right', onDrag: (clientX: number) => v
   return el;
 }
 
+/**
+ * The top edge of the terminal dock: drag it to resize (`onDrag` gets the pointer's y while it is held, `onDone` when it is
+ * let go); an arrow key steps it by `onStep`. It sits on the dock's top border, inside the editor column.
+ */
+export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, onStep: (px: number) => void): HTMLElement {
+  const el = h('div.ide-bottom-edge', {
+    role: 'separator',
+    'aria-orientation': 'horizontal',
+    'aria-label': 'Resize the terminal',
+    title: 'Drag to resize',
+    tabindex: '0',
+  });
+  const move = (e: PointerEvent) => onDrag(e.clientY);
+  const end = () => {
+    el.removeEventListener('pointermove', move);
+    el.classList.remove('on');
+    el.closest('.ide')?.classList.remove('dragging-rows');
+    onDone();
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('on');
+    el.closest('.ide')?.classList.add('dragging-rows');
+    el.addEventListener('pointermove', move);
+  });
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    onStep(e.key === 'ArrowUp' ? 24 : -24);
+  });
+  return el;
+}
+
+export interface RightTabItem {
+  key: string;
+  /** The full name: the tooltip and the accessible name. */
+  label: string;
+  icon: IconName;
+  /** A count shown as a small mark on the tab (Approvals), omitted when 0. */
+  count?: number;
+}
+
+/**
+ * The right panel's tabs: an icon and a short label each, all of them in view. The label goes when the strip is narrow
+ * (a container query in ide.css); the full name stays the tooltip, and a count is a small mark on the tab's corner.
+ */
+export function rightTabStrip(items: RightTabItem[], current: string, onSelect: (key: string) => void): HTMLElement {
+  return h(
+    'div.ide-rtabs',
+    { role: 'tablist' },
+    items.map((item) => {
+      const full = item.count ? `${item.label} (${item.count})` : item.label;
+      return h(
+        'button.ide-rtab',
+        {
+          type: 'button',
+          role: 'tab',
+          title: full,
+          'aria-label': full,
+          'aria-selected': item.key === current ? 'true' : 'false',
+          onclick: () => onSelect(item.key),
+        },
+        icon(item.icon),
+        h('span.ide-rtab-label', null, item.label),
+        item.count ? h('span.ide-rtab-count', null, String(item.count)) : null,
+      );
+    }),
+  );
+}
+
 export interface StatusInfo {
   workspace: string;
   base: string;

@@ -1,7 +1,7 @@
 // The IDE screen (route #/ide and #/ide/<workspace>): a full-window view of its own, with no console shell beside it. Its
 // header (the workspace, the state, the actions), an activity rail that picks the side panel (files, search, changes,
 // checkpoints), the editor tabs or the review in the centre, a right panel (agent, approvals, run, terminal) and a status
-// bar. This module owns the data; the chrome is ide-chrome, the editor ide-editor, the panels ide-side, ide-find and
+// bar. The terminal can dock under the editor instead (the centre's bottom dock). This module owns the data; the chrome is ide-chrome, the editor ide-editor, the panels ide-side, ide-find and
 // ide-tabs. It loads on the first visit (views/index.ts), with CodeMirror. openIde (ide/open.ts) is how other screens get
 // here, and the Console button (and Escape) goes back to the screen it came from.
 
@@ -31,21 +31,38 @@ import { loadIde, type Ide } from '../ide/wasm';
 import type { Base, Entry, FileChange, IdeState, Panel, Stats } from '../ide/types';
 import { agents, on, onConnection } from '../store';
 import { brandMark } from '../ui/brand';
-import { badge, button, empty, modal, tabs, toast, type Tone } from '../ui/components';
+import { badge, button, empty, modal, toast, type Tone } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
 import { heldBanner, onPlazaHeld } from '../ui/plaza-control';
 import { themeSwitch } from '../ui/theme';
 import type { Cleanup } from './index';
 import { Editor, stateFor } from './ide-editor';
 import { quickOpen, searchView } from './ide-find';
-import { activityRail, keyboardHelp, LANG_LABEL, panelEdge, statusBar, type StatusInfo } from './ide-chrome';
+import { activityRail, dockEdge, keyboardHelp, LANG_LABEL, panelEdge, type RightTabItem, rightTabStrip, statusBar, type StatusInfo } from './ide-chrome';
 import { changedList, changesPanel, checkpointsPanel } from './ide-side';
-import { agentPanel, approvalsPanel, runPanel, terminalPanel, type Panel as TabPanel } from './ide-tabs';
+import { agentPanel, approvalsPanel, runPanel, type Panel as TabPanel } from './ide-tabs';
+import { terminalTabs, type TabsHandle } from './ide-terminal';
 
 const STYLE_ID = 'apz-ide-style';
 const REFRESH_MS = 400;
 /** The panel sizes and open flags, kept per browser. */
 const LAYOUT_KEY = 'apz.ide.layout';
+/** Where the terminal sits (the right panel or under the editor) and the dock's height, kept per browser. */
+const TERM_KEY = 'apz.ide.terminal';
+/** The dock's height limits: the editor keeps `editorMin` px above it. */
+const DOCK = { min: 120, def: 240, max: 1200, editorMin: 160, step: 24 };
+
+type TermDock = 'side' | 'bottom';
+
+function readTermPrefs(): { dock: TermDock; height: number } {
+  try {
+    const v = JSON.parse(readStore(TERM_KEY) ?? 'null') as { dock?: unknown; height?: unknown } | null;
+    const height = typeof v?.height === 'number' && Number.isFinite(v.height) ? Math.min(Math.max(v.height, DOCK.min), DOCK.max) : DOCK.def;
+    return { dock: v?.dock === 'bottom' ? 'bottom' : 'side', height: Math.round(height) };
+  } catch {
+    return { dock: 'side', height: DOCK.def };
+  }
+}
 
 /** One open file: its buffer, and its editor state while another tab is shown (the shown tab's state is the view's). */
 interface Tab {
@@ -110,7 +127,10 @@ function totalsOf(files: FileChange[]): Stats {
 
 /** Whether a key press is typed into a field or the editor (so a shortcut that is a letter or a `?` does not fire). */
 const inTyping = (target: EventTarget | null): boolean =>
-  !!(target as Element | null)?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), .cm-editor');
+  !!(target as Element | null)?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), .cm-editor, .xterm');
+
+/** Whether the key press is in a terminal: its keys belong to the shell, so the screen's Ctrl shortcuts stay off. */
+const inTerminal = (target: EventTarget | null): boolean => !!(target as Element | null)?.closest?.('.xterm');
 
 /** Whether the key press is in a form field (Escape there is the field's, not the screen's). */
 const inField = (target: EventTarget | null): boolean => !!(target as Element | null)?.closest?.('input, textarea, select');
@@ -149,7 +169,11 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   /** The Agent, Approvals and Run tabs' controllers, per workspace: a tab switch keeps a draft or a running command. */
   let panels: { agent: TabPanel | null; approvals: TabPanel | null; run: TabPanel | null } = { agent: null, approvals: null, run: null };
   let approvalCount = 0;
-  const terminal = terminalPanel();
+  /** The terminal's place and size. The terminals themselves are made on first need, per agent workspace (see renderTerminal). */
+  const termPrefs = readTermPrefs();
+  let dock: TermDock = termPrefs.dock;
+  let dockHeight = termPrefs.height;
+  let term: TabsHandle | null = null;
   let saved = false;
   let agentWorking = false;
   let wasWorking = false;
@@ -248,11 +272,39 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const emptyHost = h('div.ide-empty-centre');
   /** Review mode: the changes since the base, in place of the editor. */
   const reviewHost = h('div.ide-review');
-  const centre = h('section.ide-centre', { 'aria-label': 'Editor' }, tabBar, banners, cmHost, emptyHost, reviewHost);
+
+  // The terminal. Its tabs (terminalTabs) mount into termHost, which moves between the two places a terminal can sit: the
+  // bottom dock under the editor, and the Terminal tab's slot in the right panel. A move keeps the terminal alive.
+  const termHost = h('div.ide-term-host');
+  const bottomBody = h('div.ide-bottom-body');
+  const bottomHost = h(
+    'section.ide-bottom',
+    { 'aria-label': 'Terminal, docked under the editor', hidden: true },
+    dockEdge(
+      (y) => {
+        dockHeight = clampDock(bottomHost.getBoundingClientRect().bottom - y);
+        bottomHost.style.height = `${dockHeight}px`;
+      },
+      () => saveTermPrefs(),
+      (px) => {
+        dockHeight = clampDock(dockHeight + px);
+        bottomHost.style.height = `${dockHeight}px`;
+        saveTermPrefs();
+      },
+    ),
+    h('div.ide-bottom-head', null, h('span.ide-bottom-title', null, 'Terminal'), h('span.spacer'), button('Move to side panel', () => setDock('side'), { kind: 'ghost', size: 'sm', title: 'Show the terminal in the right panel' })),
+    bottomBody,
+  );
+  const centre = h('section.ide-centre', { 'aria-label': 'Editor' }, tabBar, banners, cmHost, emptyHost, reviewHost, bottomHost);
   const editor = new Editor(cmHost);
 
   const rightTabs = h('div.ide-side-tabs');
   const rightBody = h('div.ide-side-body');
+  const dockToggle = button('Move terminal to bottom', () => setDock(dock === 'bottom' ? 'side' : 'bottom'), { size: 'sm', icon: 'terminal' });
+  const termSlot = h('div.ide-term-slot');
+  const termNote = h('div.ide-term-note');
+  /** The Terminal tab: the dock toggle, then the terminal in its slot (or a note in place of it). */
+  const termSide = h('div.ide-term-side', null, h('div.ide-term-side-bar', null, dockToggle), termSlot, termNote);
   const rightPanel = h(
     'aside.ide-right',
     { 'aria-label': 'Agent, approvals, run and terminal' },
@@ -443,6 +495,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   // ---- Workspaces -----------------------------------------------------------
   async function selectWorkspace(info: IdeWorkspaceInfo): Promise<void> {
     if (!ide) return;
+    disposeTerminal();
     ws = info;
     writeStore(LAST_WORKSPACE_KEY, info.id);
     marks = parseViewed(readStore(viewedKey(info.id)));
@@ -762,13 +815,13 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     } else if (mod && e.altKey && !e.shiftKey && e.code === 'KeyJ') {
       e.preventDefault();
       toggleRight();
-    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's' && !inTerminal(e.target)) {
       e.preventDefault();
       void save();
-    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
+    } else if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p' && !inTerminal(e.target)) {
       e.preventDefault();
       openQuick();
-    } else if (mod && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'f') {
+    } else if (mod && !e.altKey && e.shiftKey && e.key.toLowerCase() === 'f' && !inTerminal(e.target)) {
       e.preventDefault();
       openSearch();
     } else if (e.key === '?' && !mod && !e.altKey && !inTyping(e.target)) {
@@ -819,12 +872,75 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     return panels.approvals;
   }
 
-  /** Shows a right-hand tab, and tells the reducer which panel it is. */
-  function setRight(next: RightTab): void {
+  /** Shows a right-hand tab, and tells the reducer which panel it is. A tab the owner chose takes the focus (`focus`). */
+  function setRight(next: RightTab, focus = false): void {
     rightTab = next;
     if (ide && state) state = ide.reduce(state, { set_panel: next as Panel });
     if (next !== 'terminal') panelFor(next)?.show?.();
     renderRight();
+    if (focus && next === 'terminal') term?.focus();
+  }
+
+  // ---- Terminal -------------------------------------------------------------
+  /** Keeps the dock's height within the editor column: at least DOCK.min, and the editor keeps DOCK.editorMin above it. */
+  function clampDock(px: number): number {
+    const column = bottomHost.parentElement;
+    const room = column && column.clientHeight > 0 ? column.clientHeight - DOCK.editorMin : Infinity;
+    return Math.round(Math.max(DOCK.min, Math.min(px, Math.max(DOCK.min, room))));
+  }
+
+  function saveTermPrefs(): void {
+    writeStore(TERM_KEY, JSON.stringify({ dock, height: dockHeight }));
+  }
+
+  /** Moves the terminal between the bottom dock and the right panel's Terminal tab. The terminal keeps running; it is focused. */
+  function setDock(next: TermDock): void {
+    dock = next;
+    saveTermPrefs();
+    renderRight();
+    term?.focus();
+  }
+
+  /** Ends the terminals of the workspace being left (the guest shells keep running, and re-attach when mounted again). */
+  function disposeTerminal(): void {
+    term?.dispose();
+    term = null;
+    termHost.remove();
+  }
+
+  /**
+   * Puts the terminal where it belongs: in the bottom dock when docked, else in the Terminal tab's slot while that tab
+   * shows, else nowhere (detached, still alive). The terminals are made the first time one is wanted, in an agent
+   * workspace; a move that is not needed is not made, so a redraw does not move the focus or the xterm DOM.
+   */
+  function renderTerminal(): void {
+    const agentWs = ws !== null && cidOf(ws.id) !== null;
+    const bottom = agentWs && dock === 'bottom';
+    const side = agentWs && !bottom && rightTab === 'terminal' && layout.rightOpen;
+    bottomHost.hidden = !bottom;
+    if (bottom) bottomHost.style.height = `${clampDock(dockHeight)}px`;
+    termSlot.hidden = !side;
+    // The host is in its place before a terminal is made in it: a terminal opened in a detached or hidden host measures nothing.
+    const home = bottom ? bottomBody : side ? termSlot : null;
+    if (home) {
+      if (termHost.parentElement !== home) home.append(termHost);
+    } else {
+      termHost.remove();
+    }
+    if (ws && (bottom || side) && !term) term = terminalTabs(termHost, ws.id);
+  }
+
+  /** The Terminal tab's own bar and note: the toggle's label, and why there is no terminal here (a repo, or docked). */
+  function paintTermSide(): void {
+    const agentWs = ws !== null && cidOf(ws.id) !== null;
+    const docked = agentWs && dock === 'bottom';
+    dockToggle.textContent = docked ? 'Move terminal to side panel' : 'Move terminal to bottom';
+    dockToggle.setAttribute('aria-pressed', String(docked));
+    dockToggle.disabled = !agentWs;
+    if (!ws) replace(termNote, empty('terminal', 'Choose a workspace', 'Terminals run in agent workspaces.'));
+    else if (!agentWs) replace(termNote, empty('terminal', 'Terminals run in agent workspaces', 'A repository has no shell of its own. Open an agent workspace to get one.'));
+    else if (docked) replace(termNote, h('p.ide-note', null, 'The terminal is docked under the editor.'));
+    else replace(termNote);
   }
 
   function toggleReview(): void {
@@ -1082,24 +1198,25 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   function renderRightTabs(): void {
     const agentWs = ws !== null && cidOf(ws.id) !== null;
-    const items: { key: string; label: string }[] = [];
-    if (agentWs) items.push({ key: 'agent', label: 'Agent' }, { key: 'approvals', label: `Approvals${approvalCount ? ` (${approvalCount})` : ''}` });
-    items.push({ key: 'run', label: 'Run' }, { key: 'terminal', label: 'Terminal' });
-    replace(rightTabs, tabs(items, rightTab, (k) => setRight(k as RightTab)));
+    const items: RightTabItem[] = [];
+    if (agentWs) items.push({ key: 'agent', label: 'Agent', icon: 'agents' }, { key: 'approvals', label: 'Approvals', icon: 'approval', count: approvalCount });
+    items.push({ key: 'run', label: 'Run', icon: 'play' }, { key: 'terminal', label: 'Terminal', icon: 'terminal' });
+    replace(rightTabs, rightTabStrip(items, rightTab, (k) => setRight(k as RightTab, true)));
   }
 
   function renderRight(): void {
     renderRightTabs();
     if (rightTab === 'terminal') {
-      replace(rightBody, terminal);
-      return;
-    }
-    if (!ws) {
+      // The slot keeps its place: a redraw does not detach the terminal that sits in it.
+      if (rightBody.firstElementChild !== termSide || rightBody.childElementCount !== 1) replace(rightBody, termSide);
+      paintTermSide();
+    } else if (!ws) {
       replace(rightBody, empty('agents', 'Choose a workspace', 'The agent, approvals and runs are per workspace.'));
-      return;
+    } else {
+      const p = panelFor(rightTab);
+      replace(rightBody, p ? p.el : empty('file', 'Not for this workspace', 'The Agent and Approvals tabs are for agent workspaces.'));
     }
-    const p = panelFor(rightTab);
-    replace(rightBody, p ? p.el : empty('file', 'Not for this workspace', 'The Agent and Approvals tabs are for agent workspaces.'));
+    renderTerminal();
   }
 
   /** The status bar: the workspace and its base, the live connection, the cursor, the language and the unsaved count. */
@@ -1193,6 +1310,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     unheld();
     unconnect();
     resetPanels();
+    disposeTerminal();
     closeOverlay();
     editor.destroy();
   };

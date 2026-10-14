@@ -898,15 +898,220 @@
   width: auto;
 }
 
-/* The right panel's tabs: the strip scrolls when the panel is narrow */
-.ide-side-tabs .tabs {
-  overflow-x: auto;
-  padding: 0 12px;
-  gap: 16px;
+/* The right panel's tabs: four, always in view. Each takes an equal share of the strip, so nothing scrolls out of reach. The
+   label goes when the strip is narrow (the container query); the icon stays, the full name is the tooltip, and a count is a
+   small mark on the tab's corner. */
+.ide-side-tabs {
+  container-type: inline-size;
 }
 
-.ide-side-tabs .tabs button {
+.ide-rtabs {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.ide-rtab {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 4px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ink-3);
+  font: 400 11px / 1 var(--mono);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ide-rtab:hover {
+  color: var(--ink);
+}
+
+.ide-rtab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--signal);
+}
+
+.ide-rtab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.ide-rtab .icon {
   flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.ide-rtab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ide-rtab-count {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 14px;
+  padding: 0 3px;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  font: 600 9px / 12px var(--mono);
+  color: var(--ink-2);
+  text-align: center;
+}
+
+@container (max-width: 319px) {
+  .ide-rtab {
+    gap: 0;
+  }
+
+  .ide-rtab-label {
+    display: none;
+  }
+}
+
+/* The terminal in the right panel: the dock toggle, then the terminal in its slot, or a note in its place */
+.ide-term-side {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-term-side-bar {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--s1) var(--s2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.ide-term-slot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-term-note {
+  padding: var(--s3);
+}
+
+.ide-term-note:empty {
+  display: none;
+}
+
+/* The terminal host: the terminal tabs, in whichever place they are docked (the right panel or the bottom dock) */
+.ide-term-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-term-host > .ide-term-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-term-host .ide-term-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ide-term-host .ide-term {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The terminal dock: under the editor, its height set by the edge on its top border (and the arrow keys there) */
+.ide-bottom {
+  position: relative;
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--rule);
+  background: var(--sheet);
+}
+
+.ide-bottom-edge {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: 4;
+}
+
+.ide-bottom-edge:focus-visible {
+  outline: none;
+}
+
+.ide-bottom-edge::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 3px;
+  height: 2px;
+  background: transparent;
+}
+
+.ide-bottom-edge:hover::after,
+.ide-bottom-edge.on::after,
+.ide-bottom-edge:focus-visible::after {
+  background: var(--signal);
+}
+
+.ide-bottom-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 30px;
+  padding: 0 var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.ide-bottom-head .spacer {
+  flex: 1;
+}
+
+.ide-bottom-title {
+  font: 600 11px / 1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.ide-bottom-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A drag of the dock's edge: the row cursor holds over the whole screen, whatever is under the pointer */
+.ide.dragging-rows,
+.ide.dragging-rows * {
+  cursor: row-resize !important;
+  user-select: none;
 }
 
 /* Review mode: the changes since the base, in place of the editor */
@@ -1128,10 +1333,6 @@
   font: 400 12px / 1.5 var(--mono);
   color: var(--ink);
   white-space: pre-wrap;
-}
-
-.ide-term {
-  padding: 12px;
 }
 
 /* The side panel's files tree: the tools over a scrolling list */

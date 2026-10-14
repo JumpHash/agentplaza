@@ -1,7 +1,7 @@
 // The IDE's right-panel tabs that reach past the files: the agent's transcript and steer box (Agent), the agent's held
-// tool calls with their proposed changes (Approvals), one bounded command (Run), and the Terminal placeholder. Each
-// tab is a controller with its own element; the screen (views/ide.ts) keeps them per workspace, so a tab switch keeps a
-// draft or a running command, and disposes them when the workspace changes. Pure rendering over the hub's routes.
+// tool calls with their proposed changes (Approvals), and one bounded command (Run). The Terminal tab is ide-terminal.ts.
+// Each tab is a controller with its own element; the screen (views/ide.ts) keeps them per workspace, so a tab switch keeps
+// a draft or a running command, and disposes them when the workspace changes. Pure rendering over the hub's routes.
 
 import { api, ApiError, ideApi, type Approval, type Entry, type IdeWorkspaceInfo } from '../api';
 import { on } from '../store';
@@ -441,9 +441,4 @@ export function runPanel(ws: IdeWorkspaceInfo): Panel {
       clearTimeout(timer);
     },
   };
-}
-
-/** The Terminal tab until phase 5: a placeholder, no controller. */
-export function terminalPanel(): HTMLElement {
-  return h('div.ide-term', null, empty('terminal', 'Terminal comes in the next phase', 'A shell in the agent VM, with resize and reconnect, lands with the terminal service.'));
 }
