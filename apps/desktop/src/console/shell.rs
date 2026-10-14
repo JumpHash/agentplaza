@@ -387,6 +387,12 @@ pub static SCREEN_SCROLL: std::sync::LazyLock<iced::widget::Id> =
 /// The id of the sidebar's list of entries: the tour scrolls it to the entry it describes.
 pub static SIDEBAR_SCROLL: std::sync::LazyLock<iced::widget::Id> = std::sync::LazyLock::new(iced::widget::Id::unique);
 
+/// Whether the sidebar entry `entry` is the screen that shows `current`: a task opened from a project is
+/// shown by the Tasks screen, and a repo by the Git screen.
+fn shows(entry: &Id, current: &Id) -> bool {
+    entry == current || matches!((entry, current), (Id::Tasks, Id::Task(_)) | (Id::Git, Id::Repo(_)))
+}
+
 /// Screens whose view scrolls its own page (a `scrollable` inside `ui::sheet`), or that handle their own
 /// pointer input (Floor's canvas). The shell wraps every other screen; add a screen here once its view scrolls itself.
 fn manages_scroll(id: &super::screens::Id) -> bool {
@@ -397,7 +403,9 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Agents
             | Id::Projects
             | Id::Tasks
+            | Id::Task(_)
             | Id::Git
+            | Id::Repo(_)
             | Id::Library
             | Id::Floor
             | Id::RobotLab
@@ -558,7 +566,7 @@ fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
 }
 
 fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name: &str, open: bool, wrap: fn(Msg) -> M) -> Element<'a, M> {
-    let active = *id == state.current;
+    let active = shows(id, &state.current);
     // The entry the tour is describing is marked as its screen is, on the web too.
     let marked = state.highlight.as_ref() == Some(id);
     let lit = active || marked;
@@ -641,20 +649,24 @@ fn footer<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a
     .into()
 }
 
-fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
-    let toggle = ui::btn("", Some("panel-left"), ui::Kind::Ghost, Some(wrap(Msg::ToggleSidebar)));
-    let title = NAV
-        .iter()
-        .find(|e| e.0 == state.current)
+/// The top bar's title for a screen: its sidebar label, else the Lab's, else "Agent".
+fn top_bar_title(current: &Id) -> &'static str {
+    NAV.iter()
+        .find(|e| shows(&e.0, current))
         .map(|e| e.1)
-        .or_else(|| super::screens::lab::Section::of(&state.current).map(|_| "Lab"))
-        .or_else(|| match state.current {
+        .or_else(|| super::screens::lab::Section::of(current).map(|_| "Lab"))
+        .or(match current {
             super::screens::Id::RobotLab => Some("Robot lab"),
             super::screens::Id::RoomLab => Some("Room lab"),
             super::screens::Id::HardwareLab => Some("Hardware lab"),
             _ => None,
         })
-        .unwrap_or("Agent");
+        .unwrap_or("Agent")
+}
+
+fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
+    let toggle = ui::btn("", Some("panel-left"), ui::Kind::Ghost, Some(wrap(Msg::ToggleSidebar)));
+    let title = top_bar_title(&state.current);
     let health = row![
         indicator(state.hub_ok, "HUB"),
         indicator(state.node_ok, "NODE"),
@@ -813,6 +825,20 @@ mod tests {
             seen.push(s.mode);
         }
         assert_eq!(seen, vec![Mode::Open, Mode::Rail, Mode::Open]);
+    }
+
+    #[test]
+    fn a_task_or_repo_opened_from_a_project_is_titled_and_lit_as_its_screen() {
+        assert_eq!(top_bar_title(&Id::Tasks), "Tasks");
+        assert_eq!(top_bar_title(&Id::Task("t1".into())), "Tasks");
+        assert_eq!(top_bar_title(&Id::Git), "Git");
+        assert_eq!(top_bar_title(&Id::Repo("agentplaza".into())), "Git");
+        assert_eq!(top_bar_title(&Id::Agent(3)), "Agent");
+        assert!(shows(&Id::Tasks, &Id::Task("t1".into())));
+        assert!(shows(&Id::Git, &Id::Repo("agentplaza".into())));
+        assert!(!shows(&Id::Tasks, &Id::Git));
+        assert!(manages_scroll(&Id::Task("t1".into())));
+        assert!(manages_scroll(&Id::Repo("agentplaza".into())));
     }
 
     #[test]

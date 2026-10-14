@@ -4,7 +4,7 @@
 //! review (Publish, Reject with a note), with their files and Remove.
 
 use std::io::{ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use iced::widget::{column, container, image, row, text, text_input, Space};
 use iced::{font, Element, Fill, Font, Length, Task};
@@ -570,23 +570,58 @@ fn save(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Plays a video or opens a PDF: saves it to Downloads (as Download does) and hands the file to the
-/// system's app for it.
+/// Plays a video or opens a PDF: hands the file to the system's app from the open cache (see
+/// `cache_copy`), so viewing never fills ~/Downloads. Download saves a copy there instead.
 fn play(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
-    let Some(name) = state.files.iter().find(|d| d.id == id).map(|d| d.name.clone()) else {
+    let Some((name, size)) = state.files.iter().find(|d| d.id == id).map(|d| (d.name.clone(), d.size)) else {
         return Task::none();
     };
     let client = ctx.client.clone();
     let path = format!("/v1/files/{id}/content?download=1");
+    let id = id.to_string();
     client::task(
         move || {
-            let bytes = fetch_bytes(&client, &path)?;
-            let saved = save_download(&name, &bytes)?;
-            open_file(&saved)?;
-            Ok(saved)
+            let copy = cache_copy(&id, &name, size, || fetch_bytes(&client, &path))?;
+            open_file(&copy)?;
+            Ok(copy)
         },
         Msg::Played,
     )
+}
+
+/// Where a file opened for viewing is kept: a per-app folder under the system's temp directory, named
+/// by the file's id and extension. The id is kept to plain characters, so it cannot name a path.
+fn open_cache_path(id: &str, name: &str) -> PathBuf {
+    let stem: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    let ext: String = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let file = if ext.is_empty() { stem } else { format!("{stem}.{ext}") };
+    std::env::temp_dir().join("agentplaza-open").join(file)
+}
+
+/// The file's copy in the open cache, ready to hand to an app. A file's id names its content, so a copy
+/// of the same size is reused without a download; otherwise `fetch` brings the bytes, which are written
+/// under a `.part` name and renamed into place, so an interrupted write is never reused.
+fn cache_copy(id: &str, name: &str, size: u64, fetch: impl FnOnce() -> Result<Vec<u8>, String>) -> Result<String, String> {
+    let path = open_cache_path(id, name);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() == size) {
+        return Ok(path.display().to_string());
+    }
+    let dir = path.parent().ok_or_else(|| "the open cache has no folder".to_string())?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir).map_err(|e| e.to_string())?;
+    let bytes = fetch()?;
+    let part = path.with_extension("part");
+    if let Err(e) = std::fs::write(&part, &bytes).and_then(|()| std::fs::rename(&part, &path)) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.to_string());
+    }
+    Ok(path.display().to_string())
 }
 
 /// Opens a local file in the system's default app: `open` on macOS, the URL protocol handler on
@@ -1122,7 +1157,38 @@ fn numbered(file: &str, n: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp, numbered, step};
+    use super::{cache_copy, clamp, numbered, open_cache_path, step};
+    use std::cell::Cell;
+
+    #[test]
+    fn the_open_cache_names_a_file_by_its_id_and_extension() {
+        let path = open_cache_path("a1-b2", "Clip.MP4");
+        assert_eq!(path.file_name().unwrap(), "a1-b2.MP4");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "agentplaza-open");
+        // A hostile id keeps only plain characters, so it stays one file name in that folder.
+        assert_eq!(open_cache_path("../x/y", "notes").file_name().unwrap(), "xy");
+    }
+
+    #[test]
+    fn an_opened_file_is_fetched_once_and_then_reused_at_the_same_size() {
+        let id = format!("test-reuse-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let fetches = Cell::new(0);
+        let bytes = b"%PDF-1.4 test".to_vec();
+        let fetch = || {
+            fetches.set(fetches.get() + 1);
+            Ok(bytes.clone())
+        };
+        let first = cache_copy(&id, "doc.pdf", bytes.len() as u64, fetch).unwrap();
+        let again = cache_copy(&id, "doc.pdf", bytes.len() as u64, || {
+            fetches.set(fetches.get() + 1);
+            Ok(Vec::new())
+        })
+        .unwrap();
+        assert_eq!(first, again);
+        assert_eq!(fetches.get(), 1);
+        assert_eq!(std::fs::read(&first).unwrap(), bytes);
+        let _ = std::fs::remove_file(&first);
+    }
 
     #[test]
     fn a_taken_download_name_gets_a_number_before_the_extension() {
