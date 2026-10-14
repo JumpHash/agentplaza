@@ -112,7 +112,7 @@ SOAK_SETTLE_S = 3.0
 
 #: The process-mode fleet's roles and first CID: a 2-role fleet booted by the
 #: daemon at startup (`noded --agents`), which is the shape the live plaza runs
-#: (PORT_STATUS slice 77). Their CIDs are disjoint from every other suite's.
+#: (port record, slice 77). Their CIDs are disjoint from every other suite's.
 PROC_ROLES = ("builder", "reviewer")
 PROC_CID_BASE = 64
 

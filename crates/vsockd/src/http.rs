@@ -1,4 +1,4 @@
-//! The hub's HTTP surface on `127.0.0.1:--http-port` (default 19080):
+//! The relay's HTTP surface on `127.0.0.1:--http-port` (default 19080):
 //!
 //! | route | does |
 //! |---|---|
@@ -8,7 +8,7 @@
 //! | `POST /v1/agents/{cid}/tell` | `{name, args?, timeout_ms?}` → the agent's `{ok, output}` |
 //! | `POST /v1/agents/{cid}/stop` | `{reason?}` → `{cid, stopped, calls}` or `{cid, stopped: false, reason}` |
 //!
-//! A CID the hub does not serve is 404; a served CID with no session, 409. A
+//! A CID the relay does not serve is 404; a served CID with no session, 409. A
 //! tool the agent's role does not grant is 403 `{ok: false, output}` and never
 //! reaches the guest; an agent that does not answer in time is 504.
 

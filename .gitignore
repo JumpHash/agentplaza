@@ -9,6 +9,12 @@ node_modules/
 .omp/
 .claude/
 
+# Local agent tooling and notes, not part of the repository
+.agents/
+PORT_STATUS.md
+HANDOFF.md
+skills-lock.json
+
 # Python bytecode from the acceptance runner
 __pycache__/
 *.pyc

@@ -9,7 +9,7 @@ Measured on this host and recorded per machine class in
   small sample is indicative and the result says so.
 
 * **Footprint budget** — the 50-VM fleet's whole-host RSS against the 8 GiB
-  criterion (PORT_STATUS slice 16) and its steady-state CPU against 5 % of one
+  criterion (port record, slice 16) and its steady-state CPU against 5 % of one
   core, with the margin the validated numbers (5.57 GiB, 0.03 %) leave.
 
 * **Restore** — the plaza has no VM snapshot support, so restore is the
@@ -116,7 +116,7 @@ CONSOLE_DEADLINE_S = 20.0
 POWEROFF_DEADLINE_S = 60.0
 
 #: The fleet size and configuration of the footprint measurement: the scale
-#: validation's own shape (PORT_STATUS slice 16 — 50 x 1 vCPU x 128 MiB).
+#: validation's own shape (port record, slice 16 — 50 x 1 vCPU x 128 MiB).
 FLEET_N = 50
 FLEET_BEATS = 12
 
@@ -369,7 +369,7 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
             classification="baseline-discrepancy",
             detail=(
                 f"measured peak {cpu_peak:.3f}% of one core for {FLEET_N} guests with the fleet's own "
-                f"beats configuration versus the {RECORDED_CPU_BASELINE_PCT}% recorded in PORT_STATUS "
+                f"beats configuration versus the {RECORDED_CPU_BASELINE_PCT}% recorded in the port record, "
                 f"slice 16. {bar_sentence} At n={SCALE_N} the same configuration measures "
                 f"{small_cpu:.3f}%. The recorded figure was sampled with the guests 'parked in HLT', "
                 "which measures no heartbeat writes and no console polling; noded never boots a parked "

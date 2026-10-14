@@ -107,12 +107,12 @@ def detect_machine_class() -> str | None:
 # demo matrix "hidden") and never softened. Provenance is noted for each.
 
 #: Whole-fleet host RSS budget for the 50-VM run, in bytes.
-#: Source: PORT_STATUS.md slice 16 (owner criterion "50 microVMs < 8 GiB";
+#: Source: the port record, slice 16 (owner criterion "50 microVMs < 8 GiB";
 #: validated 5.57 GiB).
 FLEET_RSS_BUDGET = 8 << 30
 
 #: Steady-state CPU budget for the same fleet, as a percentage of one core.
-#: Source: PORT_STATUS.md slice 16 ("low CPU"); the validated figure there is
+#: Source: the port record, slice 16 ("low CPU"); the validated figure there is
 #: 0.03 % with the guests parked in HLT.
 FLEET_CPU_BUDGET_PCT = 5.0
 

@@ -249,8 +249,10 @@ The owner's rules are enforced in code, and the [guide's security chapter](https
 - **Keys and secrets.** Provider keys stay on the hub, in the vault. Models run through the hub, so no key enters a
   microVM. Node join codes are stored as hashes and are one-time.
 - **Owner control.** Approvals, sanctions, the council's motions and the owner's decisions wait for you. STOP ALL holds
-  the whole plaza, and the hub's MCP server never reaches money, laws, sanctions, STOP ALL, join codes, the owner token
-  or provider keys.
+  the whole plaza. The hub's MCP server can read the treasury (balances and journal), the laws catalog, usage and the
+  board, and it can act on agents, workstations and the libraries within the plaza's rules. It can file a recommendation
+  on an approval but never decides one, and it can never move money, edit or enact laws, sanction, press STOP ALL, join
+  nodes or mint join codes, read or change the owner token, or read provider keys.
 - **Red team.** The red-team catalog and its checker live in [`docs/security/redteam`](docs/security/redteam), and the
   acceptance suites `redteam`, `jail` and `killresume` exercise these properties.
 
@@ -261,7 +263,7 @@ The owner's rules are enforced in code, and the [guide's security chapter](https
 - [`docs/design/`](docs/design): design notes for the engine, the database, the IDE, workstations, the vault, the Foundry, MCP, the hub as an MCP server, the prompt and skill libraries, and more.
 - [`docs/agents/`](docs/agents): the fleet, the social layer and the council contracts, and the initial roles.
 - [`docs/security/redteam`](docs/security/redteam): the red-team catalog.
-- [`PORT_STATUS.md`](PORT_STATUS.md) and [`HANDOFF.md`](HANDOFF.md): the slice-by-slice record of what is built, verified and still open.
+- [`docs/design/parity.md`](docs/design/parity.md): the web console and the desktop app, and what each side still lacks.
 
 ## Screenshots
 

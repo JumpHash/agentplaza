@@ -1,4 +1,4 @@
-//! `vsockd` — the plaza's hub: the host end of the guest protocol.
+//! `vsockd` — the node-side relay: the host end of the guest protocol, on each node.
 //!
 //! Listens on one Unix socket per guest CID (`{uds-dir}/vm{cid}_{port}`, the
 //! path the VMM's vsock muxer dials when its guest connects to CID 2), serves
@@ -73,7 +73,7 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 /// A keepalive session without a heartbeat for this long is reaped.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_IDLE_SECS: u64 = 300;
-/// How often a keepalive session wakes to take the hub's commands.
+/// How often a keepalive session wakes to take the relay's commands.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(250);
 #[cfg(any(target_os = "linux", windows))]
