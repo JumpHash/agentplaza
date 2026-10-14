@@ -194,28 +194,27 @@ mod tests {
     }
 
     #[test]
-    fn repo_id_keeps_slashes_in_the_ref() {
-        let id: WorkspaceId = "repo:plaza-web@feature/ide-spike".parse().unwrap();
-        assert_eq!(
-            id,
-            WorkspaceId::Repo {
-                name: "plaza-web".into(),
-                git_ref: "feature/ide-spike".into()
-            }
-        );
-        assert_eq!(id.to_string(), "repo:plaza-web@feature/ide-spike");
-    }
-
-    #[test]
-    fn repo_id_splits_at_the_first_at_sign() {
-        let id: WorkspaceId = "repo:x@a@b".parse().unwrap();
-        assert_eq!(
-            id,
-            WorkspaceId::Repo {
-                name: "x".into(),
-                git_ref: "a@b".into()
-            }
-        );
+    fn repo_id_splits_at_the_first_at_sign_and_keeps_the_rest_in_the_ref() {
+        // (text, name, ref): a ref may hold '/' and a further '@'.
+        for (text, name, git_ref) in [
+            (
+                "repo:plaza-web@feature/ide-spike",
+                "plaza-web",
+                "feature/ide-spike",
+            ),
+            ("repo:x@a@b", "x", "a@b"),
+        ] {
+            let id: WorkspaceId = text.parse().unwrap();
+            assert_eq!(
+                id,
+                WorkspaceId::Repo {
+                    name: name.into(),
+                    git_ref: git_ref.into()
+                },
+                "{text}"
+            );
+            assert_eq!(id.to_string(), text, "{text}");
+        }
     }
 
     #[test]

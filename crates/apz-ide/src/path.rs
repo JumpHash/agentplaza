@@ -164,51 +164,39 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_dot_paths_are_refused() {
-        for p in ["", ".", "./", "./.", "./././"] {
-            assert_eq!(check_path(p), Err(PathError::Empty), "{p:?}");
+    fn check_path_refuses_each_bad_shape_with_its_own_error() {
+        // Every refusal of `clean` is a row. (Backslash has its own test below.)
+        let cases = [
+            ("", PathError::Empty),
+            (".", PathError::Empty),
+            ("./", PathError::Empty),
+            ("./.", PathError::Empty),
+            ("./././", PathError::Empty),
+            ("/x", PathError::Absolute),
+            ("/", PathError::Absolute),
+            ("//", PathError::Absolute),
+            ("/etc/passwd", PathError::Absolute),
+            ("\\x", PathError::Absolute),
+            ("\\\\server\\share", PathError::Absolute),
+            ("C:\\x", PathError::Absolute),
+            ("c:/x", PathError::Absolute),
+            ("D:x", PathError::Absolute),
+            ("C:", PathError::Absolute),
+            ("..", PathError::Escape),
+            ("../x", PathError::Escape),
+            ("a/../b", PathError::Escape),
+            ("a/..", PathError::Escape),
+            ("a/../../x", PathError::Escape),
+            ("./../x", PathError::Escape),
+            ("a//../b", PathError::Escape),
+            ("a\0b", PathError::Nul),
+            ("a\nb", PathError::Control),
+            ("a\tb", PathError::Control),
+            ("a\u{7f}b", PathError::Control),
+        ];
+        for (p, want) in cases {
+            assert_eq!(check_path(p), Err(want), "{p:?}");
         }
-    }
-
-    #[test]
-    fn absolute_paths_are_refused() {
-        for p in [
-            "/x",
-            "/",
-            "//",
-            "/etc/passwd",
-            "\\x",
-            "\\\\server\\share",
-            "C:\\x",
-            "c:/x",
-            "D:x",
-            "C:",
-        ] {
-            assert_eq!(check_path(p), Err(PathError::Absolute), "{p:?}");
-        }
-    }
-
-    #[test]
-    fn dot_dot_segments_are_refused() {
-        for p in [
-            "..",
-            "../x",
-            "a/../b",
-            "a/..",
-            "a/../../x",
-            "./../x",
-            "a//../b",
-        ] {
-            assert_eq!(check_path(p), Err(PathError::Escape), "{p:?}");
-        }
-    }
-
-    #[test]
-    fn nul_and_control_characters_are_refused() {
-        assert_eq!(check_path("a\0b"), Err(PathError::Nul));
-        assert_eq!(check_path("a\nb"), Err(PathError::Control));
-        assert_eq!(check_path("a\tb"), Err(PathError::Control));
-        assert_eq!(check_path("a\u{7f}b"), Err(PathError::Control));
     }
 
     #[test]

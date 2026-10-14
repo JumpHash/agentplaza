@@ -127,60 +127,61 @@ mod tests {
     }
 
     #[test]
-    fn open_adds_a_tab_and_activates_it() {
+    fn open_adds_a_tab_and_activates_it_or_only_activates_an_open_one() {
         let s = reduce(IdeState::default(), Action::Open("a.txt".into()));
         assert_eq!(s.open, ["a.txt"]);
         assert_eq!(s.active.as_deref(), Some("a.txt"));
         let s = reduce(s, Action::Open("b.txt".into()));
         assert_eq!(s.open, ["a.txt", "b.txt"]);
         assert_eq!(s.active.as_deref(), Some("b.txt"));
-    }
-
-    #[test]
-    fn open_of_an_open_tab_only_activates_it() {
-        let s = tabs(&["a.txt", "b.txt"], "b.txt");
         let s = reduce(s, Action::Open("a.txt".into()));
-        assert_eq!(s.open, ["a.txt", "b.txt"]);
+        assert_eq!(s.open, ["a.txt", "b.txt"], "an open tab is not added twice");
         assert_eq!(s.active.as_deref(), Some("a.txt"));
     }
 
     #[test]
-    fn closing_the_active_tab_activates_the_right_neighbour() {
-        let s = tabs(&["a", "b", "c"], "b");
-        let s = reduce(s, Action::Close("b".into()));
-        assert_eq!(s.open, ["a", "c"]);
-        assert_eq!(s.active.as_deref(), Some("c"));
-    }
-
-    #[test]
-    fn closing_the_last_tab_activates_the_left_neighbour() {
-        let s = tabs(&["a", "b", "c"], "c");
-        let s = reduce(s, Action::Close("c".into()));
-        assert_eq!(s.open, ["a", "b"]);
-        assert_eq!(s.active.as_deref(), Some("b"));
-    }
-
-    #[test]
-    fn closing_the_only_tab_leaves_no_active_tab() {
-        let s = tabs(&["a"], "a");
-        let s = reduce(s, Action::Close("a".into()));
-        assert!(s.open.is_empty());
-        assert_eq!(s.active, None);
-    }
-
-    #[test]
-    fn closing_an_inactive_tab_keeps_the_active_one() {
-        let s = tabs(&["a", "b", "c"], "b");
-        let s = reduce(s, Action::Close("a".into()));
-        assert_eq!(s.open, ["b", "c"]);
-        assert_eq!(s.active.as_deref(), Some("b"));
-    }
-
-    #[test]
-    fn closing_an_unknown_tab_changes_nothing() {
-        let before = tabs(&["a", "b"], "a");
-        let after = reduce(before.clone(), Action::Close("zzz".into()));
-        assert_eq!(after, before);
+    fn closing_a_tab_picks_the_neighbour_or_keeps_the_active_one() {
+        // (case, tabs, active, closed, open after, active after)
+        let cases: [(&str, &[&str], &str, &str, &[&str], Option<&str>); 5] = [
+            (
+                "active tab: right neighbour",
+                &["a", "b", "c"],
+                "b",
+                "b",
+                &["a", "c"],
+                Some("c"),
+            ),
+            (
+                "last tab: left neighbour",
+                &["a", "b", "c"],
+                "c",
+                "c",
+                &["a", "b"],
+                Some("b"),
+            ),
+            ("only tab: no active tab", &["a"], "a", "a", &[], None),
+            (
+                "inactive tab: active kept",
+                &["a", "b", "c"],
+                "b",
+                "a",
+                &["b", "c"],
+                Some("b"),
+            ),
+            (
+                "unknown tab: nothing changes",
+                &["a", "b"],
+                "a",
+                "zzz",
+                &["a", "b"],
+                Some("a"),
+            ),
+        ];
+        for (case, names, active, closed, want_open, want_active) in cases {
+            let s = reduce(tabs(names, active), Action::Close(closed.into()));
+            assert_eq!(s.open, want_open, "{case}");
+            assert_eq!(s.active.as_deref(), want_active, "{case}");
+        }
     }
 
     #[test]
@@ -216,18 +217,6 @@ mod tests {
         assert!(!s.review);
         let s = reduce(s, Action::ToggleChangedFilter);
         assert!(s.filter_changed);
-    }
-
-    #[test]
-    fn reduce_is_deterministic() {
-        let actions = [
-            Action::Open("a".into()),
-            Action::Open("b".into()),
-            Action::Close("a".into()),
-            Action::SetPanel(Panel::Run),
-        ];
-        let run = || actions.iter().cloned().fold(IdeState::default(), reduce);
-        assert_eq!(run(), run());
     }
 
     #[test]

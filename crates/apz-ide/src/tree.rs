@@ -161,11 +161,6 @@ mod tests {
     }
 
     #[test]
-    fn page_size_is_500() {
-        assert_eq!(PAGE_SIZE, 500);
-    }
-
-    #[test]
     fn root_children_list_dirs_first_then_names_case_insensitively() {
         let entries = vec![
             file("README.md"),

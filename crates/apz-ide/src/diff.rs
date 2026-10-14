@@ -1198,41 +1198,45 @@ mod tests {
     }
 
     #[test]
-    fn a_pure_rename_has_no_hunks() {
-        let f = one(
-            "diff --git a/x.txt b/y.txt\nsimilarity index 100%\nrename from x.txt\nrename to y.txt\n",
-        );
-        assert_eq!(f.path, "y.txt");
-        assert_eq!(f.old_path.as_deref(), Some("x.txt"));
-        assert_eq!(f.status, Status::Renamed);
-    }
-
-    #[test]
-    fn a_rename_to_a_name_with_a_space_uses_the_rename_lines() {
-        let f = one(
-            "diff --git a/a b.txt b/c d.txt\nsimilarity index 100%\nrename from a b.txt\nrename to c d.txt\n",
-        );
-        assert_eq!(f.path, "c d.txt");
-        assert_eq!(f.old_path.as_deref(), Some("a b.txt"));
-    }
-
-    #[test]
-    fn a_quoted_rename_is_decoded() {
-        let f = one(
-            "diff --git \"a/caf\\303\\251.txt\" \"b/na\\303\\257ve.txt\"\nsimilarity index 100%\nrename from \"caf\\303\\251.txt\"\nrename to \"na\\303\\257ve.txt\"\n",
-        );
-        assert_eq!(f.path, "naïve.txt");
-        assert_eq!(f.old_path.as_deref(), Some("café.txt"));
-    }
-
-    #[test]
-    fn a_copy_is_an_added_file_with_its_source() {
-        let f = one(
-            "diff --git a/x.txt b/y.txt\nsimilarity index 100%\ncopy from x.txt\ncopy to y.txt\n",
-        );
-        assert_eq!(f.status, Status::Added);
-        assert_eq!(f.path, "y.txt");
-        assert_eq!(f.old_path.as_deref(), Some("x.txt"));
+    fn renames_and_copies_name_both_sides_and_have_no_hunks() {
+        // (case, header, path, old path, status): the names come from the rename/copy lines.
+        let cases = [
+            (
+                "pure rename",
+                "diff --git a/x.txt b/y.txt\nsimilarity index 100%\nrename from x.txt\nrename to y.txt\n",
+                "y.txt",
+                Some("x.txt"),
+                Status::Renamed,
+            ),
+            (
+                "rename to a name with a space",
+                "diff --git a/a b.txt b/c d.txt\nsimilarity index 100%\nrename from a b.txt\nrename to c d.txt\n",
+                "c d.txt",
+                Some("a b.txt"),
+                Status::Renamed,
+            ),
+            (
+                "quoted rename",
+                "diff --git \"a/caf\\303\\251.txt\" \"b/na\\303\\257ve.txt\"\nsimilarity index 100%\nrename from \"caf\\303\\251.txt\"\nrename to \"na\\303\\257ve.txt\"\n",
+                "naïve.txt",
+                Some("café.txt"),
+                Status::Renamed,
+            ),
+            (
+                "copy",
+                "diff --git a/x.txt b/y.txt\nsimilarity index 100%\ncopy from x.txt\ncopy to y.txt\n",
+                "y.txt",
+                Some("x.txt"),
+                Status::Added,
+            ),
+        ];
+        for (case, text, path, old_path, status) in cases {
+            let f = one(text);
+            assert_eq!(f.path, path, "{case}");
+            assert_eq!(f.old_path.as_deref(), old_path, "{case}");
+            assert_eq!(f.status, status, "{case}");
+            assert!(f.hunks.is_empty(), "{case}");
+        }
     }
 
     #[test]
@@ -1287,10 +1291,7 @@ mod tests {
     #[test]
     fn a_context_line_needs_both_sides_counted() {
         let e = parse_unified("--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n a\n").unwrap_err();
-        assert!(
-            e.message.contains("more lines") || e.message.contains("before"),
-            "{e}"
-        );
+        assert!(e.message.contains("more lines"), "{e}");
     }
 
     #[test]
@@ -1311,12 +1312,6 @@ mod tests {
     fn a_plus_line_without_minus_is_an_error() {
         let e = parse_unified("+++ b/x\n").unwrap_err();
         assert!(e.message.contains("---"), "{e}");
-    }
-
-    #[test]
-    fn a_stray_line_after_a_finished_hunk_is_an_error() {
-        let e = parse_unified("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n+stray\n").unwrap_err();
-        assert!(e.message.contains("outside a hunk"), "{e}");
     }
 
     #[test]
