@@ -416,8 +416,9 @@ pub enum NodeAnim {
     Blink { rate: f32, phase: f32, lo: f32, hi: f32 },
     /// A machine's status LED, activity LED or screen (`vs_machine`): its colour and emissive come from the
     /// machine's row of the fleet's table (`FleetInstances::machine_states` / `machine_statuses`), and `glow` is the
-    /// part's own glow. With `machine` None the row is the table's zero row (idle, the baked colour).
-    Machine { led: MachineLed, glow: f32, machine: Option<usize> },
+    /// part's own glow. `emissive` is the part's own emissive colour, which an activity LED or screen keeps (a status
+    /// LED lights in its status colour). With `machine` None the row is the table's zero row (idle, the baked colour).
+    Machine { led: MachineLed, glow: f32, emissive: Color, machine: Option<usize> },
 }
 
 /// Which of a machine's parts a [`NodeAnim::Machine`] is.
@@ -903,7 +904,8 @@ pub enum AnimKind {
 /// One vertex of an animated batch, in the shader's attribute order (`SpinIn` and `BlinkIn` in
 /// `hw_anim.wgsl`): the rest position and normal (batch frame), the colour, then `params` and `axis`.
 /// A spin has `params` = (pivot, phase) and `axis` = (unit axis, rps); a blink has `params` = (period,
-/// phase, glow, off level) and `axis` zero.
+/// phase, glow, off level) and `axis` zero; a machine LED or screen has `params` = (LED, glow) and `axis` = (its emissive
+/// colour, 0).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnimVertex {
     pub pos: [f32; 3],
@@ -1453,13 +1455,13 @@ fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4], f
             let (p, k) = (model.transform_point3(pivot), model.transform_vector3(axis).normalize_or_zero());
             (AnimKind::Spin, [p.x, p.y, p.z, phase], [k.x, k.y, k.z, rps], machine.map_or(-1.0, |m| m as f32))
         }
-        NodeAnim::Machine { led, glow, machine } => {
+        NodeAnim::Machine { led, glow, emissive, machine } => {
             let mode = match led {
                 MachineLed::Status => 0.0,
                 MachineLed::Activity => 1.0,
                 MachineLed::Screen => 2.0,
             };
-            (AnimKind::Machine, [mode, glow, 0.0, 0.0], [0.0; 4], machine.map_or(-1.0, |m| m as f32))
+            (AnimKind::Machine, [mode, glow, 0.0, 0.0], [emissive.r, emissive.g, emissive.b, 0.0], machine.map_or(-1.0, |m| m as f32))
         }
         NodeAnim::Blink { rate, phase, lo, hi } => {
             let period = if rate > 0.0 { 1.0 / rate } else { 1.0 };

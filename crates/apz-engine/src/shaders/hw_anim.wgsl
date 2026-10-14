@@ -53,7 +53,8 @@ struct Globals {
     machine_state: array<vec4<f32>, 128>,
     // Each machine's status colour (rgb; w unused).
     machine_status: array<vec4<f32>, 128>,
-    // The activity LEDs' on colour (leds[0]) and off colour (leds[1]), rgb.
+    // The activity LEDs' on colour (leds[0]) and off colour (leds[1]), rgb. No vertex reads them: an activity LED keeps
+    // its own colour (hardware.ts attach), and only its emissive blinks.
     leds: array<vec4<f32>, 2>,
 }
 
@@ -65,7 +66,7 @@ struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) emissive: f32,
+    @location(2) emissive: vec3<f32>, // the emissive term: its colour x its factor, added to the lit base colour
     @location(3) world: vec3<f32>,
     @location(4) view_depth: f32,
 }
@@ -149,10 +150,10 @@ fn fs_color(i: Out) -> @location(0) vec4<f32> {
     return shade(i.color, i.normal, i.world, i.view_depth, vec3<f32>(0.0));
 }
 
-// The emissive term scales the base colour (the blink's on and off levels).
+// The emissive term is the vertex's (the blink's on and off levels, a machine LED's colour x factor).
 @fragment
 fn fs_emissive(i: Out) -> @location(0) vec4<f32> {
-    return shade(i.color, i.normal, i.world, i.view_depth, i.color.rgb * i.emissive);
+    return shade(i.color, i.normal, i.world, i.view_depth, i.emissive);
 }
 
 // The ink hull (floor.wgsl's fs_outline).
@@ -189,7 +190,7 @@ fn hull(world: vec3<f32>, normal: vec3<f32>) -> Out {
     o.clip = g.proj * mv;
     o.color = vec4<f32>(g.ink.rgb, 1.0);
     o.normal = n;
-    o.emissive = 0.0;
+    o.emissive = vec3<f32>(0.0);
     o.world = world;
     o.view_depth = -mv.z;
     return o;
@@ -244,7 +245,7 @@ fn vs_spin(v: SpinIn) -> Out {
     o.clip = g.view_proj * vec4<f32>(p.world, 1.0);
     o.color = v.color;
     o.normal = p.normal;
-    o.emissive = 1.0;
+    o.emissive = v.color.rgb;
     o.world = p.world;
     o.view_depth = -(g.view * vec4<f32>(p.world, 1.0)).z;
     return o;
@@ -280,7 +281,7 @@ fn vs_blink(v: BlinkIn) -> Out {
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.color = v.color;
     o.normal = v.normal;
-    o.emissive = select(v.blink.z * v.blink.w, v.blink.z, on);
+    o.emissive = v.color.rgb * select(v.blink.z * v.blink.w, v.blink.z, on);
     o.world = pos;
     o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
     return o;
@@ -298,15 +299,17 @@ struct MachineIn {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) params: vec4<f32>, // x: the LED (0 status, 1 activity, 2 screen), y: the part's glow
+    @location(4) axis: vec4<f32>,   // xyz: the part's own emissive colour (an activity LED and a screen keep it)
     @location(5) machine: f32,      // the fleet machine whose row it reads, or -1 (no row: the baked colour, idle)
     @location(6) lift: f32,         // the lift slot (SpinIn's)
 }
 
 // vs_machine: hardware.rs `Built::update`'s rules for the tag, from the machine's row.
 //   status:   colour = the status colour; emissive = the status colour x (glow, or 1 without one).
-//   activity: colour = led on while busy and in the first 0.4 s of each 0.8 s, else led off; emissive x 1.5 or x 0.1.
-//   screen:   the baked colour; emissive x glow x (0.5 + 0.5 activity).
-// fs_emissive then shades it as the CPU material (base colour lit, plus colour x emissive).
+//   activity: colour = the baked colour, kept; emissive = its own emissive colour x glow, x 1 while busy in the
+//             first 0.4 s of each 0.8 s and x 0.1 otherwise (hardware.ts attach).
+//   screen:   the baked colour; emissive = its own emissive colour x glow x (0.5 + 0.5 activity).
+// fs_emissive then shades it as the CPU material (base colour lit, plus the emissive term).
 @vertex
 fn vs_machine(v: MachineIn) -> Out {
     let has = v.machine >= 0.0;
@@ -315,17 +318,18 @@ fn vs_machine(v: MachineIn) -> Out {
     let busy = state.x > 0.5;
     let activity = state.y;
     var c = v.color.rgb;
+    var emit = v.axis.rgb;
     var e = 0.0;
     let led = v.params.x;
     if led < 0.5 {
         if has {
             c = g.machine_status[k].rgb;
         }
+        emit = c;
         e = select(1.0, v.params.y, v.params.y > 0.0);
     } else if led < 1.5 {
         let on = busy && ((g.counts.z % 0.8) < 0.4);
-        c = select(g.leds[1].rgb, g.leds[0].rgb, on);
-        e = select(0.1, 1.5, on);
+        e = v.params.y * select(0.1, 1.0, on);
     } else {
         e = v.params.y * (0.5 + 0.5 * activity);
     }
@@ -334,7 +338,7 @@ fn vs_machine(v: MachineIn) -> Out {
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.color = vec4<f32>(c, v.color.a);
     o.normal = v.normal;
-    o.emissive = e;
+    o.emissive = emit * e;
     o.world = pos;
     o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
     return o;

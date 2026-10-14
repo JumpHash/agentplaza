@@ -802,6 +802,11 @@ fn glow_of(spec: Option<&MatSpec>, own: bool) -> f32 {
     lit_of(&resolved(spec), own).1
 }
 
+/// A part's emissive colour, as `material` draws it (black without one).
+fn emissive_of(spec: Option<&MatSpec>, own: bool) -> Color {
+    lit_of(&resolved(spec), own).0.as_deref().and_then(Color::css).unwrap_or(Color::BLACK)
+}
+
 /// Whether a part is tagged or pulses or blinks, so it gets its own material (the web's `own` in `materialFor`).
 fn own_of(p: &Part) -> bool {
     p.tag.is_some() || p.anim.as_ref().is_some_and(|a| a.pulse.is_some() || a.blink.is_some())
@@ -898,16 +903,16 @@ const HW_WRAP_PERIOD: f32 = 3600.0;
 /// stays on the CPU. A fan spins at its online idle rate (`Built::update` runs it at 2 rps and faster
 /// as activity rises, and stops it offline; a GPU batch cannot follow either). Other spins and blinks
 /// keep their own rates. A part with a pulse, slide or swing stays on the CPU; a machine's LEDs and screens take their machine's row.
-fn gpu_anim_of(tag: Option<Tag>, spin: Option<(Vec3, f32)>, blink: Option<(f32, f32)>, glow: f32, moves: bool) -> Option<scene::NodeAnim> {
+fn gpu_anim_of(tag: Option<Tag>, spin: Option<(Vec3, f32)>, blink: Option<(f32, f32)>, glow: f32, emissive: Color, moves: bool) -> Option<scene::NodeAnim> {
     if moves {
         return None;
     }
     let quantise = |rps: f32| (rps * HW_WRAP_PERIOD).round() / HW_WRAP_PERIOD;
     let spin_of = |axis: Vec3, rps: f32| scene::NodeAnim::Spin { pivot: Vec3::ZERO, axis, rps: quantise(rps), phase: 0.0, machine: None };
     match (tag, spin, blink) {
-        (Some(Tag::Status), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Status, glow, machine: None }),
-        (Some(Tag::Activity), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Activity, glow, machine: None }),
-        (Some(Tag::Screen), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Screen, glow, machine: None }),
+        (Some(Tag::Status), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Status, glow, emissive, machine: None }),
+        (Some(Tag::Activity), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Activity, glow, emissive, machine: None }),
+        (Some(Tag::Screen), _, _) => Some(scene::NodeAnim::Machine { led: scene::MachineLed::Screen, glow, emissive, machine: None }),
         (Some(Tag::Fan), spin, _) => Some(spin_of(spin.map_or(Vec3::Y, |s| s.0), 2.0)),
         (_, Some((axis, rps)), _) if rps != 0.0 => Some(spin_of(axis, rps)),
         (_, _, Some((period, phase))) => Some(scene::NodeAnim::Blink { rate: 1.0 / period, phase, lo: glow * 0.1, hi: glow }),
@@ -950,6 +955,8 @@ struct Live {
     tag: Option<Tag>,
     /// The material's glow, the base of every emissive change.
     glow: f32,
+    /// The material's own emissive colour (an activity LED or screen keeps it; see `scene::NodeAnim::Machine`).
+    emissive: Color,
     rest: Vec3,
     rest_q: Quat,
     spin_axis: Vec3,
@@ -1129,6 +1136,7 @@ impl Builder {
                 mat: Some(mat),
                 tag: Some(tag),
                 glow: glow_of(first.mat.as_ref(), own_of(first)),
+                emissive: emissive_of(first.mat.as_ref(), own_of(first)),
                 rest: Vec3::ZERO,
                 rest_q: Quat::IDENTITY,
                 spin_axis: Vec3::Y,
@@ -1287,6 +1295,7 @@ impl Builder {
                 spin.map(|s| (axis_of(&s.axis), s.rps)),
                 blink,
                 glow_of(p.mat.as_ref(), own_of(p)),
+                emissive_of(p.mat.as_ref(), own_of(p)),
                 anim.is_some_and(|a| a.pulse.is_some() || a.slide.is_some() || a.swing.is_some()),
             );
             // Its pose or colour changes every frame, unless the GPU animates it (scene::GPU_HW_ANIM).
@@ -1300,6 +1309,7 @@ impl Builder {
                 mat,
                 tag,
                 glow: glow_of(p.mat.as_ref(), own_of(p)),
+                emissive: emissive_of(p.mat.as_ref(), own_of(p)),
                 rest: at,
                 rest_q,
                 spin_axis: spin.map(|s| axis_of(&s.axis)).unwrap_or(Vec3::Y),
@@ -1577,7 +1587,7 @@ impl Built {
                 Some(Tag::Screen) => scene::MachineLed::Screen,
                 _ => continue,
             };
-            l.obj.set_anim(scene::NodeAnim::Machine { led, glow: l.glow, machine: Some(index) });
+            l.obj.set_anim(scene::NodeAnim::Machine { led, glow: l.glow, emissive: l.emissive, machine: Some(index) });
         }
     }
 
@@ -1608,8 +1618,6 @@ impl Built {
         let activity = state.activity.clamp(0.0, 1.0);
         let online = state.status == Status::Online;
         let busy = activity > 0.0;
-        let led_ok = named("led-ok", 0x4fa36a);
-        let led_off = named("led-off", 0x4a4f5c);
         self.led = [if busy { 1.0 } else { 0.0 }, activity, 0.0, 0.0];
         self.led_status = status_color(state.status);
 
@@ -1656,11 +1664,10 @@ impl Built {
                     m.emissive_intensity = if l.glow > 0.0 { l.glow } else { 1.0 };
                 }
                 Some(Tag::Activity) => {
+                    // hardware.ts attach: an activity part keeps its colour and blinks its emissive, its glow while busy
+                    // in the first 0.4 s of each 0.8 s and a tenth of it otherwise.
                     let on = busy && (t % 0.8) < 0.4;
-                    let c = if on { led_ok } else { led_off };
-                    m.color = c;
-                    m.emissive = c;
-                    m.emissive_intensity = if on { 1.5 } else { 0.1 };
+                    m.emissive_intensity = if on { l.glow } else { l.glow * 0.1 };
                 }
                 Some(Tag::Screen) => m.emissive_intensity = l.glow * (0.5 + 0.5 * activity),
                 _ => {}
@@ -1887,17 +1894,23 @@ mod tests {
         assert!((built.fan_angle() - held.unwrap()).abs() < 1e-6, "an offline fan held still");
     }
 
-    /// `vs_machine` for one machine LED or screen: its colour and emissive factor, from its row of the machine
-    /// table, the LED colours, its baked colour and glow, and the clock (the mirror of hw_anim.wgsl).
-    fn machine_led_shader(led: scene::MachineLed, glow: f32, baked: [f32; 4], row: [f32; 4], status: [f32; 4], leds: [[f32; 4]; 2], clock: f32) -> ([f32; 3], f32) {
+    /// `vs_machine` for one machine LED or screen: its colour, and its emissive term (its emissive colour times its
+    /// factor), from its row of the machine table, its baked colour, its own emissive colour and glow, the status colour
+    /// and the clock (the mirror of hw_anim.wgsl).
+    fn machine_led_shader(led: scene::MachineLed, glow: f32, baked: [f32; 4], emit: [f32; 4], row: [f32; 4], status: [f32; 4], clock: f32) -> ([f32; 3], [f32; 3]) {
         let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
+        let scaled = |c: [f32; 3], k: f32| c.map(|x| x * k);
         match led {
-            scene::MachineLed::Status => (rgb(status), if glow > 0.0 { glow } else { 1.0 }),
+            scene::MachineLed::Status => {
+                let k = if glow > 0.0 { glow } else { 1.0 };
+                (rgb(status), scaled(rgb(status), k))
+            }
             scene::MachineLed::Activity => {
                 let on = row[0] > 0.5 && (clock % 0.8) < 0.4;
-                (rgb(if on { leds[0] } else { leds[1] }), if on { 1.5 } else { 0.1 })
+                let factor = if on { 1.0 } else { 0.1 };
+                (rgb(baked), scaled(rgb(emit), glow * factor))
             }
-            scene::MachineLed::Screen => (rgb(baked), glow * (0.5 + 0.5 * row[1])),
+            scene::MachineLed::Screen => (rgb(baked), scaled(rgb(emit), glow * (0.5 + 0.5 * row[1]))),
         }
     }
 
@@ -1915,9 +1928,10 @@ mod tests {
         for (status, activity, steps) in [(Status::Online, 0.0, 60), (Status::Online, 0.8, 120), (Status::Draining, 0.8, 60), (Status::Offline, 0.0, 60)] {
             let state = State { status, activity, open: 0.0 };
             for step in 0..steps {
-                built.update(dt, clock, &state);
+                let at = clock;
+                built.update(dt, at, &state);
                 clock += dt;
-                let (row, status_rgb, leds) = (built.machine_state(), crate::fleet::rgba(built.led_status()), super::led_colours());
+                let (row, status_rgb) = (built.machine_state(), crate::fleet::rgba(built.led_status()));
                 for (k, &i) in parts.iter().enumerate() {
                     let l = &built.live[i];
                     let led = match l.tag {
@@ -1925,14 +1939,60 @@ mod tests {
                         Some(Tag::Activity) => scene::MachineLed::Activity,
                         _ => scene::MachineLed::Screen,
                     };
-                    let (color, factor) = machine_led_shader(led, l.glow, baked[k], row, status_rgb, leds, clock);
+                    let (color, term) = machine_led_shader(led, l.glow, baked[k], crate::fleet::rgba(l.emissive), row, status_rgb, at);
                     let cpu = l.mat.as_ref().unwrap().get();
                     let (cc, ce) = (crate::fleet::rgba(cpu.color), crate::fleet::rgba(cpu.emissive));
                     for c in 0..3 {
                         assert!((cc[c] - color[c]).abs() < 1e-5, "{status:?} step {step}: colour {cc:?} vs shader {color:?}");
-                        let (cpu_term, shader_term) = (ce[c] * cpu.emissive_intensity, color[c] * factor);
-                        assert!((cpu_term - shader_term).abs() < 1e-5, "{status:?} step {step}: emissive {cpu_term} vs shader {shader_term}");
+                        let cpu_term = ce[c] * cpu.emissive_intensity;
+                        assert!((cpu_term - term[c]).abs() < 1e-5, "{status:?} step {step}: emissive {cpu_term} vs shader {}", term[c]);
                     }
+                }
+            }
+        }
+    }
+
+    /// The web's colours for the workstation's GPU bar and a DIMM, from the old three.js code (hardware.ts makeMaterial and
+    /// attach, the lab's model board/workstation with two GPUs). The bar is the `gpu-accent` palette entry, #76b900 with
+    /// emissive #3d6000 and glow 0.5, tagged `activity`: attach() blinks only its emissive (glow 0.5 while busy in the first
+    /// 0.4 s of each 0.8 s, 0.5 x 0.1 = 0.05 otherwise) and never sets its colour, so it stays #76b900 (bright green). A DIMM
+    /// is the `dimm` palette entry, #16351f with no emissive (dark green). The engine's GPU path (vs_machine) keeps the
+    /// bar's colour too, with the same emissive term.
+    #[test]
+    fn the_gpu_bar_and_dimm_keep_the_web_colours() {
+        let m = model("board/workstation").unwrap();
+        let mut built = build(m, &Params::default().with("gpus", 2.0));
+        let bar = built.parts.get("logo-strip").expect("the GPU bar").clone();
+        let dimm = built.parts.get("dimm_1").expect("the DIMM").clone();
+        let material = |o: &Obj| match &o.get().kind {
+            Kind::Mesh { mat, .. } => {
+                let m = mat.get();
+                (m.color, m.emissive, m.emissive_intensity)
+            }
+            _ => panic!("a part is a mesh"),
+        };
+        let bar_rgb = crate::fleet::rgba(Color::hex(0x76b900));
+        let emit_rgb = crate::fleet::rgba(Color::hex(0x3d6000));
+        let (dt, mut clock) = (1.0 / 60.0_f32, 0.0_f32);
+        for activity in [0.0_f32, 1.0] {
+            for _ in 0..120 {
+                let at = clock;
+                built.update(dt, at, &State { status: Status::Online, activity, open: 0.0 });
+                clock += dt;
+                let (c, e, glow) = material(&bar);
+                assert_eq!(c, Color::hex(0x76b900), "the GPU bar's colour is not #76b900 at activity {activity}, t {at}");
+                assert_eq!(e, Color::hex(0x3d6000), "the GPU bar's emissive is not #3d6000");
+                let lit = activity > 0.0 && (at % 0.8) < 0.4;
+                let want = if lit { 0.5 } else { 0.05 };
+                assert!((glow - want).abs() < 1e-6, "the GPU bar's glow {glow} is not {want} at t {at}");
+                assert_eq!(material(&dimm).0, Color::hex(0x16351f), "the DIMM is not #16351f");
+
+                // The GPU path: the bar's colour is kept and its emissive term is #3d6000 x its factor.
+                let row = [if activity > 0.0 { 1.0 } else { 0.0 }, activity, 0.0, 0.0];
+                let (color, term) = machine_led_shader(scene::MachineLed::Activity, 0.5, bar_rgb, emit_rgb, row, bar_rgb, at);
+                assert_eq!(color, [bar_rgb[0], bar_rgb[1], bar_rgb[2]], "the GPU bar's colour moved");
+                for ch in 0..3 {
+                    assert!((term[ch] - emit_rgb[ch] * want).abs() < 1e-5, "the GPU bar's emissive term {term:?} at t {at}");
                 }
             }
         }
