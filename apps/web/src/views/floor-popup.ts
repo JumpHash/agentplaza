@@ -1,5 +1,4 @@
-// The Machines popup of the Floor and its pure helpers, shared by the three.js Floor (floor.ts) and the wasm engine's
-// mount (engine-mount.ts). No three.js here, so the wasm mount does not load the plaza's code.
+// The Machines popup of the Floor and its pure helpers, for the engine's mount (engine-mount.ts) and the console's lists.
 import type { FleetMachine } from '../api';
 import { href } from '../router';
 import { ago, button } from '../ui/components';
@@ -9,7 +8,7 @@ import { roleLabel } from '../roles';
 /** How many agent names the popup lists before "+N more". */
 export const FLEET_CARD_AGENTS = 6;
 
-/** The name label's style: the three.js plaza's labels and the wasm engine's share it. */
+/** The name label's style (the engine paints its own labels; this is the DOM look they follow). */
 export const LABEL_CSS =
   'position:absolute;left:0;top:0;display:none;align-items:center;gap:6px;max-width:200px;padding:3px 7px;' +
   'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--print);color:var(--ink);' +
@@ -111,7 +110,7 @@ export function roleTag(role: string, hue: number): HTMLElement {
   return t;
 }
 
-/** The robot's agent card: the name and role tag, then the activity line. The three.js Floor and the engine share it. */
+/** The robot's agent card: the name and role tag, then the activity line. */
 export function agentCardChildren(name: string, role: string, hue: number, line: string): HTMLElement[] {
   return [h('header.floor-card-head', null, h('strong', null, name), roleTag(role, hue)), h('div.floor-card-activity', null, line)];
 }

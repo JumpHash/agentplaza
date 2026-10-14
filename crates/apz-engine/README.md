@@ -26,8 +26,9 @@ build pixel for pixel. The browser shell is not built yet.
 | `roles` | A role's family and label (the Floor's grouping and plaques). |
 | `geometry`, `canvas`, `textures`, `toon`, `props`, `outskirts`, `controls` | Meshes, the 2D canvas the textures paint on, the toon shading, props, the outskirts, and the orbit camera (`Orbit`). |
 
-Several modules still carry their web-source notes from the desktop's `floor3d` (for example `floor3d/robot.ts`),
-and `lib.rs` names the main ones. Those notes go with the web's three.js code in Phase 4.
+Several modules carry notes naming the web's three.js source they were ported from (`floor3d/robot.ts` and the
+like). That code is retired (the engine is the web's renderer now); the notes stay as provenance, and the files are in
+the git history before the three.js removal.
 
 ## Host contract
 

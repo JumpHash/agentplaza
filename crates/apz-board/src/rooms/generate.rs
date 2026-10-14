@@ -1673,9 +1673,9 @@ pub fn fixture_cases() -> Vec<FixtureCase> {
 mod tests {
     use super::*;
 
-    /// The golden set: every case's layout hash equals the web's, and its skipped and dropped counts too. A
-    /// mismatch names its case. NOTE: this fails when `fixtures.json` predates the current web generator (a stale
-    /// golden, not a Rust bug): regenerate it with `npm run rooms:fixtures` only when the owner decides to.
+    /// The golden set: every case's layout hash equals the one the web's generator (gen.ts, retired with three.js) wrote,
+    /// and its skipped and dropped counts too. A mismatch names its case: a change to this generator that moves a hash
+    /// is a change to every room's furniture, made on purpose or not at all.
     #[test]
     fn fixtures_match_the_web_layout_hashes() {
         let cases = fixture_cases();
@@ -1704,9 +1704,8 @@ mod tests {
         }
         assert!(
             bad.is_empty(),
-            "{} of {} golden cases differ from the generator. If the web's gen.ts changed on purpose, the golden \
-             fixtures.json is stale (a data issue, not a Rust bug): regenerate it with npm run rooms:fixtures (owner's call). \
-             First cases:\n{}",
+            "{} of {} golden cases differ from the generator: every room's furniture moved. Only an intended change to \
+             the generator may update assets/rooms/fixtures.json. First cases:\n{}",
             bad.len(),
             cases.len(),
             bad[..bad.len().min(5)].join("\n")

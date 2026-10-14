@@ -16,7 +16,7 @@ let portraitEngine: EngineStage | null = null;
 let portraitWaiting = 0;
 let portraitIdle = 0;
 const pending = new Map<string, Promise<string | null>>();
-/** The studio's size: the same PNG, under the same cache key, as the three.js studio makes. */
+/** The portrait's size in pixels, as the engine draws it. */
 const PORTRAIT_PX = 384;
 
 /** RGBA8 pixels as a PNG data URL, or null where the canvas cannot draw. */

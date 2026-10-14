@@ -14,19 +14,19 @@ assets/robots/
   tools/<id>.json   held tools and carried items (grip one | two | carry)
 ```
 
-Code: `apps/web/src/views/floor3d/robots/` (`types.ts` the formats, `validate.ts` the checks, `files.ts` the
-static imports and the registry, `geometry.ts` the part geometry, `clips.ts` the channel evaluation, `rig.ts`
-the baked geometry and the per-robot meshes, `fx.ts` the effects pool). The API is `floor3d/robot.ts`.
+Code: `crates/apz-engine/src/robots/` (`types.rs` the formats, `validate.rs` the checks, `files.rs` the embedded
+files and the registry, `geometry.rs` the part geometry, `rig.rs` the baked geometry and the per-robot meshes, `fx.rs`
+the effects pool, `audit.rs` the design audit). The API is `crates/apz-engine/src/robot.rs`.
 
 ## Registering a species
 
 1. Write `species/<id>.json` (copy `rover.json` or `can.json`; `"id"` must equal the file name).
 2. Add `<id>` to `index.json` `species`. The client's fallback deal is `species[cid % n]` (the hub deals species in
    phase 2): appending changes who gets what, so add species in batches.
-3. In `floor3d/robots/files.ts`, import the file and add it to `FILES.species`. The test "every species file is in the
-   index" fails until both are done. Tools are the same: `tools/<id>.json`, `index.json` `tools`, `FILES.tools`.
-4. `cd apps/web && npm run check` (types, build, tests). The registry lists every error by file path; a species with
-   errors is left out of the floor, and the rover stands in for it.
+3. Nothing to import: the build embeds every file under this folder. Tools are the same: `tools/<id>.json` and
+   `index.json` `tools`.
+4. `cargo test -p apz-engine --release --lib` (the registry and audit tests). The registry lists every error by file
+   path; a species with errors is left out of the floor, and the rover stands in for it.
 
 ## Species (`species/<id>.json`)
 
@@ -137,7 +137,7 @@ that needs its own bone or its own material adds a draw: keep parts on the bone 
 
 ## Style (the rules a species is judged against)
 
-The audit (`apps/web/src/views/floor3d/robots/audit.ts`, run with `node apps/web/scripts/robot-audit.mjs`) checks
+The audit (`crates/apz-engine/src/robots/audit.rs`, run by its tests) checks
 the geometry; these rules say what it should look like. The numbers come from the 31 species (medians in
 `scratchpad/robots/baseline.md`) and the best-looking species: rover, tv, kitty, ufo, cube, duck, bunny, lifty.
 Where the two disagree, the rule wins and the species is fixed. Units are robot units (a species is about 1 high).

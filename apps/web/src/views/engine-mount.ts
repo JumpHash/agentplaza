@@ -399,13 +399,13 @@ export function startThumbEngine(): EngineStage {
 
 /**
  * The Floor on the wasm engine: the Machines view, or with `initialId` (`#/floor/<id>`) that machine's board, entered
- * on mount. A pick opens the machine popup (the three.js Floor's card); its ENTER flies the engine into the board.
+ * on mount. A pick opens the machine popup (floor-popup.ts's card); its ENTER flies the engine into the board.
  */
 export function mountEngine(root: HTMLElement, initialId: string | null = null, onFail?: (reason: string) => void): Cleanup {
   const name = glueName();
   if (name === '') return () => undefined; // no engine in this build: show nothing
   const wrap = document.createElement('div');
-  // The three.js Floor's stage (floor.css): the canvas is sized as there.
+  // The Floor's stage (floor.css): the canvas fills it.
   wrap.className = 'floor-stage floor-stage-3d';
   wrap.style.cssText = 'position:relative;overflow:hidden';
   const canvas = document.createElement('canvas');
@@ -426,7 +426,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
   card.hidden = true;
   wrap.append(canvas, status, crumb, card);
   root.append(wrap);
-  // The Floor fills the window (floor.css): the view and the page take the three.js Floor's floor mode.
+  // The Floor fills the window (floor.css): the view and the page take the floor mode.
   root.classList.add('floor-view');
   document.body.classList.add('floor-mode');
 
@@ -491,7 +491,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     card.replaceChildren(bar, ...built.children);
   };
 
-  /** A robot's agent card (the three.js Floor's): its floor name and role, and its activity line from the engine's label. */
+  /** A robot's agent card (floor-popup.ts): its floor name and role, and its activity line from the engine's label. */
   const renderRobot = (): void => {
     const cid = pickedRobot;
     if (cid === null) return;
@@ -508,7 +508,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     card.replaceChildren(...agentCardChildren(name, role, hue, line));
   };
 
-  /** The popup or the robot's card beside its point on the stage (the three.js cards' placement, kept on the stage). */
+  /** The popup or the robot's card beside its point on the stage, kept on the stage. */
   const anchorCard = (): void => {
     if (engine === null || card.hidden) return;
     const at = popupId !== null ? engine.screen_of('machine', popupId) : pickedRobot !== null ? engine.screen_of('robot', String(pickedRobot)) : null;
@@ -600,7 +600,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
     raf = requestAnimationFrame(frame);
   };
 
-  // Debug hooks (window.__apz*) for tests and developers: the same names and return shapes as the three.js Floor,
+  // Debug hooks (window.__apz*) for tests and developers: the names and return shapes the Floor has always had,
   // backed by the engine. The camera is WebEngine.look_at (no hook names it yet).
   const installDebugHooks = (started: WebEngine): (() => void) => {
     const w = window as unknown as Record<string, unknown>;
@@ -647,7 +647,7 @@ export function mountEngine(root: HTMLElement, initialId: string | null = null, 
       __apzNavCell: (x: number, z: number) => JSON.parse(started.nav_cell(x, z)) as Record<string, unknown> | null,
       __apzNavAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,
       __apzLifts: () => JSON.parse(started.lifts()) as unknown[],
-      // The lift rides are the floor.ts's logic (the three.js Floor); the engine has no counterpart, so this stays a stub.
+      // A scripted lift ride (the retired three.js Floor's test hook): the engine has no counterpart, so this stays a stub.
       __apzLiftRide: stub('__apzLiftRide'),
       __apzShove: (cid: number, x: number, z: number) => started.shove(cid, x, z),
       __apzGroundAudit: () => JSON.parse(started.nav_audit()) as Record<string, unknown> | null,

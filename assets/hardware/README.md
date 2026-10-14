@@ -1,8 +1,9 @@
 # Hardware models: authoring guide
 
 The models under this folder are the machines of the Machines view (`exterior/`) and their insides
-(`board/`), plus reusable pieces (`parts/`) and the shared colours (`palette.json`). Both renderers
-read them: the web (`apps/web/src/views/floor3d/hardware.ts`) and the desktop. The format is
+(`board/`), plus reusable pieces (`parts/`) and the shared colours (`palette.json`). The Rust engine
+(`crates/apz-engine/src/hardware.rs`) draws them on the web (wasm) and the desktop, and `apz-board` reads them for
+the layout. The format is
 specified in `docs/design/hardware-plazas.md` ("Schema"). This guide is the working version.
 
 ## Files
@@ -20,10 +21,9 @@ Kinds: `workstation`, `laptop`, `edge`, `phone`, `server`.
 ## Adding a model
 
 1. Write the JSON file in the right folder. Start from a placeholder of the same kind.
-2. Register it in `apps/web/src/views/floor3d/hardware-index.ts`: one static import and one line in
-   `MODELS` (the key is the path without `.json`, e.g. `"exterior/apple-laptop"`).
-3. Run `bash -c 'cd /mnt/fast/AgentPlaza/apps/web && npm run check'`. The test suite validates every
-   file in `MODELS` and fails when a file is missing from the index.
+2. Nothing to register: the build embeds every file under this folder (`apps/desktop/build.rs` lists them; the key is
+   the path without `.json`, e.g. `"exterior/apple-laptop"`).
+3. Run `cargo test -p apz-engine -p apz-board --release --lib`: the tests validate and build every file.
 4. Open the lab (below) and look at it.
 
 Which files a machine uses: `modelsFor(machine)` in `hardware.ts`. An Apple machine (`vendor: "apple"`)
@@ -87,7 +87,7 @@ LEDs (`led-ok`, `led-warn`, `led-off`, `led-crit`) must exist: the `status` tag 
 
 ## Grounding
 
-Every solid rests on what is directly under it. The rule, as the audit checks it (`groundAudit` in `apps/web/src/views/floor3d/ground.ts`):
+Every solid rests on what is directly under it. The rule, as the audit checks it (the grounding audit in `crates/apz-board`):
 
 - The bottom of a solid is at the top of the highest solid under it, within 0.02, at its centre and four inset corners of its bottom face. A bottom more than 0.02 above that is **floating**.
 - A solid whose bottom lies inside a solid beneath it, overlapping by more than 0.02 on every axis, is **sinking**. So is a bottom below the ground (y = 0).
@@ -134,7 +134,7 @@ The third argument is the wait in seconds before the capture.
 
 ## Graphics cards
 
-`gpus/specs.json` holds one entry per reference card, module, baseboard, edge box or integrated GPU family (`{ "schema": 1, "specs": [...] }`). `gpus/match.json` maps what hardware detection reports to a card id (`{ "schema": 1, "rules": [...] }`). The types, the validator and the matcher are `apps/web/src/views/floor3d/gpus.ts`: `validateSpecs`, `validateMatch` and `matchCard(gpu, machineKind)`. The source research is `docs/design/gpu-cards.md`.
+`gpus/specs.json` holds one entry per reference card, module, baseboard, edge box or integrated GPU family (`{ "schema": 1, "specs": [...] }`). `gpus/match.json` maps what hardware detection reports to a card id (`{ "schema": 1, "rules": [...] }`). The types, the validator and the matcher are `crates/apz-engine/src/gpus.rs`. The source research is `docs/design/gpu-cards.md`.
 
 Units are millimetres. A GPU model is built at 1 unit = 10 cm (the owner's brief), so 304 mm is 3.0 units. The rest of this folder uses one unit as about one robot's width, so GPU parts will not match that scale until the modeller resolves it (research doc, section 0).
 

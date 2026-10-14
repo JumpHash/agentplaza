@@ -3,15 +3,11 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "AgentPlaza node console — register, run detail, machine, 2D map and 3D view over the noded /api/v0 contract. Framework-free TypeScript, static build to dist/.",
+  "description": "AgentPlaza node console — register, run detail, machine, 2D map and the 3D view (the Rust engine, compiled to wasm) over the noded /api/v0 contract. Framework-free TypeScript, static build to dist/.",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
     "test": "node test/run.mjs",
-    "rooms:prop": "node test/rooms-prop.mjs",
-    "rooms:fixtures": "node test/rooms-fixtures.mjs",
-    "nav:sim": "node test/nav-sim.mjs",
-    "nav:fixtures": "node test/nav-fixtures.mjs",
     "check": "tsc --noEmit && node build.mjs && node test/run.mjs"
   },
   "devDependencies": {
@@ -20,9 +16,5 @@
     "simple-icons": "^16.35.0",
     "simple-icons-11": "npm:simple-icons@^11.15.0",
     "typescript": "5.9.3"
-  },
-  "dependencies": {
-    "@types/three": "^0.186.0",
-    "three": "^0.186.1"
   }
 }

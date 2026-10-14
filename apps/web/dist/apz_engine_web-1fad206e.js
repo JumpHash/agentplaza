@@ -40,6 +40,26 @@ export class WebEngine {
         }
     }
     /**
+     * The floor's robots as the web's `__apzBots` reads them, JSON (see `apz_engine::debug`).
+     * @returns {string}
+     */
+    bots_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.webengine_bots_json(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export5(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Whether the engine wants another frame.
      * @returns {boolean}
      */
@@ -120,6 +140,29 @@ export class WebEngine {
         }
     }
     /**
+     * One event from the console's stream, as the desktop forwards it (`Floor::on_event`): `kind` is the channel
+     * ("transcript", "delta", "conversation", "project", "file", "work") and `json` its data. A parse error is thrown.
+     * @param {string} kind
+     * @param {string} json
+     */
+    event(kind, json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.webengine_event(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * The frames drawn with the GPU so far.
      * @returns {number}
      */
@@ -159,6 +202,26 @@ export class WebEngine {
         }
     }
     /**
+     * The board's lifts, JSON (`__apzLifts`). Takes the lift controllers mutably to read their state.
+     * @returns {string}
+     */
+    lifts() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.webengine_lifts(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export5(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Aims the camera at (x, y, z) from `dist` away, at polar angle `polar` from +Y and `azimuth` (radians, as the
      * web's `__apzLookAt`: an eye at target + spherical(dist, polar, azimuth), three.js convention).
      * @param {number} x
@@ -170,6 +233,48 @@ export class WebEngine {
      */
     look_at(x, y, z, dist, polar, azimuth) {
         wasm.webengine_look_at(this.__wbg_ptr, x, y, z, dist, polar, azimuth);
+    }
+    /**
+     * The board's ground audit, JSON or "null" (`__apzNavAudit`).
+     * @returns {string}
+     */
+    nav_audit() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.webengine_nav_audit(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export5(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The nav grid's cell at (x, z), JSON or "null" (`__apzNavCell`).
+     * @param {number} x
+     * @param {number} z
+     * @returns {string}
+     */
+    nav_cell(x, z) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.webengine_nav_cell(retptr, this.__wbg_ptr, x, z);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export5(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * Registers `cb(labels)`, called when the label text changes. `labels` is an array of
@@ -259,6 +364,17 @@ export class WebEngine {
         }
     }
     /**
+     * Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.
+     * @param {number} cid
+     * @param {number} x
+     * @param {number} z
+     * @returns {boolean}
+     */
+    shove(cid, x, z) {
+        const ret = wasm.webengine_shove(this.__wbg_ptr, cid, x, z);
+        return ret !== 0;
+    }
+    /**
      * One machine's stage pose rendered offscreen at `w` by `h` (each at most 512), as RGBA8 bytes. A Promise, since the
      * readback is async: it resolves once the GPU has copied the pixels back, and rejects for an unknown id.
      * @param {string} id
@@ -313,6 +429,19 @@ export function start(canvas, opts) {
 }
 
 /**
+ * Starts the engine as the hardware lab: `opts` is `{ backend?, model?, gpus?, status?, working?, open?, traces? }`
+ * (a missing model is `board/workstation`; a boolean `traces` is 1 or 0). The options are set as env names only while
+ * the stage builds, as `start_lab` does.
+ * @param {HTMLCanvasElement} canvas
+ * @param {any} opts
+ * @returns {Promise<WebEngine>}
+ */
+export function start_hardware_lab(canvas, opts) {
+    const ret = wasm.start_hardware_lab(addHeapObject(canvas), addHeapObject(opts));
+    return takeObject(ret);
+}
+
+/**
  * Starts the engine as the robot lab: `opts` is `{ backend?, species?, clip?, tool?, carry?, state?, hue?, orch?, cam?, t?, bg? }`
  * (a missing species is `all`; a boolean `orch` is 1 or 0). The options are set as env names only while the stage builds.
  * @param {HTMLCanvasElement} canvas
@@ -321,6 +450,19 @@ export function start(canvas, opts) {
  */
 export function start_lab(canvas, opts) {
     const ret = wasm.start_lab(addHeapObject(canvas), addHeapObject(opts));
+    return takeObject(ret);
+}
+
+/**
+ * Starts the engine as the room lab: `opts` is `{ backend?, role?, size?, seed?, door?, grid? }`, the room lab's route
+ * options as the web reads them: `role` a role id or `all` (APZ_ROOM_LAB, default `orchestrator`), `size` `WxD` in units
+ * (APZ_ROOM_SIZE), `seed` a u32, `door` n | e | s | w, `grid` 1 or 0 (a boolean is 1 or 0). Set as `start_lab` sets its own.
+ * @param {HTMLCanvasElement} canvas
+ * @param {any} opts
+ * @returns {Promise<WebEngine>}
+ */
+export function start_room_lab(canvas, opts) {
+    const ret = wasm.start_room_lab(addHeapObject(canvas), addHeapObject(opts));
     return takeObject(ret);
 }
 function __wbg_get_imports() {
@@ -1343,7 +1485,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return __wasm_bindgen_func_elem_21863(a, state0.b, arg0, arg1);
+                        return __wasm_bindgen_func_elem_22990(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -2307,48 +2449,48 @@ function __wbg_get_imports() {
             getObject(arg0).writeTexture(getObject(arg1), getObject(arg2), getObject(arg3), getObject(arg4));
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1092, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_9125);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1124, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_10233);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2845, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_21850);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 2875, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_22977);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [F64], shim_idx: 3, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1086);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1094);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Array<any>"), NamedExternref("IntersectionObserver")], shim_idx: 2, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1087);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1095);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Array<any>"), NamedExternref("ResizeObserver")], shim_idx: 2, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1087_27);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1095_35);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000006: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 1, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1085);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1093);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000007: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("KeyboardEvent")], shim_idx: 1, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1085_29);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1093_37);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000008: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("PointerEvent")], shim_idx: 1, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1085_30);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1093_38);
             return addHeapObject(ret);
         },
         __wbindgen_generic_0000000000000009: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("WheelEvent")], shim_idx: 1, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1085_31);
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_1093_39);
             return addHeapObject(ret);
         },
         __wbindgen_generic_000000000000000a: function(arg0) {
@@ -2410,34 +2552,34 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_9125(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_9125(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_10233(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_10233(arg0, arg1, addHeapObject(arg2));
 }
 
-function __wasm_bindgen_func_elem_1085(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_1085(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_1093(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_1093(arg0, arg1, addHeapObject(arg2));
 }
 
-function __wasm_bindgen_func_elem_1085_29(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_1085_29(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_1093_37(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_1093_37(arg0, arg1, addHeapObject(arg2));
 }
 
-function __wasm_bindgen_func_elem_1085_30(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_1085_30(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_1093_38(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_1093_38(arg0, arg1, addHeapObject(arg2));
 }
 
-function __wasm_bindgen_func_elem_1085_31(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_1085_31(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_1093_39(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_1093_39(arg0, arg1, addHeapObject(arg2));
 }
 
-function __wasm_bindgen_func_elem_21863(arg0, arg1, arg2, arg3) {
-    wasm.__wasm_bindgen_func_elem_21863(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
+function __wasm_bindgen_func_elem_22990(arg0, arg1, arg2, arg3) {
+    wasm.__wasm_bindgen_func_elem_22990(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
 }
 
-function __wasm_bindgen_func_elem_21850(arg0, arg1, arg2) {
+function __wasm_bindgen_func_elem_22977(arg0, arg1, arg2) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        wasm.__wasm_bindgen_func_elem_21850(retptr, arg0, arg1, addHeapObject(arg2));
+        wasm.__wasm_bindgen_func_elem_22977(retptr, arg0, arg1, addHeapObject(arg2));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         if (r1) {
@@ -2448,16 +2590,16 @@ function __wasm_bindgen_func_elem_21850(arg0, arg1, arg2) {
     }
 }
 
-function __wasm_bindgen_func_elem_1087(arg0, arg1, arg2, arg3) {
-    wasm.__wasm_bindgen_func_elem_1087(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
+function __wasm_bindgen_func_elem_1095(arg0, arg1, arg2, arg3) {
+    wasm.__wasm_bindgen_func_elem_1095(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
 }
 
-function __wasm_bindgen_func_elem_1087_27(arg0, arg1, arg2, arg3) {
-    wasm.__wasm_bindgen_func_elem_1087_27(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
+function __wasm_bindgen_func_elem_1095_35(arg0, arg1, arg2, arg3) {
+    wasm.__wasm_bindgen_func_elem_1095_35(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
 }
 
-function __wasm_bindgen_func_elem_1086(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_1086(arg0, arg1, arg2);
+function __wasm_bindgen_func_elem_1094(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_1094(arg0, arg1, arg2);
 }
 
 
@@ -2932,7 +3074,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('apz_engine_web-a39519b8_bg.wasm', import.meta.url);
+        module_or_path = new URL('apz_engine_web-1fad206e_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
