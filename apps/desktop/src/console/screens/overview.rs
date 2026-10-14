@@ -11,7 +11,7 @@ use iced::alignment::Vertical;
 use iced::font::{Style as FontStyle, Weight};
 use iced::keyboard::{key::Named, Key};
 use iced::widget::text::{Span, Wrapping};
-use iced::widget::{button, column, container, rich_text, row, scrollable, space, span, text, text_editor, Space};
+use iced::widget::{button, column, container, rich_text, row, space, span, text, text_editor, Space};
 use iced::{Background, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -340,7 +340,7 @@ fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
             );
         }
         // The web feed scrolls past 360px and is shorter than that when it has less to show.
-        container(scrollable(container(list).padding(Padding { top: 8.0, right: 0.0, bottom: 8.0, left: 0.0 })))
+        container(ui::scroll(container(list).padding(Padding { top: 8.0, right: 0.0, bottom: 8.0, left: 0.0 })))
             .max_height(360.0)
             .into()
     };

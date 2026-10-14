@@ -5,7 +5,7 @@
 //! screen shares this file's badge, action row, dialogs and [`Controls`], so both screens agree on
 //! what a state means and what an action asks. The web's `lab-models.ts` is the twin.
 
-use iced::widget::{column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use serde::Deserialize;
 
@@ -457,7 +457,7 @@ fn table<'a>(list: &'a [ModelView], busy: bool) -> Element<'a, Msg> {
         lines = lines.push(table_row(m, busy));
         lines = lines.push(ui::hairline());
     }
-    scrollable(lines).width(Length::Fill).into()
+    ui::scroll(lines).width(Length::Fill).into()
 }
 
 fn table_row<'a>(m: &'a ModelView, busy: bool) -> Element<'a, Msg> {

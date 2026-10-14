@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use apz_skill::{FileInfo, Finding, Report, Severity};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use iced::widget::{checkbox, column, container, row, scrollable, text_editor, text_input};
+use iced::widget::{checkbox, column, container, row, text_editor, text_input};
 use iced::{Alignment, Element, Font, Length, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -1275,7 +1275,7 @@ fn text_pane<'a>(content: &'a text_editor::Content, markdown: bool, on_edit: fn(
     if !markdown {
         return editor.into();
     }
-    let preview = scrollable(ui::markdown::<Msg>(&source_text(content))).height(Length::Fixed(420.0));
+    let preview = ui::scroll(ui::markdown::<Msg>(&source_text(content))).height(Length::Fixed(420.0));
     row![container(editor).width(Length::FillPortion(1)), container(preview).width(Length::FillPortion(1))].spacing(16).into()
 }
 
@@ -1513,7 +1513,7 @@ fn compare(d: &Diff) -> Element<'_, Msg> {
             names(&d.files.removed),
             names(&d.files.changed)
         )),
-        scrollable(column(lines)).height(Length::Fixed(360.0)),
+        ui::scroll(column(lines)).height(Length::Fixed(360.0)),
     ]
     .spacing(12)
     .into()

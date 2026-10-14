@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_prompt::{Finding, Kind, Report, Severity};
-use iced::widget::{column, container, row, scrollable, text_editor, text_input};
+use iced::widget::{column, container, row, text_editor, text_input};
 use iced::{Alignment, Element, Font, Length, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -661,7 +661,7 @@ fn finding_row(f: &Finding) -> Element<'static, Msg> {
 fn edit_tab(l: &Loaded) -> Element<'_, Msg> {
     let body = source_text(&l.source);
     let editor = text_editor(&l.source).on_action(Msg::Edit).font(Font::MONOSPACE).height(Length::Fixed(420.0));
-    let preview = scrollable(ui::markdown::<Msg>(&body)).height(Length::Fixed(420.0));
+    let preview = ui::scroll(ui::markdown::<Msg>(&body)).height(Length::Fixed(420.0));
     let panes = row![container(editor).width(Length::FillPortion(1)), container(preview).width(Length::FillPortion(1))].spacing(16);
 
     let r = &l.report;
@@ -798,7 +798,7 @@ fn compare(d: &PromptDiff) -> Element<'_, Msg> {
     }
     column![
         row![side(&d.from), side(&d.to)].spacing(24),
-        scrollable(column(lines)).height(Length::Fixed(360.0)),
+        ui::scroll(column(lines)).height(Length::Fixed(360.0)),
     ]
     .spacing(12)
     .into()

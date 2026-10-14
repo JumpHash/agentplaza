@@ -5,7 +5,7 @@ use std::fmt;
 
 use iced::font::Weight;
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, tooltip, Space, Stack};
+use iced::widget::{button, column, container, pick_list, row, text, tooltip, Space, Stack};
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Task, Theme};
 use serde_json::Value;
 
@@ -333,7 +333,7 @@ fn table<'a>(rows: Vec<&'a AgentRow>) -> Element<'a, Msg> {
         lines.push(row_view(a, slot));
         lines.push(rule(crate::theme::palette().rule_faint));
     }
-    container(scrollable(column(lines).width(Length::Fill)).width(Length::Fill))
+    container(ui::scroll(column(lines).width(Length::Fill)).width(Length::Fill))
         .style(|_: &Theme| container::Style { border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() }, ..Default::default() })
         .width(Length::Fill)
         .into()

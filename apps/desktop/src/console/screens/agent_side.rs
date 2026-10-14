@@ -2,7 +2,7 @@
 //! reasoning effort (the model picker), harness limits and loops, permissions. Also the memory
 //! library the page's Memory tab shows (`memory.ts`): the notes, a find box, and a reader.
 
-use iced::widget::{button, column, container, row, scrollable, text_input, Space};
+use iced::widget::{button, column, container, row, text_input, Space};
 use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -748,14 +748,14 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         .filter(|n| q.is_empty() || n.title.to_lowercase().contains(&q))
         .map(|n| note_row(n, side.reading.as_ref().is_some_and(|r| r.slug == n.slug)))
         .collect();
-    let list = scrollable(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
+    let list = ui::scroll(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
     let reader: Element<'a, SideMsg> = match &side.reading {
         Some(doc) => reader_view(doc, &side.notes),
         None => ui::faint("Choose a note to read it.").into(),
     };
     let panes = row![
         container(list).width(Length::Fixed(260.0)),
-        container(scrollable(reader).height(Length::Fixed(480.0))).width(Length::Fill),
+        container(ui::scroll(reader).height(Length::Fixed(480.0))).width(Length::Fill),
     ]
     .spacing(24);
     column![head, panes].spacing(12).into()

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_skill::{find_skills, write_zip, Entry};
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_editor, text_input};
 use iced::{Element, Length, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -836,7 +836,7 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     }
     page = page.push(list);
 
-    scrollable(page.padding(16)).width(Length::Fill).into()
+    ui::scroll(page.padding(16)).width(Length::Fill).into()
 }
 
 fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{Days, Local, NaiveDate, TimeZone};
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, text, Space};
 use iced::{alignment, Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 
 use super::lab_common;
@@ -247,7 +247,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.push(hours_card(d, state.gpu_hours.as_ref().map(|f| f.at(now))));
         }
     }
-    frame(Section::Overview, scrollable(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into(), Msg::Go)
+    frame(Section::Overview, ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into(), Msg::Go)
 }
 
 // ---- Strip and links -------------------------------------------------------

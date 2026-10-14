@@ -7,7 +7,7 @@ use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, Space};
+use iced::widget::{button, column, container, pick_list, row, text, Space};
 use iced::{alignment, Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use serde::Deserialize;
 use serde_json::json;
@@ -898,7 +898,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.push(prices_card(d));
         }
     }
-    ui::sheet(head, scrollable(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into())
+    ui::sheet(head, ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into())
 }
 
 /// The prices' source and age, with the refresh button.

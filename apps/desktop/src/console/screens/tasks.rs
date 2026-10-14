@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, mouse_area, pick_list, row, scrollable, text, text_editor, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, pick_list, row, text, text_editor, text_input, Space};
 use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use serde::Deserialize;
@@ -681,7 +681,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     // The page scrolls under its head: the lanes are as tall as their cards, not the window.
     // The right padding keeps the scrollbar clear of the last lane.
     let page = column(parts).spacing(22).padding(Padding { top: 0.0, right: 14.0, bottom: 0.0, left: 0.0 });
-    ui::sheet(ui::view_head("Tasks", actions), scrollable(page).into())
+    ui::sheet(ui::view_head("Tasks", actions), ui::scroll(page).into())
 }
 
 /// The head strip: a figure for each lane, and how many agents are working now.

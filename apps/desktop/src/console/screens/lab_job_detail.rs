@@ -620,7 +620,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     } else {
         ui::faint("Loading the job…").into()
     };
-    lab::frame(Section::Jobs, scrollable(body).height(Length::Fill).into(), Msg::Go)
+    lab::frame(Section::Jobs, ui::scroll(body).height(Length::Fill).into(), Msg::Go)
 }
 
 fn page<'a>(state: &'a State, v: &'a JobView) -> Element<'a, Msg> {
@@ -893,7 +893,7 @@ fn log_body<'a>(logs: &'a [JobEvent]) -> Element<'a, Msg> {
         .iter()
         .map(|e| ui::mono(format!("#{} {} {}", e.seq, e.island, log_text(&e.event)), 11.5, crate::theme::palette().ink_2).width(Length::Fill).into())
         .collect();
-    scrollable(column(lines).spacing(2).width(Length::Fill))
+    ui::scroll(column(lines).spacing(2).width(Length::Fill))
         .id(WidgetId::new(LOG_ID))
         .on_scroll(|viewport| Msg::LogScroll(viewport.relative_offset().y))
         .height(Length::Fixed(320.0))

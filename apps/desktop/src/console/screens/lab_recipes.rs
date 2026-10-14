@@ -3,7 +3,7 @@
 //! apid checks it), confirms, then records the vet; a refusal stays on the dialog. The list reloads
 //! on every poll tick (the console's 4 s `Tick` calls `load`).
 
-use iced::widget::{column, container, row, scrollable, stack, text_input, Space};
+use iced::widget::{column, container, row, stack, text_input, Space};
 use iced::{Alignment, Element, Length, Task};
 use serde_json::Value;
 
@@ -227,7 +227,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Some(list) => parts.push(grid(list.iter().map(recipe_card).collect(), GRID_COLS)),
         None => {}
     }
-    let page: Element<'a, Msg> = scrollable(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into();
+    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into();
     let framed = lab::frame(Section::Recipes, page, Msg::Go);
     match state.vet.as_ref() {
         Some(v) => stack(vec![framed, vet_layer(v)]).into(),

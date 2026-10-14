@@ -502,7 +502,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let side = container(column(side).spacing(16)).width(Length::Fixed(SIDE_WIDTH));
     body.push(row![main, side].spacing(24).into());
 
-    ui::sheet(head(actions), scrollable(column(body).spacing(16).width(Length::Fill)).into())
+    ui::sheet(head(actions), ui::scroll(column(body).spacing(16).width(Length::Fill)).into())
 }
 
 /// The web's head: the back link on its own line, the actions right-aligned under it.
@@ -875,7 +875,7 @@ fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
         sections.push(column(rest).spacing(12).width(Length::Fill).into());
     }
     let lines: Element<'a, Msg> = column(sections).spacing(16).width(Length::Fill).into();
-    container(scrollable(lines).id(transcript_id()).on_scroll(Msg::Scrolled).height(Length::Fixed(TRANSCRIPT_HEIGHT)))
+    container(ui::scroll(lines).id(transcript_id()).on_scroll(Msg::Scrolled).height(Length::Fixed(TRANSCRIPT_HEIGHT)))
         .padding(16)
         .width(Length::Fill)
         .style(ui::frame(None, crate::theme::palette().rule))

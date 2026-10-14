@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iced::widget::operation::snap_to;
-use iced::widget::{button, column, container, row, scrollable, text_input, Id as WidgetId, Space};
+use iced::widget::{button, column, container, row, text_input, Id as WidgetId, Space};
 use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde_json::{json, Value};
 
@@ -289,7 +289,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         // A newly opened thread starts at its newest message; a redraw keeps the reader's place.
                         if state.shown.as_deref() != Some(key.as_str()) {
                             state.shown = Some(key);
-                            snap_to(WidgetId::new(THREAD), scrollable::RelativeOffset::END)
+                            snap_to(WidgetId::new(THREAD), iced::widget::scrollable::RelativeOffset::END)
                         } else {
                             Task::none()
                         }
@@ -421,7 +421,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         rows.push(page_button("Load older", state.busy_older, Msg::LoadOlder));
     }
     let list_col = container(
-        column![search, scrollable(column(rows).width(Length::Fill)).height(Length::Fill)]
+        column![search, ui::scroll(column(rows).width(Length::Fill)).height(Length::Fill)]
             .spacing(10)
             .height(Length::Fill),
     )
@@ -553,7 +553,7 @@ fn thread_view<'a>(t: &Thread, agents: &[(u64, String)], error: Option<&str>) ->
     }
     // The messages are held newest first; the thread reads oldest first.
     items.extend(t.messages.iter().rev().map(|m| message(m, agents)));
-    scrollable(column(items).spacing(18).padding(16).max_width(720.0).width(Length::Fill))
+    ui::scroll(column(items).spacing(18).padding(16).max_width(720.0).width(Length::Fill))
         .id(WidgetId::new(THREAD))
         .width(Length::Fill)
         .height(Length::Fill)

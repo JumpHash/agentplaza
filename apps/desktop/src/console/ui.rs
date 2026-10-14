@@ -640,7 +640,7 @@ fn block_view<'a, M: 'a>(block: Block) -> Element<'a, M> {
         Block::Para(body) => rich_para(inline(&body), SERIF, 15.0, crate::theme::palette().ink),
         Block::List(items) => column(items.into_iter().map(item_view).collect::<Vec<_>>()).spacing(4).width(Length::Fill).into(),
         Block::Code(code) => container(
-            scrollable(text(code).font(MONO).size(12.5).color(crate::theme::palette().ink)).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::default())),
+            scroll_x(text(code).font(MONO).size(12.5).color(crate::theme::palette().ink)),
         )
         .padding(10)
         .width(Length::Fill)
@@ -824,6 +824,73 @@ pub fn ellipsize(s: &str, max_chars: usize) -> String {
     }
     let kept: String = s.chars().take(max_chars - 1).collect();
     format!("{}…", kept.trim_end())
+}
+
+/// A sidebar section heading: mono Medium 11 px, upper case, ink-3 (the web's `.nav-section`).
+pub fn section<'a>(content: &str) -> text::Text<'a> {
+    text(content.to_uppercase()).font(MONO_MEDIUM).size(11.0).color(INK_3)
+}
+
+/// A sidebar count: a ruled box with mono Medium 11 px in ink-2 (the web's `.nav a .count`).
+pub fn count<'a, M: 'a>(n: u32) -> Element<'a, M> {
+    container(text(n.to_string()).font(MONO_MEDIUM).size(11.0).color(INK_2))
+        .padding([1, 6])
+        .style(|_: &Theme| container::Style {
+            border: Border { color: RULE, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The scrollbar's width in px: thin, as the web's `scrollbar-width: thin`.
+const BAR_WIDTH: f32 = 6.0;
+
+fn bar() -> scrollable::Scrollbar {
+    scrollable::Scrollbar::new().width(BAR_WIDTH).scroller_width(BAR_WIDTH).margin(0.0)
+}
+
+/// The app's scrollbar, shared by every scroll area: a transparent rail with a rounded thumb in
+/// the rule colour, lighter while the bar is hovered and brighter while it is dragged.
+fn bar_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let (hot, dragged) = match status {
+        scrollable::Status::Active { .. } => (false, false),
+        scrollable::Status::Hovered { is_vertical_scrollbar_hovered, is_horizontal_scrollbar_hovered, .. } => {
+            (is_vertical_scrollbar_hovered || is_horizontal_scrollbar_hovered, false)
+        }
+        scrollable::Status::Dragged { is_vertical_scrollbar_dragged, is_horizontal_scrollbar_dragged, .. } => {
+            (true, is_vertical_scrollbar_dragged || is_horizontal_scrollbar_dragged)
+        }
+    };
+    let thumb = if dragged {
+        INK_2
+    } else if hot {
+        INK_3
+    } else {
+        RULE
+    };
+    let rail = scrollable::Rail {
+        background: None,
+        border: Border::default(),
+        scroller: scrollable::Scroller { background: thumb.into(), border: Border { radius: 3.0.into(), ..Default::default() } },
+    };
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+        auto_scroll: scrollable::default(theme, status).auto_scroll,
+    }
+}
+
+/// A vertical scroll area in the app's look. Every `scrollable(...)` in the console goes through
+/// this (or `scroll_x`), so the scrollbars match everywhere.
+pub fn scroll<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> scrollable::Scrollable<'a, M> {
+    scrollable(content).direction(scrollable::Direction::Vertical(bar())).style(bar_style)
+}
+
+/// A horizontal scroll area in the app's look (see `scroll`).
+pub fn scroll_x<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> scrollable::Scrollable<'a, M> {
+    scrollable(content).direction(scrollable::Direction::Horizontal(bar())).style(bar_style)
 }
 
 #[cfg(test)]

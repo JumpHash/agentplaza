@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_editor, text_input};
+use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -377,7 +377,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             feed.push(ui::hairline());
         }
     }
-    let body = scrollable(column(feed).width(Length::Fill).max_width(760.0)).height(Length::Fill);
+    let body = ui::scroll(column(feed).width(Length::Fill).max_width(760.0)).height(Length::Fill);
     ui::sheet(head, body.into())
 }
 

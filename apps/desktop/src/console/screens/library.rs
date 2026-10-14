@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use iced::widget::{column, container, image, row, scrollable, text, text_input, Space};
+use iced::widget::{column, container, image, row, text, text_input, Space};
 use iced::{font, Element, Fill, Font, Length, Task};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -443,7 +443,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Some(d) => items.push(detail(state, d)),
         None => list(state, &mut items),
     }
-    ui::sheet(ui::view_head("Library", vec![]), scrollable(column(items).spacing(16).width(Fill)).into())
+    ui::sheet(ui::view_head("Library", vec![]), ui::scroll(column(items).spacing(16).width(Fill)).into())
 }
 
 // ---- Files ----------------------------------------------------------------------------------

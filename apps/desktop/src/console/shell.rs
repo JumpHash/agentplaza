@@ -5,12 +5,20 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, row, scrollable, text_input, tooltip, Space, Stack};
-use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
+use iced::widget::{button, column, container, mouse_area, row, stack, text, text_input, tooltip, Space, Stack};
+use iced::{alignment, event, mouse, Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 
 use super::events;
 use super::screens::{Id, NAV};
 use super::{toast, ui, Ctx};
+use crate::theme::MONO;
+
+/// The open sidebar's default width (the web's `DEFAULT_WIDTH`) and its limits.
+const DEFAULT_WIDTH: f32 = 248.0;
+const MIN_WIDTH: f32 = 200.0;
+const MAX_WIDTH: f32 = 420.0;
+/// The resize handle's width at the sidebar's right edge; its signal line is 2 px of it.
+const HANDLE_W: f32 = 6.0;
 
 /// The sidebar mode the last run left ("open" or "rail"), Open when none was saved. Tests never read the owner's
 /// settings file.
@@ -74,6 +82,12 @@ pub struct State {
     pub toasts: Vec<toast::Toast>,
     /// An open confirmation (STOP ALL or RESUME), asked before the hub is called.
     pub confirm: Option<Confirm>,
+    /// A resize drag in progress: the pointer's window x and the width when it began.
+    drag: Option<(f32, f32)>,
+    /// The pointer's window x as last seen over the handle: where a drag starts from.
+    pointer_x: f32,
+    /// The pointer is over the handle (its signal line shows, as it does while dragging).
+    handle_hot: bool,
 }
 
 impl Default for State {
@@ -81,7 +95,7 @@ impl Default for State {
         State {
             current: Id::Overview,
             mode: saved_mode(),
-            width: 248.0,
+            width: DEFAULT_WIDTH,
             paused: false,
             held_note: String::new(),
             held_cancelled: 0,
@@ -99,6 +113,9 @@ impl Default for State {
             again: false,
             toasts: Vec::new(),
             confirm: None,
+            drag: None,
+            pointer_x: 0.0,
+            handle_hot: false,
         }
     }
 }
@@ -116,6 +133,18 @@ pub enum Msg {
     ToggleSidebar,
     /// Width change in px (negative narrows); clamped to 200–420.
     Resize(f32),
+    /// The pointer over the resize handle, at `x` px from the handle's left edge.
+    HandleMove(f32),
+    HandleEnter,
+    HandleExit,
+    /// A press on the handle starts a drag.
+    DragStart,
+    /// The pointer is at `x` px in the window while dragging.
+    DragMove(f32),
+    /// The button was let go: the drag ends.
+    DragEnd,
+    /// A double-click on the handle: back to the default width.
+    ResetWidth,
     /// Opens the STOP ALL confirmation.
     StopAll,
     /// Opens the RESUME confirmation.
@@ -190,7 +219,39 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             (Task::none(), None)
         }
         Msg::Resize(delta) => {
-            state.width = (state.width + delta).clamp(200.0, 420.0);
+            state.width = (state.width + delta).clamp(MIN_WIDTH, MAX_WIDTH);
+            (Task::none(), None)
+        }
+        Msg::HandleMove(x) => {
+            // The handle sits at the sidebar's right edge, so its left edge is `width - HANDLE_W`.
+            state.pointer_x = state.width - HANDLE_W + x;
+            (Task::none(), None)
+        }
+        Msg::HandleEnter => {
+            state.handle_hot = true;
+            (Task::none(), None)
+        }
+        Msg::HandleExit => {
+            state.handle_hot = false;
+            (Task::none(), None)
+        }
+        Msg::DragStart => {
+            state.drag = Some((state.pointer_x, state.width));
+            (Task::none(), None)
+        }
+        Msg::DragMove(x) => {
+            if let Some((x0, w0)) = state.drag {
+                state.width = (w0 + x - x0).clamp(MIN_WIDTH, MAX_WIDTH);
+            }
+            (Task::none(), None)
+        }
+        Msg::DragEnd => {
+            state.drag = None;
+            (Task::none(), None)
+        }
+        Msg::ResetWidth => {
+            state.drag = None;
+            state.width = DEFAULT_WIDTH;
             (Task::none(), None)
         }
         Msg::StopAll => {
@@ -300,7 +361,7 @@ pub fn view<'a, M: Clone + 'a>(state: &'a State, screen: Element<'a, M>, wrap: f
     let screen = if manages_scroll(&state.current) {
         screen
     } else {
-        scrollable(screen).id(SCREEN_SCROLL.clone()).width(Length::Fill).height(Length::Fill).into()
+        ui::scroll(screen).id(SCREEN_SCROLL.clone()).width(Length::Fill).height(Length::Fill).into()
     };
     main = main.push(container(screen).padding(16).width(Length::Fill).height(Length::Fill));
     let main = container(main).width(Length::Fill).height(Length::Fill).style(ui::paper);
@@ -362,7 +423,18 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
         }
         _ => None,
     });
-    Subscription::batch([frames, clock, keys])
+    // While a resize drag runs, the pointer's moves and the button's release come from anywhere in
+    // the window (the pointer can leave the handle), so they are listened to for the drag only.
+    let drag = if state.drag.is_some() { event::listen_with(drag_event) } else { Subscription::none() };
+    Subscription::batch([frames, clock, keys, drag])
+}
+
+fn drag_event(event: iced::Event, _: event::Status, _: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Msg::DragMove(position.x)),
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Msg::DragEnd),
+        _ => None,
+    }
 }
 
 /// The confirmation over the shell, worded as the web's: STOP ALL asks for an optional reason, RESUME asks once.
@@ -417,26 +489,50 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     let mut section: Option<&str> = None;
     for (id, label, sec, icon_name) in NAV.iter() {
         if section != Some(*sec) {
+            // The web's `.nav-section`: 14 px above each heading, none above the first.
+            let top = if section.is_none() { 0.0 } else { 14.0 };
             section = Some(*sec);
             if open {
-                list = list.push(container(ui::label(*sec)).padding(Padding { top: 14.0, right: 12.0, bottom: 4.0, left: 12.0 }));
+                list = list.push(container(ui::section(sec)).padding(Padding { top, right: 10.0, bottom: 6.0, left: 10.0 }));
             }
         }
         list = list.push(nav_item(state, id, label, icon_name, open, wrap));
     }
-    let mut col = column![brand(open), scrollable(list).height(Length::Fill)].height(Length::Fill);
+    let mut col = column![brand(open), ui::scroll(list).height(Length::Fill)].height(Length::Fill);
     if open {
         col = col.push(footer(state, wrap));
     }
     let width = if open { state.width } else { 60.0 };
-    container(col)
-        .width(Length::Fixed(width))
-        .height(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().sheet.into()),
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        })
+    let body = container(col).width(Length::Fixed(width)).height(Length::Fill).style(|_: &Theme| container::Style {
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    });
+    if !open {
+        return body.into();
+    }
+    // The handle is laid over the sidebar's right edge, so the sidebar's width is unchanged.
+    let edge = row![Space::new().width(Length::Fill), resize_handle(state, wrap)].height(Length::Fill);
+    stack(vec![body.into(), edge.into()]).width(Length::Fixed(width)).height(Length::Fill).into()
+}
+
+/// The resize handle: a strip at the right edge; a 2 px signal line shows while the pointer is over
+/// it or dragging it. Drag clamps 200–420 (in `update`); a double-click resets the default width.
+fn resize_handle<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'a, M> {
+    let lit = state.handle_hot || state.drag.is_some();
+    let line = container(Space::new().width(Length::Fixed(2.0)).height(Length::Fill)).height(Length::Fill).style(move |_: &Theme| container::Style {
+        background: if lit { Some(crate::theme::palette().signal.into()) } else { None },
+        ..Default::default()
+    });
+    let strip = container(line).width(Length::Fixed(HANDLE_W)).height(Length::Fill).align_x(alignment::Horizontal::Right);
+    mouse_area(strip)
+        .interaction(mouse::Interaction::ResizingHorizontally)
+        .on_enter(wrap(Msg::HandleEnter))
+        .on_exit(wrap(Msg::HandleExit))
+        .on_move(move |p| wrap(Msg::HandleMove(p.x)))
+        .on_press(wrap(Msg::DragStart))
+        .on_release(wrap(Msg::DragEnd))
+        .on_double_click(wrap(Msg::ResetWidth))
         .into()
 }
 
@@ -452,37 +548,52 @@ fn brand<'a, M: 'a>(open: bool) -> Element<'a, M> {
 
 fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name: &str, open: bool, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let active = *id == state.current;
-    let fg = if active { crate::theme::palette().ink } else { crate::theme::palette().ink_2 };
     let glyph = if active { crate::theme::palette().signal } else { crate::theme::palette().ink_3 };
+    // The web's `.nav a`: a 3 px signal bar inside the row on the active screen; the row takes the
+    // active tint (`--hover`) or the hover tint (`--rule-faint`); labels are ink when hot or active.
+    let bar = container(Space::new().width(Length::Fixed(3.0)).height(Length::Fill)).height(Length::Fill).style(move |_: &Theme| {
+        container::Style { background: if active { Some(crate::theme::palette().signal.into()) } else { None }, ..Default::default() }
+    });
     let content: Element<'a, M> = if open {
-        let mut r = row![ui::icon(icon_name, 16.0, glyph), ui::mono(label.to_string(), 12.5, fg)].spacing(10).align_y(Alignment::Center);
-        r = r.push(Space::new().width(Length::Fill));
+        let mut r = row![
+            bar,
+            Space::new().width(Length::Fixed(7.0)),
+            ui::icon(icon_name, 16.0, glyph),
+            Space::new().width(Length::Fixed(10.0)),
+            text(label.to_string()).font(MONO).size(13.0),
+            Space::new().width(Length::Fill),
+        ]
+        .align_y(Alignment::Center)
+        .height(Length::Fill);
         if let Some(n) = state.counts.get(label.to_lowercase().as_str()) {
-            r = r.push(count_badge(*n));
+            r = r.push(ui::count(*n));
         }
         r.into()
     } else {
-        container(ui::icon(icon_name, 16.0, glyph)).width(Length::Fill).align_x(Alignment::Center).into()
+        row![
+            bar,
+            container(ui::icon(icon_name, 16.0, glyph)).width(Length::Fill).height(Length::Fill).align_x(Alignment::Center).align_y(Alignment::Center),
+        ]
+        .height(Length::Fill)
+        .into()
     };
     let item = button(content)
         .width(Length::Fill)
-        .height(Length::Fixed(30.0))
-        .padding([0, 10])
+        .height(Length::Fixed(34.0))
+        .padding(0)
         .style(move |_: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            button::Style {
-                background: if active || hovered { Some(crate::theme::palette().hover.into()) } else { None },
-                text_color: fg,
-                border: Border::default(),
-                ..Default::default()
-            }
+            let (background, text_color) = if active {
+                (Some(crate::theme::palette().hover.into()), crate::theme::palette().ink)
+            } else if hovered {
+                (Some(crate::theme::palette().rule_faint.into()), crate::theme::palette().ink)
+            } else {
+                (None, crate::theme::palette().ink_2)
+            };
+            button::Style { background, text_color, border: Border::default(), ..Default::default() }
         })
         .on_press(wrap(Msg::Go(id.clone())));
-    let bar = container(Space::new().width(Length::Fixed(3.0)).height(Length::Fixed(30.0))).style(move |_: &Theme| container::Style {
-        background: if active { Some(crate::theme::palette().signal.into()) } else { None },
-        ..Default::default()
-    });
-    let line: Element<'a, M> = row![bar, item].height(Length::Fixed(30.0)).into();
+    let line: Element<'a, M> = item.into();
     if open {
         line
     } else {
@@ -497,16 +608,6 @@ fn nav_item<'a, M: Clone + 'a>(state: &'a State, id: &Id, label: &str, icon_name
         )
         .into()
     }
-}
-
-fn count_badge<'a, M: 'a>(n: u32) -> Element<'a, M> {
-    container(ui::mono(n.to_string(), 11.0, crate::theme::palette().ink_3))
-        .padding([1, 5])
-        .style(|_: &Theme| container::Style {
-            border: Border { color: crate::theme::palette().rule, width: 1.0, radius: 0.0.into() },
-            ..Default::default()
-        })
-        .into()
 }
 
 /// The sidebar's footer: the hub's address, and the width steps.

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use iced::widget::{button, column, container, pick_list, row, scrollable, text_input, Space};
+use iced::widget::{button, column, container, pick_list, row, text_input, Space};
 use iced::{Alignment, Border, Element, Length, Theme};
 use serde_json::Value;
 
@@ -300,7 +300,7 @@ pub fn view<'a, M: Clone + 'a>(state: &'a Picker, choices: &'a [Choice], current
             list = list.push(ui::faint("No models match"));
         }
 
-        let panel = container(column![search, scrollable(list).height(Length::Fixed(280.0))].spacing(8))
+        let panel = container(column![search, ui::scroll(list).height(Length::Fixed(280.0))].spacing(8))
             .padding(8)
             .width(Length::Fill)
             .style(|_: &Theme| container::Style {

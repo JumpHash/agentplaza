@@ -1260,7 +1260,7 @@ fn vm_line<'a>(state: &'a State, run: &str, vm: &'a VmRow) -> Element<'a, Msg> {
         ));
         if let (true, Some(serial)) = (open, &vm.serial) {
             lines.push(
-                scrollable(container(ui::mono(serial.clone(), 11.0, INK_2)).padding(8).style(boxed))
+                ui::scroll(container(ui::mono(serial.clone(), 11.0, INK_2)).padding(8).style(boxed))
                     .width(Length::Fill)
                     .into(),
             );

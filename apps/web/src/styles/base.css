@@ -5,6 +5,17 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--paper); color: var(--ink); font: var(--fs-md) / var(--lh) var(--serif); -webkit-font-smoothing: antialiased; }
+/* Every scroll area takes one thin scrollbar in the app palette: a rounded thumb in the rule colour
+   that lightens on hover. Chromium and Safari take the -webkit- pseudo-elements; Firefox, which has
+   no such selector, takes the standard properties. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule); border: 2px solid transparent; border-radius: 4px; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); background-clip: padding-box; }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+}
+
 h1, h2, h3, h4, p { margin: 0; }
 h1 { font: 700 30px/1.05 var(--mono); font-stretch: 78%; letter-spacing: -0.02em; text-transform: uppercase; text-wrap: balance; }
 h2 { font: 600 11.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }

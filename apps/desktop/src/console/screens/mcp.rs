@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use iced::widget::{column, row, scrollable};
+use iced::widget::{column, row};
 use iced::{Alignment, Element, Length, Task};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -436,7 +436,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         None => column![tab_bar(state.tab), content].spacing(22).width(Length::Fill).into(),
     };
     // The page scrolls as the web does: a tall list is not squeezed into the window.
-    scrollable(ui::sheet(ui::view_head("MCP", vec![]), body)).height(Length::Fill).into()
+    ui::scroll(ui::sheet(ui::view_head("MCP", vec![]), body)).height(Length::Fill).into()
 }
 
 /// The servers tab: the note, the notices, the servers, the open server and the catalogue.
@@ -524,7 +524,7 @@ fn detail_section<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
         Some(lines) if lines.is_empty() => ui::faint("No log lines yet.").into(),
         Some(lines) => column(lines.iter().map(|l| ui::mono(format!("{} {}", l.stream, l.line), 11.0, crate::theme::palette().ink_2).into()).collect::<Vec<Element<'a, Msg>>>()).spacing(2).into(),
     };
-    parts.push(scrollable(logs).height(Length::Fixed(240.0)).into());
+    parts.push(ui::scroll(logs).height(Length::Fixed(240.0)).into());
     let actions: Vec<Element<'a, Msg>> = vec![
         ui::btn_sm("Refresh", None, ui::Kind::Secondary, gate(state.busy, Msg::Refresh)),
         ui::btn_sm("Edit", None, ui::Kind::Secondary, gate(state.busy, Msg::OpenEdit(id.to_string()))),

@@ -6,7 +6,7 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, column, container, pick_list, row, scrollable, stack, text, text_editor, text_input, Space};
+use iced::widget::{button, column, container, pick_list, row, stack, text, text_editor, text_input, Space};
 use iced::{font, Alignment, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -749,7 +749,7 @@ fn file_block<'a>(path: &str, file: &'a FileView) -> Element<'a, Msg> {
                         .into()
                     })
                     .collect();
-                scrollable(column(rows).padding([8, 0])).width(Length::Fill).into()
+                ui::scroll(column(rows).padding([8, 0])).width(Length::Fill).into()
             }
         }
     };
@@ -1029,7 +1029,7 @@ fn diff_view<'a>(diff: &str) -> Element<'a, Msg> {
                 .into()
         })
         .collect();
-    scrollable(column(lines).padding([8, 0])).width(Length::Fill).into()
+    ui::scroll(column(lines).padding([8, 0])).width(Length::Fill).into()
 }
 
 /// A diff line's text colour, tint and font, by its marker.

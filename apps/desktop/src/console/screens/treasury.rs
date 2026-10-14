@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use iced::font::{self, Font};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, pick_list, responsive, row, scrollable, text_input, Space};
+use iced::widget::{button, column, container, pick_list, responsive, row, text_input, Space};
 use iced::{alignment, mouse, Alignment, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Renderer, Size, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
@@ -645,7 +645,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.extend(sections(data, state, now));
         }
     }
-    ui::sheet(head, scrollable(column(parts).spacing(GAP).width(Length::Fill)).spacing(GAP).height(Length::Fill).into())
+    ui::sheet(head, ui::scroll(column(parts).spacing(GAP).width(Length::Fill)).spacing(GAP).height(Length::Fill).into())
 }
 
 /// The read-only body: tallies, the range and view controls, the charts or the series table, the

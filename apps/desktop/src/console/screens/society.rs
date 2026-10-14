@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use iced::widget::{canvas, column, container, mouse_area, row, scrollable, Space};
+use iced::widget::{canvas, column, container, mouse_area, row, Space};
 use iced::{border, mouse, Alignment, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme};
 use serde::Deserialize;
 use serde_json::Value;
@@ -388,7 +388,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             left = left.push(canvas(graph).width(Length::Fill).height(Length::Fill));
             row![
                 container(left).width(Length::FillPortion(3)).height(Length::Fill),
-                container(scrollable(column![panel]).width(Length::Fill).height(Length::Fill))
+                container(ui::scroll(column![panel]).width(Length::Fill).height(Length::Fill))
                     .width(Length::FillPortion(2))
                     .height(Length::Fill),
             ]

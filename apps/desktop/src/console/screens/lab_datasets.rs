@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, pick_list, row, scrollable, stack, text_input, Space};
+use iced::widget::{button, column, container, pick_list, row, stack, text_input, Space};
 use iced::widget::text::Wrapping;
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::Value;
@@ -464,7 +464,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             }
         }
     }
-    let page: Element<'a, Msg> = scrollable(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into();
+    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill)).height(Length::Fill).into();
     let framed = lab::frame(Section::Datasets, page, Msg::Go);
     match &state.dialog {
         Dialog::Closed => framed,
@@ -712,7 +712,7 @@ fn detail<'a>(d: &'a Dataset, provenance_open: bool) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = vec![facts.into(), actions.into()];
     if provenance_open {
         let pretty = serde_json::to_string_pretty(&d.provenance).unwrap_or_default();
-        body.push(scrollable(ui::mono(pretty, 11.0, crate::theme::palette().ink_2)).height(Length::Fixed(260.0)).into());
+        body.push(ui::scroll(ui::mono(pretty, 11.0, crate::theme::palette().ink_2)).height(Length::Fixed(260.0)).into());
     }
     ui::card(&d.name, column(body).spacing(14).into())
 }

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use iced::widget::operation::snap_to;
 use iced::widget::scrollable::RelativeOffset;
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input, Id as WidgetId, Space};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_editor, text_input, Id as WidgetId, Space};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use serde_json::Value;
 
@@ -965,7 +965,7 @@ fn machine_rows<'a>(state: &'a State) -> Element<'a, Msg> {
 
 /// A bordered box that scrolls past 240 px.
 fn scroll_box<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(scrollable(body).width(Length::Fill)).max_height(240.0).style(theme::boxed).width(Length::Fill).into()
+    container(ui::scroll(body).width(Length::Fill)).max_height(240.0).style(theme::boxed).width(Length::Fill).into()
 }
 
 fn device_pin<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -1245,7 +1245,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let body = column![head, list_card(state), form_card(state)].spacing(22).width(Length::Fill);
     lab::frame(
         Section::Jobs,
-        scrollable(body).id(WidgetId::new(SCROLL)).height(Length::Fill).into(),
+        ui::scroll(body).id(WidgetId::new(SCROLL)).height(Length::Fill).into(),
         Msg::Go,
     )
 }

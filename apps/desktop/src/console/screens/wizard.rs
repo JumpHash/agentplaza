@@ -2,7 +2,7 @@
 //! its tools and its prompt, then spawn — a modal over the Agents screen.
 
 use iced::widget::text_editor::Content;
-use iced::widget::{checkbox, column, container, row, scrollable, text_editor, text_input};
+use iced::widget::{checkbox, column, container, row, text_editor, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Task, Theme, Vector};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -594,7 +594,7 @@ pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
     }
     let nav = nav.push(forward).spacing(8);
 
-    let mut card = column![head, steps, scrollable(body).height(Length::Fixed(440.0))].spacing(16);
+    let mut card = column![head, steps, ui::scroll(body).height(Length::Fixed(440.0))].spacing(16);
     if let Some(e) = &wizard.error {
         card = card.push(ui::error_line(e));
     }

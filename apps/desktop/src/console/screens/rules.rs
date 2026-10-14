@@ -7,7 +7,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_editor, text_input, Space};
+use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input, Space};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
@@ -569,7 +569,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         body.push(ui::card("Violations by law", violations(state, now)));
         body.push(ui::card("Strict permits", strict_permits(state)));
     }
-    ui::sheet(ui::view_head("Rules", vec![]), scrollable(column(body).spacing(22)).height(Length::Fill).into())
+    ui::sheet(ui::view_head("Rules", vec![]), ui::scroll(column(body).spacing(22)).height(Length::Fill).into())
 }
 
 /// The banner while any constitutional law is switched off, with a link to each one.

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use iced::font::Weight;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, pick_list, row, scrollable, text, text_input, Space, Stack};
+use iced::widget::{column, container, pick_list, row, text, text_input, Space, Stack};
 use iced::{Alignment, Border, Color, Element, Font, Length, Task, Theme};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -1407,5 +1407,5 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         None => body,
     };
     // The page scrolls as the web does: a tall list is not squeezed into the window.
-    scrollable(ui::sheet(ui::view_head("Tools", vec![]), body)).height(Length::Fill).into()
+    ui::scroll(ui::sheet(ui::view_head("Tools", vec![]), body)).height(Length::Fill).into()
 }
