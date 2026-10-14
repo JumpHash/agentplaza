@@ -132,14 +132,15 @@ impl Portal {
 
     /// Closes the portal session and stops the capture. The owner's screen is no longer shared after this.
     pub fn close(self) {
+        // `_capture` lives to the end of this function: it stops after the session has closed and while the runtime
+        // is still alive, the same order as an explicit drop.
         let Self {
             runtime,
             session,
-            capture,
+            capture: _capture,
             ..
         } = self;
         let _ = runtime.block_on(session.close());
-        drop(capture);
     }
 
     fn call<T>(

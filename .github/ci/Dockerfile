@@ -13,7 +13,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git file xz-utils zstd cpio sudo \
       build-essential pkg-config lld \
-      libxkbcommon-dev libwayland-dev \
+      libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libclang-dev \
       flex bison bc libelf-dev libssl-dev busybox-static \
       ruby ruby-dev rpm libarchive-tools \
       gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user \

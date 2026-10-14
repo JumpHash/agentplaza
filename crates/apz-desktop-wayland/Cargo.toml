@@ -6,10 +6,16 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The portals, PipeWire and the session bus exist on Linux only; elsewhere the crate compiles to nothing.
+# PipeWire is opt-in: building it needs the PipeWire development headers and libclang (for bindgen). Without the
+# feature the screen's frames are refused as unsupported, and everything else (the portals, input) still works.
+[features]
+default = []
+pipewire = ["dep:pipewire"]
+
+# The portals and the session bus exist on Linux only; elsewhere the crate compiles to nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
 apz-desktop = { path = "../apz-desktop" }
 apz-station = { path = "../apz-station" }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast", "remote_desktop"] }
-pipewire = "0.10"
+pipewire = { version = "0.10", optional = true }
 tokio = { version = "1", default-features = false, features = ["rt", "time"] }

@@ -16,11 +16,43 @@
 //!   session's idle time from logind when it has it.
 //!
 //! The crate compiles to nothing off Linux.
+//!
+//! The screen's frames come from PipeWire, which is built only with the `pipewire` feature (it needs the PipeWire
+//! headers and libclang). Without it a session still opens and takes input, but `capture` is refused as
+//! unsupported.
 
 #![cfg(target_os = "linux")]
 
+#[cfg(feature = "pipewire")]
 mod capture;
+#[cfg(not(feature = "pipewire"))]
+mod capture {
+    use std::os::fd::OwnedFd;
+
+    use apz_desktop::{DesktopError, Frame, Result};
+
+    /// The reason a frame is refused. It names the feature that builds the capture.
+    const NO_CAPTURE: &str =
+        "this build has no PipeWire capture (build with the `pipewire` feature)";
+
+    /// Stands in for the PipeWire capture. The portal's PipeWire remote is not read, so it is closed when dropped.
+    pub struct Capture;
+
+    impl Capture {
+        pub fn start(_fd: OwnedFd, _node: u32) -> Result<Self> {
+            Ok(Self)
+        }
+
+        pub fn latest(&self) -> Result<Frame> {
+            Err(DesktopError::Unsupported(NO_CAPTURE.into()))
+        }
+    }
+}
+
 mod keysym;
+// The pixel converters are used by the PipeWire capture only. They need no PipeWire types, so they compile in every
+// build and their tests run everywhere.
+#[cfg_attr(not(feature = "pipewire"), allow(dead_code))]
 mod pixels;
 mod portal;
 mod restore;
@@ -258,6 +290,19 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "pipewire"))]
+    #[test]
+    fn without_the_pipewire_feature_a_frame_is_unsupported_and_names_the_feature() {
+        let fd = std::os::fd::OwnedFd::from(std::fs::File::open("/dev/null").expect("opens"));
+        let capture = capture::Capture::start(fd, 1).expect("the session starts without a stream");
+        match capture.latest() {
+            Err(DesktopError::Unsupported(reason)) => {
+                assert!(reason.contains("`pipewire` feature"))
+            }
+            other => panic!("a frame must be unsupported without PipeWire, got {other:?}"),
+        }
+    }
+
     #[test]
     fn the_tree_actions_and_apps_are_unsupported_here() {
         let mut desktop = WaylandDesktop::new(std::env::temp_dir());
@@ -318,7 +363,7 @@ mod tests {
     ///
     /// ```text
     /// APZ_WAYLAND_STATE_DIR=$HOME/scratch/wayland-test \
-    ///     cargo test -p apz-desktop-wayland -- --ignored --nocapture manual_session_captures_one_frame
+    ///     cargo test -p apz-desktop-wayland --features pipewire -- --ignored --nocapture manual_session_captures_one_frame
     /// ```
     #[test]
     #[ignore = "asks the owner through the desktop portal dialog: run by hand"]
