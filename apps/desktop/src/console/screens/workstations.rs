@@ -21,6 +21,7 @@ use super::lab_common::{ago, now_ms};
 use super::workstations_files as files;
 use super::workstations_live as live;
 use super::workstations_rec as rec;
+use super::workstations_vms as vms;
 use crate::console::{Ctx, client, events, ui};
 use crate::theme;
 
@@ -310,6 +311,17 @@ pub enum Dialog {
         lease: String,
         who: String,
     },
+    /// Make a workstation VM on a node: the form, the hub's first problem, and the VM once the hub has made it.
+    NewVm {
+        form: Box<vms::VmForm>,
+        problem: Option<String>,
+        made: Option<Box<vms::Vm>>,
+    },
+    /// Delete a workstation VM, with its name for the words.
+    ConfirmRemoveVm {
+        id: String,
+        name: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -339,6 +351,11 @@ pub struct State {
     baseline: Option<SettingsForm>,
     form_error: Option<String>,
     saving: bool,
+    /// The workstation VMs and the nodes they run on, for the list page.
+    vms: Load<Vec<vms::Vm>>,
+    nodes: Load<Vec<vms::NodeFacts>>,
+    /// A VM is being made: the New VM form waits for the hub's answer.
+    vm_saving: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -378,6 +395,18 @@ pub enum Msg {
     /// The settings were saved for the workstation named (the page may have moved on).
     SettingsSaved(String, Result<SettingsAnswer, String>),
     CloseDialog,
+    /// The workstation VMs and the nodes they can run on, read for the list page.
+    VmsLoaded(Result<Vec<vms::Vm>, String>),
+    NodesLoaded(Result<Vec<vms::NodeFacts>, String>),
+    /// Open the New VM form, or edit one of its fields.
+    OpenNewVm,
+    VmField(vms::VmFieldEdit),
+    /// Make the VM the form describes; its answer comes back as `VmCreated`.
+    CreateVm,
+    VmCreated(Result<vms::Vm, String>),
+    /// Ask to delete a VM (by id), and the confirmed delete.
+    AskRemoveVm(String),
+    RemoveVm,
     Live(live::Msg),
     Rec(rec::Msg),
     Files(files::Msg),
@@ -433,6 +462,15 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         }
         None => {
             tasks.push(rec::load_defaults(ctx).map(Msg::Rec));
+            let (vms_client, nodes_client) = (ctx.client.clone(), ctx.client.clone());
+            tasks.push(client::task(
+                move || vms_client.get::<Vec<vms::Vm>>("/v1/stations/vms"),
+                Msg::VmsLoaded,
+            ));
+            tasks.push(client::task(
+                move || nodes_client.get::<Vec<vms::NodeFacts>>("/v1/nodes"),
+                Msg::NodesLoaded,
+            ));
             if thumbs_due(state) {
                 tasks.push(thumbs_task(state, ctx));
             }
@@ -837,6 +875,123 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             load(state, ctx)
         }
+        Msg::VmsLoaded(result) => {
+            settle_into(&mut state.vms, result);
+            Task::none()
+        }
+        Msg::NodesLoaded(result) => {
+            settle_into(&mut state.nodes, result);
+            // A form opened before the nodes answered picks the first node they offer.
+            if let (Load::Ready(list), Some(Dialog::NewVm { form, .. })) =
+                (&state.nodes, &mut state.dialog)
+                && form.node.is_empty()
+                && let Some(first) = vms::node_choices(list).first()
+            {
+                form.node = first.id.clone();
+            }
+            Task::none()
+        }
+        Msg::OpenNewVm => {
+            let node = match &state.nodes {
+                Load::Ready(list) => vms::node_choices(list)
+                    .first()
+                    .map(|c| c.id.clone())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            state.dialog = Some(Dialog::NewVm {
+                form: Box::new(vms::VmForm {
+                    node,
+                    ..vms::VmForm::default()
+                }),
+                problem: None,
+                made: None,
+            });
+            state.error = None;
+            load(state, ctx)
+        }
+        Msg::VmField(edit) => {
+            if let Some(Dialog::NewVm { form, problem, .. }) = &mut state.dialog {
+                vms::apply_edit(form, edit);
+                *problem = None;
+            }
+            Task::none()
+        }
+        Msg::CreateVm => {
+            if state.vm_saving {
+                return Task::none();
+            }
+            let choices = match &state.nodes {
+                Load::Ready(list) => vms::node_choices(list),
+                _ => Vec::new(),
+            };
+            let Some(Dialog::NewVm { form, problem, .. }) = &mut state.dialog else {
+                return Task::none();
+            };
+            let node = choices.iter().find(|c| c.id == form.node);
+            let macos = vms::macos_on(&state.vms, &form.node);
+            match vms::read_vm_form(form, node, macos) {
+                Err(error) => {
+                    *problem = Some(error);
+                    Task::none()
+                }
+                Ok(body) => {
+                    state.vm_saving = true;
+                    let client = ctx.client.clone();
+                    client::task(
+                        move || client.post::<vms::Vm>("/v1/stations/vms", &body),
+                        Msg::VmCreated,
+                    )
+                }
+            }
+        }
+        Msg::VmCreated(result) => {
+            state.vm_saving = false;
+            match result {
+                Ok(made) => {
+                    if let Some(Dialog::NewVm {
+                        made: slot,
+                        problem,
+                        ..
+                    }) = &mut state.dialog
+                    {
+                        *slot = Some(Box::new(made));
+                        *problem = None;
+                    }
+                    load(state, ctx)
+                }
+                Err(error) => {
+                    if let Some(Dialog::NewVm { problem, .. }) = &mut state.dialog {
+                        *problem = Some(error);
+                    }
+                    Task::none()
+                }
+            }
+        }
+        Msg::AskRemoveVm(id) => {
+            let name = match &state.vms {
+                Load::Ready(list) => list.iter().find(|vm| vm.id == id).map(|vm| vm.name.clone()),
+                _ => None,
+            };
+            if let Some(name) = name {
+                state.dialog = Some(Dialog::ConfirmRemoveVm { id, name });
+                state.error = None;
+            }
+            Task::none()
+        }
+        Msg::RemoveVm => {
+            let Some(Dialog::ConfirmRemoveVm { id, name }) = state.dialog.clone() else {
+                return Task::none();
+            };
+            state.dialog = None;
+            let path = format!("/v1/stations/vms/{id}");
+            let notice = format!("{name} deleted");
+            let client = ctx.client.clone();
+            client::task(
+                move || client.call("DELETE", &path, None),
+                move |r| Msg::Acted(r, notice.clone()),
+            )
+        }
         Msg::CloseDialog => {
             state.dialog = None;
             state.error = None;
@@ -881,7 +1036,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
         parts.push(ui::faint(notice.as_str()).into());
     }
     if let Some(dialog) = &state.dialog {
-        parts.push(dialog_view(dialog));
+        parts.push(dialog_view(state, dialog));
     }
     match (&state.selected, &state.stations) {
         (None, _) => list_page(state, parts),
@@ -903,14 +1058,21 @@ fn list_page<'a>(state: &'a State, mut parts: Vec<Element<'a, Msg>>) -> Element<
     let head = ui::view_head_with_intro(
         "Workstations",
         "Machines that agents operate through the hub: their screen, shell, files and every program installed there.",
-        vec![ui::btn(
-            "Add workstation",
-            Some("plus"),
-            ui::Kind::Primary,
-            Some(Msg::OpenAdd),
-        )],
+        vec![
+            ui::btn("New VM", None, ui::Kind::Secondary, Some(Msg::OpenNewVm)),
+            ui::btn(
+                "Add workstation",
+                Some("plus"),
+                ui::Kind::Primary,
+                Some(Msg::OpenAdd),
+            ),
+        ],
     );
     parts.push(ui::card("Workstations", stations_view(state)));
+    parts.push(ui::card(
+        "Workstation VMs",
+        vms::vms_view(&state.vms, &state.nodes),
+    ));
     parts.push(ui::card("Join codes", codes_view(state)));
     parts.push(ui::card(
         "Recording defaults",
@@ -1372,8 +1534,30 @@ fn audit_view(state: &State) -> Element<'_, Msg> {
 
 // ---- Dialogs ----
 
-fn dialog_view(dialog: &Dialog) -> Element<'_, Msg> {
+fn dialog_view<'a>(state: &'a State, dialog: &'a Dialog) -> Element<'a, Msg> {
     match dialog {
+        Dialog::NewVm {
+            form,
+            problem,
+            made,
+        } => ui::card(
+            "New workstation VM",
+            vms::new_vm_view(
+                &state.nodes,
+                form,
+                problem.as_deref(),
+                made.as_deref(),
+                state.vm_saving,
+            ),
+        ),
+        Dialog::ConfirmRemoveVm { name, .. } => ui::card(
+            &format!("Delete {name}?"),
+            confirm(
+                "Its VM goes from its node, and the station it enrolled as is revoked. This cannot be undone.",
+                "Delete",
+                Msg::RemoveVm,
+            ),
+        ),
         Dialog::Add {
             label,
             minutes,
@@ -1850,7 +2034,7 @@ pub fn rate_text(credits: u64) -> String {
 }
 
 /// A whole number from `text` within `(lo, hi)`, or None.
-fn whole_in(text: &str, (lo, hi): (u64, u64)) -> Option<u64> {
+pub(super) fn whole_in(text: &str, (lo, hi): (u64, u64)) -> Option<u64> {
     let t = text.trim();
     if t.is_empty() || !t.chars().all(|c| c.is_ascii_digit()) {
         return None;

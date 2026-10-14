@@ -49,6 +49,7 @@ import {
 import { liveView, type LiveHandle } from './workstations-live';
 import { playbackScreen, recordingDefaultsCard, recordingsCard } from './workstations-recordings';
 import { syncCard } from './workstations-sync';
+import { vmsSection } from './workstations-vms';
 import type { Cleanup } from './index';
 
 const POLL_MS = 10_000;
@@ -120,10 +121,17 @@ function listScreen(root: HTMLElement): Cleanup {
   const listBody = h('div');
   const codesBody = h('div');
   const defaults: Section = recordingDefaultsCard();
+  const vms = vmsSection();
   root.append(
-    h('div.view-head.ws-head', null, h('h1', null, 'Workstations'), button('Add workstation', () => openAdd(), { kind: 'primary' })),
+    h(
+      'div.view-head.ws-head',
+      null,
+      h('h1', null, 'Workstations'),
+      h('div.ws-actions', null, button('New VM', () => vms.openNew()), button('Add workstation', () => openAdd(), { kind: 'primary' })),
+    ),
     h('p.ws-lede', null, 'Machines that agents operate through the hub: their screen, shell, files and every program installed there.'),
     card('Workstations', listBody, { flush: true }),
+    vms.el,
     card('Join codes', codesBody, { flush: true }),
     defaults.el,
   );
@@ -287,6 +295,7 @@ function listScreen(root: HTMLElement): Cleanup {
     renderList();
     renderCodes();
     void defaults.refresh();
+    void vms.refresh();
     if (!picturesAt) void refreshPictures();
   };
 
@@ -304,6 +313,7 @@ function listScreen(root: HTMLElement): Cleanup {
     stopTick?.();
     closeDialog?.();
     defaults.dispose();
+    vms.dispose();
     for (const url of pictures.values()) URL.revokeObjectURL(url);
     pictures.clear();
   };

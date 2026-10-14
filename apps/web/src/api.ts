@@ -471,6 +471,20 @@ export interface StationAuditRow {
 }
 export interface StationSettingsAnswer { settings: StationSettings; pushed: boolean; push_error: string | null }
 
+/** A workstation VM the plaza makes on a node (`/v1/stations/vms`, docs/design/workstations.md section 10). */
+export type VmOs = 'linux' | 'windows' | 'macos';
+export type VmBackend = 'plaza' | 'qemu';
+export interface StationVm {
+  id: string; node: string; vm: string; name: string; os: VmOs; cpus: number; ram_mb: number; disk_gb: number;
+  /** `none`, `virtual` or `vfio:<pci-id>`. */
+  gpu: string; image: string | null; backend: VmBackend; station: string | null; created_ms: number; online: boolean;
+}
+/** The `POST /v1/stations/vms` body. `auto` lets the hub pick the backend. */
+export interface StationVmBody {
+  node: string; os: VmOs; name: string; cpus: number; ram_mb: number; disk_gb: number;
+  gpu: string; image?: string; backend: 'auto' | VmBackend;
+}
+
 /** A mouse button, as the daemon names it. */
 export type InputButton = 'left' | 'right' | 'middle';
 /**
@@ -720,6 +734,11 @@ export const api = {
   stationCodes: () => get<StationCode[]>('/v1/stations/codes'),
   revokeStationCode: (id: string) => del<unknown>(`/v1/stations/codes/${encodeURIComponent(id)}`),
   stations: () => get<StationView[]>('/v1/stations'),
+  /** The workstation VMs the plaza made on its nodes. */
+  stationVms: () => get<StationVm[]>('/v1/stations/vms'),
+  createStationVm: (body: StationVmBody) => post<StationVm>('/v1/stations/vms', body),
+  /** Removes the VM from its node; the station it enrolled as is revoked. */
+  deleteStationVm: (id: string) => del<StationVm>(`/v1/stations/vms/${seg(id)}`),
   /** A workstation's latest picture as an object URL (the caller revokes it), or null when it cannot be had. */
   stationThumbnailUrl: async (id: string): Promise<string | null> => {
     try {
@@ -822,7 +841,9 @@ export interface HubIdentity { name: string; version: string; url: string; finge
 /** A machine in the plaza: `n0` is the hub's own. Agents on it have CIDs `cid_base` … `cid_base + cid_count - 1`. */
 export interface NodeView {
   id: string; name: string; public_key: string; cid_base: number; cid_count: number;
-  joined_ms: number; last_seen_ms: number; machine: { cpus?: number; memory_mib?: number; host?: string; version?: string } | null;
+  joined_ms: number; last_seen_ms: number;
+  /** The machine summary the node reported. `workstation_backends` lists `plaza`, and `qemu` when QEMU and its firmware are here. */
+  machine: { cpus?: number; memory_mib?: number; host?: string; version?: string; workstation_backends?: string[]; vendor?: string | null; apple?: unknown } | null;
   draining: boolean; revoked: boolean; address: string; online: boolean; agents: number;
 }
 export type JoinCodeState = 'active' | 'used' | 'expired' | 'revoked';

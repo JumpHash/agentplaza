@@ -32,6 +32,8 @@ import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession,
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
 import { lookOfSpec, specKey, type PictureSpec } from '../src/views/machine-picture';
+import { VM_FORM_DEFAULTS, backendFor, backendHint, imageProblem, macosOn, nodeChoices, nodeFactsLine, nodeOptionLabel, nodeVmFacts, pciProblem, readVmForm, sortVms, vmBody, vmGpuText, vmNameProblem, vmOsText, vmProblem, vmStateChip, wholeIn, type NodeVmFacts, type VmForm } from '../src/views/workstations-vm-model';
+import type { NodeView, StationVm } from '../src/api';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -807,6 +809,72 @@ eq(
 eq(readSettings({ ...form, rate_per_hour: ' 2500 ' }), { ok: true, settings: { ...defaults, rate_per_hour: 2500 } }, 'workstation rate: whole credits, trimmed');
 eq(readSettings({ ...form, retention_days: '0' }), { ok: false, error: 'Keep recordings for whole days, from 1 to 3650.' }, 'workstation settings form: the retention message');
 sectionEnd('workstation tests: ok');
+
+// ---- Workstation VMs: the New VM form's rules and body (docs/design/workstations.md section 10) ----
+{
+  const plazaNode: NodeVmFacts = { id: 'n1', name: 'studio', reported: true, backends: ['plaza'], qemu: false, apple: false, online: true };
+  const qemuNode: NodeVmFacts = { id: 'n2', name: 'tower', reported: true, backends: ['plaza', 'qemu'], qemu: true, apple: false, online: true };
+  const mac: NodeVmFacts = { id: 'n3', name: 'mini', reported: true, backends: ['plaza'], qemu: false, apple: true, online: true };
+  const linux: VmForm = { ...VM_FORM_DEFAULTS, node: 'n1', name: 'desk-1' };
+  const windows: VmForm = { ...linux, node: 'n2', os: 'windows', ram_mb: '8192', image: 'D:\\images\\win.img' };
+  const macos: VmForm = { ...linux, node: 'n3', os: 'macos' };
+  const problemOf = (form: VmForm, node: NodeVmFacts | undefined, macs = 0): string => vmProblem(form, node, macs) ?? '';
+
+  for (const ok of ['desk-1', 'a', 'a'.repeat(63), 'x-1', ' desk-2 ']) eq(vmNameProblem(ok), null, `vm name ${ok}: a DNS label`);
+  for (const bad of ['', '  ', 'Desk', '-a', 'a-', 'a_b', 'a b', 'a'.repeat(64)]) eq(vmNameProblem(bad) !== null, true, `vm name ${JSON.stringify(bad)}: refused`);
+  eq([wholeIn('16', 1, 16), wholeIn(' 4 ', 1, 16), wholeIn('17', 1, 16), wholeIn('', 1, 16), wholeIn('1.5', 1, 16)], [16, 4, null, null, null], 'vm sizes: whole numbers in range only');
+  eq([pciProblem('0000:01:00.0'), pciProblem('0000:0A:00.7')], [null, null], 'vm pci: a well-formed address');
+  eq([pciProblem('01:00.0') !== null, pciProblem('0000:01:00.9') !== null], [true, true], 'vm pci: a short or a bad function is refused');
+  eq([imageProblem('/srv/win.img'), imageProblem('D:\\images\\win.img')], [null, null], 'vm image: absolute or a drive path');
+  eq([imageProblem('win.img') !== null, imageProblem('') !== null], [true, true], 'vm image: relative or empty is refused');
+
+  eq(readVmForm(linux, plazaNode, 0), { ok: true, body: { node: 'n1', os: 'linux', name: 'desk-1', cpus: 4, ram_mb: 8192, disk_gb: 40, gpu: 'none', backend: 'auto' } }, 'vm body: a linux VM names only its sizes, GPU and backend');
+  eq(vmBody({ ...linux, name: ' desk-1 ', image: '/unused' }).image, undefined, 'vm body: no image unless the VM is Windows');
+  eq(vmBody({ ...linux, gpu: 'vfio', pci: ' 0000:01:00.0 ' }).gpu, 'vfio:0000:01:00.0', 'vm body: a passthrough GPU is vfio:<pci-id>');
+  eq(readVmForm(windows, qemuNode, 0), { ok: true, body: { node: 'n2', os: 'windows', name: 'desk-1', cpus: 4, ram_mb: 8192, disk_gb: 40, gpu: 'none', backend: 'auto', image: 'D:\\images\\win.img' } }, 'vm body: a Windows VM carries its image');
+
+  eq([problemOf({ ...linux, cpus: '0' }, plazaNode), problemOf({ ...linux, cpus: '17' }, plazaNode)].map((p) => p.includes('CPUs')), [true, true], 'vm cpus: 1 to 16');
+  eq(problemOf({ ...linux, ram_mb: '1024' }, plazaNode).includes('Memory'), true, 'vm memory: at least 2048 MiB for a linux VM');
+  eq(problemOf({ ...windows, ram_mb: '2048' }, qemuNode).includes('4096'), true, 'vm memory: 4096 MiB for Windows');
+  eq(problemOf({ ...linux, disk_gb: '7' }, plazaNode).includes('Disk'), true, 'vm disk: at least 8 GiB');
+  eq(problemOf({ ...windows, image: '' }, qemuNode).includes('needs the path'), true, 'vm windows: an image is required');
+  eq(problemOf({ ...windows, image: 'win.img' }, qemuNode).includes('absolute'), true, 'vm windows: the image is an absolute path');
+  eq(problemOf({ ...linux, gpu: 'vfio', pci: '01:00.0' }, qemuNode).includes('PCI'), true, 'vm gpu: a passthrough GPU needs its address');
+  eq(problemOf(linux, undefined), 'Choose a node to run the VM on.', 'vm node: one must be chosen');
+
+  eq(problemOf(macos, plazaNode).includes('Apple hardware'), true, 'vm macos: refused on a node that is not an Apple Mac');
+  eq(readVmForm(macos, mac, 0), { ok: true, body: { node: 'n3', os: 'macos', name: 'desk-1', cpus: 4, ram_mb: 8192, disk_gb: 40, gpu: 'none', backend: 'auto' } }, 'vm macos: fine on Apple hardware, with plaza');
+  eq(problemOf(macos, mac, 2).includes('At most 2'), true, 'vm macos: at most two per Mac');
+  eq(problemOf(macos, mac, 1), '', 'vm macos: one more is fine');
+
+  eq(backendFor({ os: 'linux', gpu: 'none', backend: 'auto' }, false), { ok: true, backend: 'plaza' }, 'vm backend: a linux VM is plaza by default');
+  eq(backendFor({ os: 'windows', gpu: 'none', backend: 'auto' }, true), { ok: true, backend: 'qemu' }, 'vm backend: auto takes QEMU for Windows');
+  eq(backendFor({ os: 'linux', gpu: 'vfio', backend: 'auto' }, true), { ok: true, backend: 'qemu' }, 'vm backend: auto takes QEMU for a passthrough GPU');
+  eq(backendFor({ os: 'windows', gpu: 'none', backend: 'auto' }, false), { ok: false, error: 'This node has no QEMU/OVMF; install qemu and edk2-ovmf.' }, 'vm backend: no QEMU on the node is refused, with the install hint');
+  eq(backendFor({ os: 'windows', gpu: 'none', backend: 'plaza' }, true), { ok: true, backend: 'plaza' }, 'vm backend: plaza as chosen');
+  eq(backendFor({ os: 'macos', gpu: 'none', backend: 'qemu' }, true).ok, false, 'vm backend: a macOS VM is never QEMU');
+  eq(backendHint({ os: 'linux', gpu: 'none', backend: 'auto' }, false), 'Runs on plaza: auto picks plaza for this guest.', 'vm backend hint: a linux VM');
+  eq(backendHint({ os: 'windows', gpu: 'none', backend: 'auto' }, true), 'Runs on QEMU: auto picks QEMU for a Windows VM.', 'vm backend hint: a Windows VM');
+  eq(backendHint({ os: 'windows', gpu: 'none', backend: 'plaza' }, true).includes('cannot run a Windows VM'), true, 'vm backend hint: plaza warns for Windows');
+
+  const view = (over: Record<string, unknown>): NodeView => ({ id: 'n9', name: '', revoked: false, online: true, machine: null, ...over }) as unknown as NodeView;
+  eq(nodeVmFacts(view({ name: 'tower', machine: { workstation_backends: ['plaza', 'qemu'] } })), { id: 'n9', name: 'tower', reported: true, backends: ['plaza', 'qemu'], qemu: true, apple: false, online: true }, 'vm node facts: the backends a node reports');
+  eq(nodeVmFacts(view({ machine: { vendor: 'apple', apple: { chip: 'M4' }, workstation_backends: ['plaza'] } })).apple, true, 'vm node facts: Apple hardware by its vendor or its Apple details');
+  eq(nodeVmFacts(view({ machine: { cpus: 8 } })), { id: 'n9', name: 'n9', reported: false, backends: [], qemu: false, apple: false, online: true }, 'vm node facts: an older node reports no backends');
+  eq(nodeChoices([view({ id: 'n1', revoked: true }), view({ id: 'n2' })]).map((n) => n.id), ['n2'], 'vm nodes: a revoked node is not offered');
+  eq(nodeFactsLine(undefined), 'Choose the node that runs the VM.', 'vm node line: none chosen');
+  eq(nodeFactsLine(qemuNode), 'Backends: plaza, qemu · QEMU/OVMF: yes · Apple hardware: no', 'vm node line: backends, QEMU and Apple');
+  eq(nodeFactsLine({ ...plazaNode, online: false }).includes('offline'), true, 'vm node line: an offline node says so');
+  eq(nodeOptionLabel(qemuNode), 'tower (n2) · plaza, qemu · QEMU/OVMF', 'vm node option: its backends and QEMU');
+  eq(nodeOptionLabel({ ...plazaNode, reported: false, backends: [], online: false }), 'studio (n1) · backends not reported · no QEMU/OVMF · offline', 'vm node option: an older node and offline');
+
+  const vm = (over: Partial<StationVm>): StationVm => ({ id: 'v1', node: 'n1', vm: 'wv1', name: 'a', os: 'linux', cpus: 4, ram_mb: 8192, disk_gb: 40, gpu: 'none', image: null, backend: 'plaza', station: null, created_ms: 0, online: false, ...over });
+  eq([vmStateChip(vm({ online: true, station: 'w1' })), vmStateChip(vm({ station: 'w1' })), vmStateChip(vm({}))], [{ label: 'online', tone: 'ok' }, { label: 'offline', tone: 'muted' }, { label: 'joining', tone: 'info' }], 'vm state: online, offline once enrolled, joining before');
+  eq(sortVms([vm({ id: 'v2', name: 'beta' }), vm({ id: 'v1', name: 'alpha' })]).map((v) => v.id), ['v1', 'v2'], 'vm list: by name');
+  eq(macosOn([vm({ os: 'macos' }), vm({ os: 'macos', node: 'n2' }), vm({ os: 'linux' })], 'n1'), 1, 'vm list: macOS VMs on one node');
+  eq([vmOsText('macos'), vmGpuText('vfio:0000:01:00.0'), vmGpuText('none'), vmGpuText('virtual')], ['macOS', 'passthrough 0000:01:00.0', 'no GPU', 'virtual GPU'], 'vm labels: OS and GPU in words');
+}
+sectionEnd('workstation VM tests: ok');
 
 // Workstations, live view and takeover, recordings and the work folder: the wire shapes and the mappings the pages draw from.
 const frameBytes = (header: Record<string, unknown>, image: number[]): ArrayBuffer => {

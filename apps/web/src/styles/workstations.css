@@ -148,3 +148,6 @@
 
 /* The Workstations list's recording defaults and the rate's hint */
 .ws-settings .field .hint, .ws-form .field .hint { font: italic 13px var(--serif); color: var(--ink-3); }
+
+/* The New VM form: a field that depends on a choice is hidden with the attribute, which the field's own display would override */
+.ws-form .field[hidden] { display: none; }

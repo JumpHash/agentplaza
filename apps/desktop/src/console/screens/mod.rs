@@ -36,6 +36,7 @@ pub mod workstations;
 pub mod workstations_live;
 pub mod workstations_rec;
 pub mod workstations_files;
+pub mod workstations_vms;
 pub mod nodes;
 pub mod setup;
 pub mod agent;
