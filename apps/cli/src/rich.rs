@@ -374,15 +374,34 @@ mod tests {
         );
     }
 
+    /// A markdown link opens its target, a task and an agent open the hub console, and each shows its label.
     #[test]
-    fn a_bare_url_links_to_itself_and_a_markdown_link_to_its_target() {
-        let (text, ctx) = vector("markdown_link_to_pull");
-        let linked = render(&text, &ctx, &mode(false, true));
-        assert!(
-            linked.contains("\x1b]8;;https://github.com/o/r/pull/12"),
-            "{linked:?}"
-        );
-        assert!(linked.contains("GH o/r #12"), "{linked:?}");
+    fn references_link_to_their_targets_when_links_are_on() {
+        // (vector, the link the output must open, the label it must show if any)
+        for (name, link, label) in [
+            (
+                "markdown_link_to_pull",
+                "\x1b]8;;https://github.com/o/r/pull/12",
+                Some("GH o/r #12"),
+            ),
+            (
+                "hash_number_in_project_is_task",
+                "\x1b]8;;https://hub.test/#/tasks/",
+                None,
+            ),
+            (
+                "agent_known",
+                "\x1b]8;;https://hub.test/#/agents/",
+                Some("@Ada"),
+            ),
+        ] {
+            let (text, ctx) = vector(name);
+            let linked = render(&text, &ctx, &mode(false, true));
+            assert!(linked.contains(link), "{name}: {linked:?}");
+            if let Some(label) = label {
+                assert!(linked.contains(label), "{name}: {linked:?}");
+            }
+        }
     }
 
     #[test]
@@ -405,23 +424,6 @@ mod tests {
                 "{name}: {shown:?} lacks {expected:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_task_and_an_agent_link_to_the_hub_console() {
-        let (text, ctx) = vector("hash_number_in_project_is_task");
-        let linked = render(&text, &ctx, &mode(false, true));
-        assert!(
-            linked.contains("\x1b]8;;https://hub.test/#/tasks/"),
-            "{linked:?}"
-        );
-        let (text, ctx) = vector("agent_known");
-        let linked = render(&text, &ctx, &mode(false, true));
-        assert!(linked.contains("@Ada"), "{linked:?}");
-        assert!(
-            linked.contains("\x1b]8;;https://hub.test/#/agents/"),
-            "{linked:?}"
-        );
     }
 
     #[test]

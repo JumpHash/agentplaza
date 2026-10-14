@@ -1105,47 +1105,40 @@ mod tests {
     }
 
     #[test]
-    fn a_single_island_job_registers_its_model_from_the_island_directory() {
-        let dir = scratch("nested");
-        let store = Foundry::open(dir.clone(), 1);
-        let models = crate::foundry::registry::Models::open(&dir.join("state"));
-        write_island(&store, "tj-nested", "i1", 0.9);
-        store
-            .write()
-            .jobs
-            .insert("tj-nested".into(), running("tj-nested"));
-        let fake = Fake::new(usize::MAX, exit_with(0));
-        poll(&fake, &store, &models, "tj-nested", 3_600_000);
-        let registered = models.list();
-        assert_eq!(registered.len(), 1, "one model, from out/i1");
-        assert_eq!(registered[0].source_job.as_deref(), Some("tj-nested"));
-        let job = store.read(|s| s.jobs["tj-nested"].clone());
-        assert_eq!(job.status, "done");
-        assert!(job.error.is_none());
-        assert!(job.candidates.is_empty());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_multi_island_job_registers_the_best_island_and_keeps_the_others_as_candidates() {
-        let dir = scratch("multi");
-        let store = Foundry::open(dir.clone(), 1);
-        let models = crate::foundry::registry::Models::open(&dir.join("state"));
-        write_island(&store, "tj-multi", "i1", 0.7);
-        write_island(&store, "tj-multi", "i2", 0.9);
-        store
-            .write()
-            .jobs
-            .insert("tj-multi".into(), running("tj-multi"));
-        let fake = Fake::new(usize::MAX, exit_with(0));
-        poll(&fake, &store, &models, "tj-multi", 3_600_000);
-        let registered = models.list();
-        assert_eq!(registered.len(), 1, "one model, the better island");
-        assert_eq!(registered[0].card.metrics["val"]["accuracy"], json!(0.9));
-        let job = store.read(|s| s.jobs["tj-multi"].clone());
-        assert!(job.error.is_none());
-        assert_eq!(job.candidates, vec!["i1".to_string()]);
-        let _ = std::fs::remove_dir_all(dir);
+    fn a_finished_job_registers_the_best_island_from_its_island_directories() {
+        // (case, islands as (name, accuracy), the accuracy of the island registered, the islands kept as candidates).
+        // One island is the nested layout with nothing else to keep; two islands keep the other as a candidate.
+        let cases: [(&str, &[(&str, f64)], f64, Vec<&str>); 2] = [
+            ("one island", &[("i1", 0.9)], 0.9, vec![]),
+            ("two islands", &[("i1", 0.7), ("i2", 0.9)], 0.9, vec!["i1"]),
+        ];
+        for (case, islands, best, candidates) in cases {
+            let dir = scratch(&case.replace(' ', "-"));
+            let store = Foundry::open(dir.clone(), 1);
+            let models = crate::foundry::registry::Models::open(&dir.join("state"));
+            for (island, accuracy) in islands {
+                write_island(&store, "tj-islands", island, *accuracy);
+            }
+            store
+                .write()
+                .jobs
+                .insert("tj-islands".into(), running("tj-islands"));
+            let fake = Fake::new(usize::MAX, exit_with(0));
+            poll(&fake, &store, &models, "tj-islands", 3_600_000);
+            let registered = models.list();
+            assert_eq!(registered.len(), 1, "{case}: one model, the best island");
+            assert_eq!(registered[0].source_job.as_deref(), Some("tj-islands"));
+            assert_eq!(
+                registered[0].card.metrics["val"]["accuracy"],
+                json!(best),
+                "{case}: the best island is registered"
+            );
+            let job = store.read(|s| s.jobs["tj-islands"].clone());
+            assert_eq!(job.status, "done", "{case}");
+            assert!(job.error.is_none(), "{case}");
+            assert_eq!(job.candidates, candidates, "{case}: the other islands");
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]

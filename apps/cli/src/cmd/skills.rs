@@ -1237,55 +1237,78 @@ mod tests {
         }
     }
 
+    /// Each command's required arguments and its exclusive ones: `(what is checked, the arguments, whether they parse)`.
     #[test]
-    fn the_required_arguments_are_checked() {
-        assert!(parse(&["save", "x", "dir"]).is_ok());
-        assert!(parse(&["save", "x"]).is_err(), "save takes the folder");
-        assert!(
-            parse(&[
-                "create",
-                "--title",
-                "T",
-                "--file",
-                "SKILL.md",
-                "--every",
-                "--bind",
-                "role:builder"
-            ])
-            .is_ok()
-        );
-        assert!(
-            parse(&["create", "--title", "T"]).is_err(),
-            "create takes a SKILL.md"
-        );
-        assert!(parse(&["file", "x", "1", "scripts/run.sh"]).is_ok());
-        assert!(parse(&["diff", "x", "1"]).is_err());
-    }
-
-    #[test]
-    fn export_takes_one_skill_or_several_and_an_output() {
-        assert!(parse(&["export", "x", "-o", "x.zip"]).is_ok());
-        assert!(parse(&["export", "--ids", "a,b", "-o", "all.zip"]).is_ok());
-        assert!(
-            parse(&["export", "x", "--ids", "a", "-o", "f.zip"]).is_err(),
-            "one or the other"
-        );
-        assert!(
-            parse(&["export", "x"]).is_err(),
-            "an output file is required"
-        );
-        assert!(
-            parse(&["export", "--ids", "a", "-o", "f.zip", "--version", "2"]).is_err(),
-            "a version is for one skill"
-        );
-        assert!(parse(&["export", "x", "-o", "f.zip", "--force"]).is_ok());
-    }
-
-    #[test]
-    fn bindings_are_replaced_or_cleared_not_both() {
-        assert!(parse(&["bindings", "x", "--bind", "role:builder", "--every"]).is_ok());
-        assert!(parse(&["bindings", "x", "--clear"]).is_ok());
-        assert!(parse(&["bindings", "x", "--clear", "--bind", "plaza"]).is_err());
+    fn each_commands_required_and_exclusive_arguments_are_checked() {
+        let cases: [(&str, &[&str], bool); 15] = [
+            ("save takes the folder", &["save", "x", "dir"], true),
+            ("save takes the folder", &["save", "x"], false),
+            (
+                "create takes its title, a SKILL.md and bindings",
+                &[
+                    "create",
+                    "--title",
+                    "T",
+                    "--file",
+                    "SKILL.md",
+                    "--every",
+                    "--bind",
+                    "role:builder",
+                ],
+                true,
+            ),
+            (
+                "create takes a SKILL.md",
+                &["create", "--title", "T"],
+                false,
+            ),
+            (
+                "file takes a version and a path",
+                &["file", "x", "1", "scripts/run.sh"],
+                true,
+            ),
+            ("diff takes two versions", &["diff", "x", "1"], false),
+            (
+                "export takes one skill",
+                &["export", "x", "-o", "x.zip"],
+                true,
+            ),
+            (
+                "export takes several ids",
+                &["export", "--ids", "a,b", "-o", "all.zip"],
+                true,
+            ),
+            (
+                "export takes one skill or several, not both",
+                &["export", "x", "--ids", "a", "-o", "f.zip"],
+                false,
+            ),
+            ("an export needs an output file", &["export", "x"], false),
+            (
+                "a version is for one skill",
+                &["export", "--ids", "a", "-o", "f.zip", "--version", "2"],
+                false,
+            ),
+            (
+                "export takes --force",
+                &["export", "x", "-o", "f.zip", "--force"],
+                true,
+            ),
+            (
+                "bindings take --bind and --every",
+                &["bindings", "x", "--bind", "role:builder", "--every"],
+                true,
+            ),
+            ("bindings take --clear", &["bindings", "x", "--clear"], true),
+            (
+                "bindings are replaced or cleared, not both",
+                &["bindings", "x", "--clear", "--bind", "plaza"],
+                false,
+            ),
+        ];
+        for (what, args, parses) in cases {
+            assert_eq!(parse(args).is_ok(), parses, "{what}: {args:?}");
+        }
     }
 
     #[test]

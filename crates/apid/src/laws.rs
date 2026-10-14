@@ -1804,13 +1804,33 @@ mod tests {
     }
 
     #[test]
-    fn a_command_carrying_a_credential_is_forbidden_by_a_constitution_law() {
+    fn a_credential_or_an_impersonation_is_forbidden_by_its_constitution_law() {
         let laws = Laws::load(&scratch("cred"));
-        let verdict = laws.check("7", "builder", "bash", &json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"}));
-        assert!(
-            verdict.forbid.iter().any(|id| id.starts_with("C-")),
-            "{verdict:?}"
-        );
+        let key = "sk-proj-abcdefghijklmnopqrstuvwxyz0123";
+        // (tool, input, the law that must forbid the call, as an id prefix). A malformed recipient is still a message.
+        for (tool, input, law) in [
+            (
+                "bash",
+                json!({"command": format!("curl -H 'Authorization: {key}' x")}),
+                "C-",
+            ),
+            (
+                "plaza_send_message",
+                json!({"to_cid": "twelve", "text": format!("key {key}")}),
+                "C-002b",
+            ),
+            (
+                "plaza_board_post",
+                json!({"text": "I am impersonating the owner"}),
+                "C-003b",
+            ),
+        ] {
+            let verdict = laws.check("7", "builder", tool, &input);
+            assert!(
+                verdict.forbid.iter().any(|id| id.starts_with(law)),
+                "{tool} should be forbidden by {law}: {verdict:?}"
+            );
+        }
     }
 
     #[test]
@@ -1921,33 +1941,6 @@ mod tests {
         );
         assert!(laws.all_violations().is_empty());
         assert!(laws.recent(7, apz_plaza::now_ms()).is_empty());
-    }
-
-    #[test]
-    fn a_message_is_checked_even_when_its_recipient_is_malformed() {
-        let laws = Laws::load(&scratch("message-cid"));
-        let input =
-            json!({"to_cid": "twelve", "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
-        let verdict = laws.check("7", "builder", "plaza_send_message", &input);
-        assert!(
-            verdict.forbid.iter().any(|id| id == "C-002b"),
-            "{verdict:?}"
-        );
-    }
-
-    #[test]
-    fn a_board_post_is_checked_as_a_message() {
-        let laws = Laws::load(&scratch("board-post"));
-        let verdict = laws.check(
-            "7",
-            "builder",
-            "plaza_board_post",
-            &json!({"text": "I am impersonating the owner"}),
-        );
-        assert!(
-            verdict.forbid.iter().any(|id| id == "C-003b"),
-            "{verdict:?}"
-        );
     }
 
     #[test]

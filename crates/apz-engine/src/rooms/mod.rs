@@ -155,31 +155,27 @@ fn role_name(role: &str) -> String {
 mod tests {
     use super::min_side;
 
-    /// A role the table does not list has no minimum: 0 (index.ts `minSideFor`).
+    /// The minimum side comes from the table (assets/rooms/minsize.json) for each desk count: a role the table does
+    /// not list has none (0); counts 1 to 6 give that count's entry; counts above 6 use the 6-agent entry, as
+    /// index.ts clamps `agents` to the row's length.
     #[test]
-    fn role_missing_from_the_table_gives_zero() {
-        assert_eq!(min_side("no-such-role", 1), 0.0);
-        assert_eq!(min_side("no-such-role", 6), 0.0);
-        assert_eq!(min_side("no-such-role", 9), 0.0);
-    }
-
-    /// Desk counts 1 to 6 give the table's entry for that count (assets/rooms/minsize.json).
-    #[test]
-    fn agents_one_to_six_give_the_table_value() {
-        assert_eq!(min_side("architect", 1), 4.5);
-        assert_eq!(min_side("architect", 4), 5.0);
-        assert_eq!(min_side("architect", 6), 6.0);
-        assert_eq!(min_side("planner", 1), 5.0);
-        assert_eq!(min_side("planner", 6), 6.5);
-        assert_eq!(min_side("incident", 3), 3.5);
-    }
-
-    /// Desk counts above 6 use the 6-agent entry, as index.ts clamps `agents` to the row's length.
-    #[test]
-    fn agents_above_six_give_the_six_agent_entry() {
-        assert_eq!(min_side("architect", 7), 6.0);
-        assert_eq!(min_side("architect", 8), 6.0);
-        assert_eq!(min_side("orchestrator", 7), 6.5);
-        assert_eq!(min_side("orchestrator", 12), 6.5);
+    fn min_side_is_the_table_entry_for_each_desk_count() {
+        for (role, agents, want) in [
+            ("no-such-role", 1, 0.0),
+            ("no-such-role", 6, 0.0),
+            ("no-such-role", 9, 0.0),
+            ("architect", 1, 4.5),
+            ("architect", 4, 5.0),
+            ("architect", 6, 6.0),
+            ("planner", 1, 5.0),
+            ("planner", 6, 6.5),
+            ("incident", 3, 3.5),
+            ("architect", 7, 6.0),
+            ("architect", 8, 6.0),
+            ("orchestrator", 7, 6.5),
+            ("orchestrator", 12, 6.5),
+        ] {
+            assert_eq!(min_side(role, agents), want, "{role} with {agents} desks");
+        }
     }
 }

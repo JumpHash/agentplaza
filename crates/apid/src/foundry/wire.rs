@@ -203,23 +203,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_float32() {
-        let header = r#"{"meta":{},"tensors":[{"name":"x","shape":[1],"dtype":"int32","offset":0,"nbytes":4}]}"#;
-        let err = unpack(&frame(header, &[0; 4])).unwrap_err();
-        assert!(err.contains("int32"), "{err}");
-    }
-
-    #[test]
-    fn rejects_length_that_does_not_match_shape() {
-        let header = r#"{"meta":{},"tensors":[{"name":"x","shape":[2,3],"dtype":"float32","offset":0,"nbytes":20}]}"#;
-        let err = unpack(&frame(header, &[0; 20])).unwrap_err();
-        assert!(err.contains("do not match shape"), "{err}");
-    }
-
-    #[test]
-    fn rejects_tensor_past_body() {
-        let header = r#"{"meta":{},"tensors":[{"name":"x","shape":[4],"dtype":"float32","offset":8,"nbytes":16}]}"#;
-        let err = unpack(&frame(header, &[0; 16])).unwrap_err();
-        assert!(err.contains("past the body"), "{err}");
+    fn a_bad_tensor_is_refused_with_its_reason() {
+        // (case, header, body, the text the error must name)
+        let cases: [(&str, &str, Vec<u8>, &str); 3] = [
+            (
+                "a dtype other than float32",
+                r#"{"meta":{},"tensors":[{"name":"x","shape":[1],"dtype":"int32","offset":0,"nbytes":4}]}"#,
+                vec![0; 4],
+                "int32",
+            ),
+            (
+                "a length that does not match the shape",
+                r#"{"meta":{},"tensors":[{"name":"x","shape":[2,3],"dtype":"float32","offset":0,"nbytes":20}]}"#,
+                vec![0; 20],
+                "do not match shape",
+            ),
+            (
+                "a tensor that runs past the body",
+                r#"{"meta":{},"tensors":[{"name":"x","shape":[4],"dtype":"float32","offset":8,"nbytes":16}]}"#,
+                vec![0; 16],
+                "past the body",
+            ),
+        ];
+        for (case, header, body, want) in cases {
+            let err = unpack(&frame(header, &body)).unwrap_err();
+            assert!(err.contains(want), "{case}: {err}");
+        }
     }
 }
