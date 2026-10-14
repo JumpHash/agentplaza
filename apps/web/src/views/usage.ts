@@ -155,7 +155,7 @@ export function cacheSaving(byModel: UsageKeyed[], prices: ReadonlyMap<string, P
   return { usd: saved, complete };
 }
 
-/** Calls newest first, without repeats: a page merged into what is shown. */
+/** Calls newest first, without repeats: a page merged into what is shown. Repeats are told apart by the server id; the inputs are not changed. */
 export function mergeCalls(a: UsageCall[], b: UsageCall[]): UsageCall[] {
   const seen = new Set<number>();
   const out: UsageCall[] = [];
@@ -164,9 +164,7 @@ export function mergeCalls(a: UsageCall[], b: UsageCall[]): UsageCall[] {
     seen.add(c.id);
     out.push(c);
   }
-  // Ids increase with time, as the ledger assigns them; newest first.
-  out.sort((x, y) => x.at_ms - y.at_ms).forEach((c, i) => (c.id = i + 1));
-  return out.reverse();
+  return out.sort((x, y) => y.at_ms - x.at_ms || y.id - x.id);
 }
 
 export interface CallQuery { model?: string; cid?: number; before?: number; limit: number }
@@ -233,7 +231,9 @@ export function fixtureCalls(now: number, days: number): UsageCall[] {
       });
     }
   }
-  return out.sort((x, y) => y.at_ms - x.at_ms);
+  out.sort((x, y) => y.at_ms - x.at_ms);
+  // Server ids rise with time, as the ledger assigns them: the newest call has the largest id.
+  return out.map((c, i) => ({ ...c, id: out.length - i }));
 }
 
 // ---- The screen ------------------------------------------------------------

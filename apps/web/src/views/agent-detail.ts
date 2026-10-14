@@ -245,7 +245,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   };
 
   const loadHistory = async (): Promise<void> => {
-    const history = await attempt(() => api.transcript(cid));
+    const history = await attempt(() => api.transcriptLast(cid));
     if (!alive) return;
     for (const e of (history ?? []).slice().sort((x, y) => x.seq - y.seq)) renderEntry(e);
     loaded = true;

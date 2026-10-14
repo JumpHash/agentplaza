@@ -11,12 +11,12 @@ import { h } from '../ui/dom';
 import { offerTour, openWizard, startTour } from '../ui/onboarding';
 import type { Cleanup } from './index';
 
-type Status = 'checking' | 'ok' | 'warning' | 'failed' | 'desktop';
+type Status = 'checking' | 'ok' | 'warning' | 'failed' | 'desktop' | 'pending';
 interface Fix { text: string; to?: string }
 interface Row { label: string; status: Status; detail: string; fix?: Fix }
 
-const STAMP: Record<Status, string> = { checking: 'CHECKING', ok: 'OK', warning: 'WARNING', failed: 'FAILED', desktop: 'DESKTOP' };
-const TONE: Record<Status, Tone> = { checking: 'muted', ok: 'ok', warning: 'warn', failed: 'danger', desktop: 'info' };
+const STAMP: Record<Status, string> = { checking: 'CHECKING', ok: 'OK', warning: 'WARNING', failed: 'FAILED', desktop: 'DESKTOP', pending: 'PENDING' };
+const TONE: Record<Status, Tone> = { checking: 'muted', ok: 'ok', warning: 'warn', failed: 'danger', desktop: 'info', pending: 'muted' };
 const WEB_LABELS = ['Hub reachable', 'Hub identity', 'Hub service', 'Node here', 'Network', 'Machine and hypervisor', 'Vault', 'Model providers', 'Default model', 'Git host'];
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -36,6 +36,7 @@ function vaultRow(v: VaultStatus): Row {
   if (v.state === 'tampered') return { label, status: 'failed', detail: `tampered${v.tampered ? `: ${v.tampered}` : ''}`, fix: { text: 'Read the audit log and recover', to: 'vault' } };
   const envKeys = v.env_file_keys ?? 0;
   if (envKeys > 0) return { label, status: 'warning', detail: `${plural(envKeys, 'key')} still in the env file, not in the vault`, fix: { text: 'Import them into the vault', to: 'vault' } };
+  if (v.audit_ok === null) return { label, status: 'pending', detail: 'Audit chain not checked until unsealed' };
   if (!v.audit_ok) return { label, status: 'warning', detail: 'unsealed, but the audit chain does not verify', fix: { text: 'Check the audit log', to: 'vault' } };
   return { label, status: 'ok', detail: `unsealed: ${plural(v.entries, 'secret')}, ${plural(v.slots.length, 'unlock slot')}` };
 }
