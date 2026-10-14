@@ -16,14 +16,24 @@ use serde_json::{json, Value};
 
 use super::controls::FOV_DEG;
 use super::hardware::{self, Params, State, Status};
+use super::props::Anim;
+use super::scene::Obj;
 use super::world::Floor;
 
-/// The model on the machines' ground: its state, and its traces and pulses when shown.
+/// The model on the machines' ground: its state, its traces and pulses when shown, and its atom when it has an anchor.
 pub struct Lab {
     built: hardware::Built,
     pulses: Option<hardware::Pulses>,
+    atom: Option<Atom>,
+    exterior: bool,
     state: State,
     info: Value,
+}
+
+/// The plaza's atom under the model's root: its node (for the exterior's glow) and its animation, called each frame.
+struct Atom {
+    node: Obj,
+    anim: Anim,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -100,6 +110,15 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     };
     night_stage(floor);
     let built = hardware::build(model, &params);
+    // hardware-lab.ts placed the atom under the model's group with the Floor's own colours (ATOM_PALETTE): the same here,
+    // as the layout's boards do. Its node is the child place_atom appends (layout.rs reads it the same way).
+    let before = built.root.get().children.len();
+    let anim = hardware::place_atom(model, &built.root, &floor.fleet_palette());
+    let node = built.root.get().children.get(before).cloned();
+    let atom = match (anim, node) {
+        (Some(anim), Some(node)) => Some(Atom { node, anim }),
+        _ => None,
+    };
     floor.root.add(&built.root);
     let pulses = if var("APZ_HW_TRACES").is_some_and(|t| t == "1") {
         let traces = hardware::traces(model);
@@ -118,7 +137,8 @@ pub fn build(floor: &mut Floor) -> Option<Lab> {
     let errors = hardware::validate(model, &name);
     let summary = if errors.is_empty() { format!("{name}: no errors") } else { errors.join("\n") };
     let info = json!({ "kind": "hardware", "model": name, "errors": errors, "summary": summary });
-    let mut lab = Lab { built, pulses, state, info };
+    let exterior = model.view == hardware::View::Exterior;
+    let mut lab = Lab { built, pulses, atom, exterior, state, info };
     lab.step(0.0, 0.0);
     Some(lab)
 }
@@ -182,6 +202,11 @@ impl Lab {
         if let Some(pulses) = self.pulses.as_mut() {
             pulses.update(dt, self.state.activity);
         }
+        if let Some(atom) = self.atom.as_mut() {
+            (atom.anim)(clock);
+            // An exterior's atom glows through its window only while the machine is online (hardware-lab.ts).
+            atom.node.set_visible(!self.exterior || self.state.status == Status::Online);
+        }
     }
 }
 
@@ -239,5 +264,22 @@ mod tests {
         let want = hardware::validate(hardware::model(name).expect("embedded"), name);
         assert_eq!(lab.info()["errors"], json!(want));
         assert_eq!(lab.info()["kind"], "hardware");
+    }
+
+    #[test]
+    fn the_lab_places_the_plaza_atom_at_the_models_anchor() {
+        let name = "board/workstation";
+        assert!(hardware::model(name).expect("embedded").anchors.atom.is_some(), "the board has an atom anchor");
+        let mut floor = Floor::new();
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("APZ_HW_LAB".to_string(), name.to_string());
+        crate::set_env_overrides(vars);
+        let lab = build(&mut floor);
+        crate::set_env_overrides(std::collections::BTreeMap::new());
+        let lab = lab.expect("the lab builds");
+        let node = lab.atom.as_ref().expect("the atom is placed at the anchor").node.clone();
+        let mut under_root = false;
+        floor.root.traverse(&mut |o: &Obj| under_root |= *o == node);
+        assert!(under_root, "the atom's node is under the lab's scene root");
     }
 }
