@@ -51,13 +51,10 @@ fn walk_rides(kind: &str, n: usize, seconds: f64) -> ((usize, usize, usize), usi
     }
     let arrived = (0..homes.len())
         .filter(|&i| {
-            // A goal on a desk snaps to the nearest walk cell: arrived is the path walked to its end, near that cell (a
-            // desk can stand more than a metre from the nearest free cell).
+            // A goal on a desk snaps to the nearest walk cell: arrived is the path walked to its end, near the goal.
             let p = world.pose(i as u32);
             let g = homes[(i + 1) % homes.len()];
-            let grid = world.grid();
-            let [sx, sz] = crate::nav::plan::snap_walk(grid, g[0], g[1]).map_or(g, |c| grid.centre(c));
-            world.path(i as u32).is_none_or(|left| left.is_empty()) && (p.x - sx).hypot(p.z - sz) < 1.0
+            world.path(i as u32).is_none_or(|left| left.is_empty()) && (p.x - g[0]).hypot(p.z - g[1]) < 1.0
         })
         .count();
     ((arrived, homes.len(), unreachable), rides)
@@ -146,4 +143,35 @@ fn debug_walk() {
             }
         }
     }
+}
+
+/// Two GPU cards side by side: their plate tops joined into one walk larger than any part of the board, which then
+/// was cut as an island (no PCB walk, no landing, no lift). The main walk is the board's now: every plate gets its way
+/// down, and a crowd walks between homes on the cards and the board, riding the lifts.
+#[test]
+fn a_two_gpu_workstation_keeps_its_board_walk_and_its_lifts() {
+    let roles = ["builder", "reviewer", "researcher", "ops", "qa", "planner"];
+    let agents: Vec<AgentSpec> =
+        (0..13).map(|i| AgentSpec { id: format!("a{i}"), role: if i == 0 { "orchestrator".into() } else { roles[i % roles.len()].into() }, seat_hint: None }).collect();
+    let lay = layout("workstation", &LayoutInput { agents, gpus: 2, scale_cap: 3.0 });
+    let scene = nav_scene(&lay, 2, None);
+    let g = &scene.grid;
+    let main = crate::navgrid::main_component(g);
+    let board_cells = (0..g.walk.len()).filter(|&c| g.walk[c] == 1 && g.component[c] == main && g.y[c] < lay.pcb_top + 0.5).count();
+    assert!(board_cells > 1000, "the PCB walk is the main component ({board_cells} board cells in it)");
+    assert!(!lay.lifts.is_empty(), "the GPU plates have lifts down to the board");
+    let mut world = NavWorld::new(scene.grid.clone());
+    let homes: Vec<[f64; 2]> = lay.homes.iter().map(|h| h.at).collect();
+    for (i, h) in homes.iter().enumerate() {
+        world.add(NavRobotSpec { id: i as u32, x: h[0], z: h[1], speed: 1.6, turn_rate: 6.0, priority: 1, floats: false });
+        let g = homes[(i + 5) % homes.len()];
+        world.set_goal(i as u32, NavGoal { x: g[0], z: g[1], face: None });
+    }
+    let mut rides = 0;
+    for _ in 0..(240.0 * 60.0) as usize {
+        world.step(1.0 / 60.0);
+        let _ = world.take_events();
+        rides += world.robot_ids().iter().filter(|&&id| world.pose(id).on_lift).count();
+    }
+    assert!(rides > 0, "no robot rode a lift on the 2-GPU workstation");
 }

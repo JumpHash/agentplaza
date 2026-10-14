@@ -980,9 +980,6 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         })
         .collect();
     let mut mouths: Vec<(usize, Mouth)> = Vec::new();
-    // Exits whose lift or ramp does not fit (over a room, another plate or a mouth already placed): rejected like an
-    // unclear landing, so the next round plans that plate another exit.
-    let mut blocked: BTreeSet<String> = BTreeSet::new();
     let mut accepted: Vec<(usize, Rect)> = Vec::new();
     for (i, e) in exits.iter().enumerate() {
         let Some(m) = mouth(e, aisle_cand(i).rect, plate_top[i], pcb_top) else { continue };
@@ -995,8 +992,6 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
         if clear {
             accepted.extend(footprint.iter().map(|r| (i, *r)));
             mouths.push((i, m));
-        } else {
-            blocked.insert(e.key.clone());
         }
     }
     let asm = surfaces::assemble(&Assembly { pcb, pcb_top, tall, plates: &plate_geo, rooms: &room_geo, mouths: &mouths });
@@ -1009,7 +1004,6 @@ fn at_scale(ctx: &Ctx, input: &LayoutInput, setup: &ScaleSetup, excluded: &BTree
     let slabs: Vec<Slab> = rooms_out.iter().map(|r| Slab { cx: r.centre[0], cz: r.centre[1], half: r.half[0].min(r.half[1]), round: r.round }).collect();
     let slot_rects: Vec<[f64; 4]> = (0..n).map(|i| aisle_cand(i).rect).collect();
     let mut rejected: BTreeSet<String> = exits.iter().filter(|e| !landing_clear(e, &slabs, &slot_rects)).map(|e| e.key.clone()).collect();
-    rejected.extend(blocked);
     if rejected.is_empty() {
         let slots: Vec<([f64; 4], f64)> = (0..n).map(|i| (aisle_cand(i).rect, aisle_cand(i).top)).collect();
         let traces = scene::traces_of(ctx.model, s);

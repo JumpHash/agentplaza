@@ -422,7 +422,7 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
         }
     }
     let b_comp = components(cols, rows, &b_walk, &g.y, &[]);
-    let main_board = largest(&b_comp);
+    let main_board = largest_at_board(&b_comp, &g.y, pcb);
     let slabs: Vec<Slab> = terraces.iter().map(Slab::of).collect();
     let clear_cell = |c: usize, on_plate: bool| landing_clear_at(&slabs, cx(c % cols), cz(c / cols), on_plate);
     let landed: Vec<Option<Landing>> = board
@@ -567,7 +567,7 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
     // Rule 12: components of the finished walk (portals included); islands are cut.
     let joins: Vec<(usize, usize)> = g.portals.iter().map(|p| (p.a, p.b)).collect();
     let first = components(cols, rows, &g.walk, &g.y, &joins);
-    let main_first = largest(&first);
+    let main_first = largest_at_board(&first, &g.y, pcb);
     for (w, &f) in g.walk.iter_mut().zip(&first) {
         if *w == 1 && f != main_first {
             *w = 0;
@@ -581,7 +581,7 @@ pub fn build(board: &NavBoard, terraces: &[NavTerrace]) -> NavGrid {
 /// The connectivity report of a built grid (nav-grid.ts connectivity): a room is ok when its door cell is in the main
 /// component and its outside cell is a walk plate cell.
 pub fn connectivity(g: &NavGrid) -> Connectivity {
-    let main = largest(&g.component);
+    let main = main_component(g);
     let components = g.component.iter().copied().max().map_or(0, |m| (m + 1).max(0) as usize);
     let mut unconnected = Vec::new();
     let mut doors_ok = 0;
@@ -599,9 +599,23 @@ pub fn connectivity(g: &NavGrid) -> Connectivity {
     Connectivity { main, components, one_way: g.drops.len(), doors_ok, doors: g.terrace_ids.len(), unconnected, unreached: g.unreached.clone() }
 }
 
-/// The main component's id: the largest, ties to the lowest id; -1 when no cell walks.
+/// The main component's id: the largest at board level (see [`largest_at_board`], the board level being the lowest
+/// walk), ties to the lowest id; -1 when no cell walks.
 pub fn main_component(g: &NavGrid) -> i32 {
-    largest(&g.component)
+    let level = g.component.iter().zip(&g.y).filter(|(k, _)| **k >= 0).map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
+    largest_at_board(&g.component, &g.y, level)
+}
+
+/// The largest component among the cells at board level (within NAV_LIFT_RISE of `pcb`), else the largest of all.
+/// The main walk is the board's: two GPU cards side by side make one plate-top component larger than any part of a
+/// board their parts divide, and taking that as the main one cut the whole board as an island (a 2-GPU workstation had
+/// no walk on its PCB, so no landing and no lift).
+fn largest_at_board(comp: &[i32], y: &[f64], pcb: f64) -> i32 {
+    let low: Vec<i32> = comp.iter().zip(y).map(|(&k, &h)| if h <= pcb + NAV_LIFT_RISE { k } else { -1 }).collect();
+    match largest(&low) {
+        -1 => largest(comp),
+        k => k,
+    }
 }
 
 fn add_portal(g: &mut NavGrid, p: NavPortal) {
